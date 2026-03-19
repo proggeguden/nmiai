@@ -3,7 +3,7 @@
 import json
 import os
 import re
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -11,7 +11,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 
 from logger import get_logger
-from prompts import EXECUTOR_FALLBACK_PROMPT, PLANNER_PROMPT
+from prompts import EXECUTOR_FALLBACK_PROMPT, FIX_ARGS_PROMPT, PLANNER_PROMPT
 from state import AgentState
 from tools import load_tools
 
@@ -100,27 +100,10 @@ def build_agent():
                 "messages": [AIMessage(content=f"Error: {error_msg}")],
             }
 
-        try:
-            result_str = tool_map[tool_name].invoke(resolved_args)
-        except Exception as e:
-            error_msg = f"Tool {tool_name} failed: {str(e)}"
-            log.error(error_msg)
-            results[f"step_{step['step_number']}"] = {"error": error_msg}
-            error_count += 1
-            completed.append(step["step_number"])
-            return {
-                "current_step": step_idx + 1,
-                "results": results,
-                "error_count": error_count,
-                "completed_steps": completed,
-                "messages": [AIMessage(content=f"Error: {error_msg}")],
-            }
-
-        # Parse result
-        try:
-            parsed = json.loads(result_str)
-        except (json.JSONDecodeError, TypeError):
-            parsed = {"raw": result_str}
+        tool = tool_map[tool_name]
+        result_str, parsed, error_count = _call_tool_with_retry(
+            tool, resolved_args, llm, error_count
+        )
 
         results[f"step_{step['step_number']}"] = parsed
 
@@ -217,6 +200,134 @@ def _parse_plan_json(raw: str) -> list[dict]:
     except json.JSONDecodeError:
         log.error("Failed to parse plan JSON", raw=raw[:500])
         return []
+
+
+MAX_RETRIES = 1  # one retry after LLM fix — keeps total API errors to 1 per step
+
+
+def _is_api_error(result_str: str) -> bool:
+    """Check if the API response indicates a 4xx/5xx error."""
+    try:
+        parsed = json.loads(result_str)
+        status = parsed.get("status", 0)
+        return isinstance(status, int) and status >= 400
+    except (json.JSONDecodeError, TypeError):
+        return False
+
+
+SELF_HEAL_LOG = os.path.join(os.path.dirname(__file__), "self_heal_log.md")
+
+
+def _log_self_heal(tool_name: str, original_args: dict, error_response: str, fixed_args: dict | None, retry_succeeded: bool) -> None:
+    """Append a self-heal attempt to self_heal_log.md for later analysis."""
+    try:
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        with open(SELF_HEAL_LOG, "a") as f:
+            f.write(f"\n## {timestamp} — `{tool_name}`\n\n")
+            f.write(f"**Original args:**\n```json\n{json.dumps(original_args, indent=2, default=str)}\n```\n\n")
+            f.write(f"**API error:**\n```json\n{error_response[:2000]}\n```\n\n")
+            if fixed_args:
+                f.write(f"**LLM fix:**\n```json\n{json.dumps(fixed_args, indent=2, default=str)}\n```\n\n")
+            else:
+                f.write("**LLM fix:** _(failed to produce fix)_\n\n")
+            f.write(f"**Retry succeeded:** {'Yes' if retry_succeeded else 'No'}\n\n---\n")
+    except Exception as e:
+        log.warning(f"Could not write self-heal log: {e}")
+
+
+def _ask_llm_to_fix_args(
+    llm, tool, original_args: dict, error_response: str
+) -> dict | None:
+    """Ask the LLM to fix tool arguments based on the API error. Returns fixed args or None."""
+    schema = tool.args_schema.model_json_schema() if tool.args_schema else {}
+    params_summary = json.dumps(schema.get("properties", {}), indent=2)[:2000]
+
+    prompt = FIX_ARGS_PROMPT.format(
+        tool_name=tool.name,
+        tool_args=json.dumps(original_args, indent=2, default=str),
+        error_response=error_response[:2000],
+        tool_description=tool.description,
+        tool_params=params_summary,
+    )
+
+    try:
+        resp = llm.invoke([HumanMessage(content=prompt)])
+        raw = resp.content if isinstance(resp.content, str) else str(resp.content)
+        fixed = _parse_json_object(raw)
+        if fixed and isinstance(fixed, dict):
+            log.info("LLM suggested fixed args", fixed_args=fixed)
+            return fixed
+    except Exception as e:
+        log.warning(f"LLM fix-args call failed: {e}")
+
+    return None
+
+
+def _parse_json_object(raw: str) -> dict | None:
+    """Extract a JSON object from LLM output (handles code blocks)."""
+    code_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", raw, re.DOTALL)
+    if code_match:
+        raw = code_match.group(1)
+    brace_match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if brace_match:
+        try:
+            return json.loads(brace_match.group(0))
+        except json.JSONDecodeError:
+            pass
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def _call_tool_with_retry(tool, resolved_args: dict, llm, error_count: int) -> tuple[str, dict, int]:
+    """Call a tool, and if it returns a 4xx/5xx, ask the LLM to fix args and retry once.
+
+    Returns (result_str, parsed_result, updated_error_count).
+    """
+    for attempt in range(1 + MAX_RETRIES):
+        try:
+            result_str = tool.invoke(resolved_args)
+        except Exception as e:
+            error_msg = f"Tool {tool.name} raised: {str(e)}"
+            log.error(error_msg)
+            return error_msg, {"error": error_msg}, error_count + 1
+
+        if not _is_api_error(result_str):
+            # Success
+            try:
+                parsed = json.loads(result_str)
+            except (json.JSONDecodeError, TypeError):
+                parsed = {"raw": result_str}
+            return result_str, parsed, error_count
+
+        # API error — try self-heal on first attempt only
+        if attempt < MAX_RETRIES:
+            log.warning(
+                f"API error from {tool.name}, attempting self-heal",
+                attempt=attempt + 1,
+            )
+            fixed_args = _ask_llm_to_fix_args(llm, tool, resolved_args, result_str)
+            if fixed_args:
+                _log_self_heal(tool.name, resolved_args, result_str, fixed_args, retry_succeeded=True)
+                resolved_args = fixed_args
+                continue
+            else:
+                _log_self_heal(tool.name, resolved_args, result_str, None, retry_succeeded=False)
+
+        # Out of retries or LLM couldn't fix — return the error
+        if attempt == MAX_RETRIES:
+            # Log that the retry also failed
+            _log_self_heal(tool.name, resolved_args, result_str, resolved_args, retry_succeeded=False)
+        log.warning(f"Tool {tool.name} failed after {attempt + 1} attempt(s)")
+        try:
+            parsed = json.loads(result_str)
+        except (json.JSONDecodeError, TypeError):
+            parsed = {"raw": result_str}
+        return result_str, parsed, error_count + 1
+
+    # Should not reach here, but just in case
+    return result_str, {"raw": result_str}, error_count + 1
 
 
 def _resolve_placeholder(value: Any, results: dict, llm) -> Any:

@@ -57,3 +57,24 @@ If the response contains a "values" array, use the first matching item.
 If the response contains a "value" object, use that directly.
 
 Return ONLY the extracted value (e.g., just the number 123), no explanation."""
+
+FIX_ARGS_PROMPT = """A Tripletex API call failed. Fix the tool arguments to avoid the error.
+
+Tool: {tool_name}
+Original arguments (JSON):
+{tool_args}
+
+API error response:
+{error_response}
+
+Tool description: {tool_description}
+Tool parameters: {tool_params}
+
+Rules:
+- Return ONLY a valid JSON object with the corrected arguments. No explanation.
+- Keep all arguments that were correct. Only fix what the error message indicates.
+- If a required field is missing, add it with a reasonable default.
+- If a field has an invalid value, fix the value.
+- If a field shouldn't be sent at all, remove it.
+- Date format: YYYY-MM-DD
+"""
