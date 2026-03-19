@@ -199,7 +199,7 @@ TESTS = [
         verify_fn=lambda: verify(
             "invoice",
             "/invoice",
-            {"fields": "id,invoiceDate,invoiceDueDate,customer,amount"},
+            {"fields": "id,invoiceDate,invoiceDueDate,customer,amountCurrency", "invoiceDateFrom": "2020-01-01", "invoiceDateTo": "2030-12-31"},
         ),
     ),
 
@@ -214,7 +214,7 @@ TESTS = [
         verify_fn=lambda: verify(
             "travel expense",
             "/travelExpense",
-            {"fields": "id,title,employee,departureDate"},
+            {"fields": "id,title,employee"},
         ),
     ),
 
