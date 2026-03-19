@@ -12,7 +12,7 @@ log = get_logger("tripletex.agent")
 
 def build_agent():
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash-001",
+        model="gemini-2.5-flash",
         google_api_key=os.environ["GOOGLE_API_KEY"],
         temperature=0,
     )
@@ -41,7 +41,9 @@ def _log_agent_messages(messages: list) -> None:
                         args=tc["args"],
                     )
             else:
-                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                content = (
+                    msg.content if isinstance(msg.content, str) else str(msg.content)
+                )
                 log.info(f"[{i}] AIMessage (final)", content=content[:1000])
 
         elif isinstance(msg, ToolMessage):
