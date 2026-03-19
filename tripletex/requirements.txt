@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+requests
+langgraph
+langchain-google-genai
+langchain-core
+python-dotenv
