@@ -1,0 +1,7 @@
+data/
+runs/
+weights/
+*.zip
+*.pt
+__pycache__/
+*.pyc
