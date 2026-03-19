@@ -76,7 +76,7 @@ ENDPOINT_ALLOWLIST: list[tuple[str, str, str]] = [
 # Manually curated descriptions for the most common tools
 TOOL_DESCRIPTIONS: dict[str, str] = {
     "search_employees": "Search employees. Use query params: firstName, lastName, email, fields (e.g. 'id,firstName,lastName'). Returns {values: [...]}.",
-    "create_employee": "Create an employee. Required: firstName, lastName. Set userType='EXTENDED' for admin access.",
+    "create_employee": "Create an employee. Required: first_name, last_name. user_type defaults to 'STANDARD'; set to 'EXTENDED' for admin access.",
     "get_employee": "Get employee by ID. Use fields param to select specific fields.",
     "update_employee": "Update employee by ID. Include version from GET response. Only send changed fields + version.",
     "search_customers": "Search customers. Use query params: name, email, fields. Returns {values: [...]}.",
@@ -114,7 +114,7 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "update_department": "Update department by ID. Include version.",
     "delete_department": "Delete department by ID.",
     "search_vouchers": "Search ledger vouchers. Use dateFrom, dateTo. Returns {values: [...]}.",
-    "create_voucher": "Create a ledger voucher.",
+    "create_voucher": "Create a ledger voucher. Required: date. NOTE: vouchers also need 'postings' which is not yet supported as a flat arg — use the raw body for complex vouchers.",
 }
 
 # Nested $ref fields that should be flattened to _id args
@@ -141,6 +141,130 @@ TRAVEL_DETAILS_FIELDS = [
     ("departureTime", str, "Departure time"),
     ("returnTime", str, "Return time"),
 ]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Pre-call validation: required fields, type coercion, defaults
+# The swagger spec says required=[] for everything, but the API actually
+# enforces these at runtime. We encode what we've learned here.
+# ────────────────────────────────────────────────────────────────────────────
+
+# tool_name -> list of (field_name, default_value_or_None)
+#   default=None means "required, no default — return error if missing"
+REQUIRED_FIELDS: dict[str, list[tuple[str, Any]]] = {
+    "create_employee": [
+        ("first_name", None),
+        ("last_name", None),
+        ("user_type", "STANDARD"),  # API rejects null userType
+    ],
+    "create_customer": [
+        ("name", None),
+        ("is_customer", True),
+    ],
+    "create_product": [
+        ("name", None),
+    ],
+    "create_order": [
+        ("customer_id", None),
+        ("order_date", None),
+        ("delivery_date", None),
+    ],
+    "create_order_line": [
+        ("order_id", None),
+    ],
+    "create_invoice": [
+        ("invoice_date", None),
+        ("invoice_due_date", None),
+        ("order_ids", None),
+    ],
+    "create_travel_expense": [
+        ("employee_id", None),
+    ],
+    "create_project": [
+        ("name", None),
+        ("project_manager_id", None),
+        ("start_date", None),
+    ],
+    "create_department": [
+        ("name", None),
+    ],
+    "create_voucher": [
+        ("date", None),
+    ],
+}
+
+# Fields that should be coerced to specific types
+# tool_name -> field_name -> target_type
+TYPE_COERCIONS: dict[str, dict[str, type]] = {
+    "create_product": {
+        "price_excluding_vat_currency": float,
+        "cost_excluding_vat_currency": float,
+    },
+    "create_order": {
+        "customer_id": int,
+    },
+    "create_order_line": {
+        "order_id": int,
+        "count": float,
+        "unit_price_excluding_vat_currency": float,
+        "product_id": int,
+    },
+    "create_invoice": {
+        # order_ids is a comma-separated string — validated in _rebuild_body
+    },
+    "create_travel_expense": {
+        "employee_id": int,
+        "project_id": int,
+        "department_id": int,
+    },
+    "create_project": {
+        "project_manager_id": int,
+        "customer_id": int,
+        "department_id": int,
+    },
+    "create_employee": {
+        "department_id": int,
+    },
+    "create_customer": {
+        "account_manager_id": int,
+    },
+}
+
+
+def validate_and_fix(tool_name: str, args: dict) -> tuple[dict, list[str]]:
+    """Validate tool args before API call. Returns (fixed_args, errors).
+
+    - Fills defaults for required fields when possible
+    - Coerces types (str "1500" -> float 1500.0)
+    - Returns error strings for unfixable issues (caller returns them as tool result)
+    """
+    args = dict(args)  # don't mutate the original
+    errors = []
+
+    # 1. Check required fields, fill defaults
+    for field, default in REQUIRED_FIELDS.get(tool_name, []):
+        val = args.get(field)
+        if val is None or val == "":
+            if default is not None:
+                args[field] = default
+            else:
+                errors.append(f"Required field '{field}' is missing.")
+
+    # 2. Type coercions
+    for field, target_type in TYPE_COERCIONS.get(tool_name, {}).items():
+        val = args.get(field)
+        if val is not None and not isinstance(val, target_type):
+            try:
+                args[field] = target_type(val)
+            except (ValueError, TypeError):
+                errors.append(f"Field '{field}' must be {target_type.__name__}, got {type(val).__name__}: {val}")
+
+    # 3. Boolean coercion for any field that looks boolean
+    for field, val in args.items():
+        if isinstance(val, str) and val.lower() in ("true", "false"):
+            args[field] = val.lower() == "true"
+
+    return args, errors
 
 
 def _resolve_ref(spec: dict, ref: str) -> dict:
@@ -350,16 +474,26 @@ def _build_body_tool(
 
     model = create_model(f"{tool_name}_args", **fields)
 
-    def _make_run(p, m, nr, sn):
+    def _make_run(p, m, nr, sn, tn):
         def _run(**kwargs):
             resource_id = kwargs.pop("id", None)
+            # Validate and fix args before calling API
+            kwargs, validation_errors = validate_and_fix(tn, kwargs)
+            if validation_errors:
+                return json.dumps({
+                    "status": 400,
+                    "message": "Pre-call validation failed",
+                    "validationMessages": [{"field": e.split("'")[1] if "'" in e else "", "message": e} for e in validation_errors],
+                })
             body = _rebuild_body(kwargs, nr, sn)
+            if isinstance(body, str):  # _rebuild_body returns error string on failure
+                return json.dumps({"status": 400, "message": body})
             endpoint = p.replace("{id}", str(resource_id)) if resource_id else p
             return make_request_fn(m.upper(), endpoint, body=body)
         return _run
 
     return StructuredTool.from_function(
-        func=_make_run(path, method, nested_rebuilders, schema_name),
+        func=_make_run(path, method, nested_rebuilders, schema_name, tool_name),
         name=tool_name,
         description=description,
         args_schema=model,
