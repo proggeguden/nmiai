@@ -13,6 +13,13 @@ READONLY_FIELDS = frozenset({
     "systemGenerated", "isDeletable", "isProxy",
 })
 
+# Fields to skip because sending them alongside related fields causes 422 validation errors.
+# e.g. Tripletex auto-calculates priceIncludingVatCurrency from priceExcludingVatCurrency;
+# sending both (with the incl. one defaulting to 0) triggers a mismatch error.
+SKIP_FIELDS = frozenset({
+    "priceIncludingVatCurrency",
+})
+
 # Curated allowlist: (path, method) -> tool_name
 ENDPOINT_ALLOWLIST: list[tuple[str, str, str]] = [
     # Employee
@@ -258,7 +265,7 @@ def _build_body_tool(
         ref_map = REF_FIELDS_TO_FLATTEN.get(schema_name, {})
 
         for prop_name, prop_def in props.items():
-            if prop_name in READONLY_FIELDS:
+            if prop_name in READONLY_FIELDS or prop_name in SKIP_FIELDS:
                 continue
             if prop_def.get("readOnly"):
                 continue
