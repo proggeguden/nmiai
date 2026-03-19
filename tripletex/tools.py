@@ -1,10 +1,12 @@
+"""Tripletex API tools — credentials, request helpers, and swagger-generated typed tools."""
+
+import os
 import time
-from typing import Optional
 
 import requests
-from langchain_core.tools import tool
 
 from logger import get_logger
+from swagger_tools import generate_tools, get_tool_summaries
 
 log = get_logger("tripletex.api")
 
@@ -77,7 +79,7 @@ def _make_request(method: str, endpoint: str, params: dict = None, body: dict = 
             endpoint=endpoint,
             status=status,
             elapsed_ms=elapsed_ms,
-            response=resp.text[:2000],  # cap to avoid log spam
+            response=resp.text[:2000],
         )
     else:
         log.info(
@@ -92,59 +94,15 @@ def _make_request(method: str, endpoint: str, params: dict = None, body: dict = 
     return resp.text
 
 
-@tool
-def tripletex_get(endpoint: str, params: Optional[dict] = None) -> str:
-    """Make a GET request to the Tripletex API.
-
-    Args:
-        endpoint: API path, e.g. "/employee" or "/customer"
-        params: Optional query parameters, e.g. {"fields": "id,firstName,lastName", "count": 100}
+def load_tools(swagger_path: str = None):
+    """Load typed tools from swagger.json.
 
     Returns:
-        JSON response as a string
+        Tuple of (tools_list, tool_summaries_str)
     """
-    return _make_request("GET", endpoint, params=params)
+    if swagger_path is None:
+        swagger_path = os.path.join(os.path.dirname(__file__), "swagger.json")
 
-
-@tool
-def tripletex_post(endpoint: str, body: dict) -> str:
-    """Make a POST request to the Tripletex API to create a resource.
-
-    Args:
-        endpoint: API path, e.g. "/employee" or "/customer"
-        body: JSON body as a dict
-
-    Returns:
-        JSON response as a string
-    """
-    return _make_request("POST", endpoint, body=body)
-
-
-@tool
-def tripletex_put(endpoint: str, body: dict) -> str:
-    """Make a PUT request to the Tripletex API to update a resource.
-
-    Args:
-        endpoint: API path including ID, e.g. "/employee/123"
-        body: JSON body as a dict with updated fields
-
-    Returns:
-        JSON response as a string
-    """
-    return _make_request("PUT", endpoint, body=body)
-
-
-@tool
-def tripletex_delete(endpoint: str) -> str:
-    """Make a DELETE request to the Tripletex API.
-
-    Args:
-        endpoint: API path including ID, e.g. "/employee/123"
-
-    Returns:
-        HTTP status code and response text
-    """
-    return _make_request("DELETE", endpoint)
-
-
-ALL_TOOLS = [tripletex_get, tripletex_post, tripletex_put, tripletex_delete]
+    tools = generate_tools(swagger_path, _make_request)
+    summaries = get_tool_summaries(tools)
+    return tools, summaries

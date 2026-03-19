@@ -7,14 +7,22 @@ Scored on field-by-field correctness + API call efficiency.
 
 ## Stack
 - Python + FastAPI
-- LangGraph `create_react_agent` with Gemini (`gemini-2.0-flash`)
+- LangGraph StateGraph (planner/executor) with Gemini (`gemini-2.5-flash`)
 - Cloud Run (GCP) for deployment
+
+## Architecture: Planner → Executor
+1. **Planner** — single LLM call produces a JSON plan (list of PlanSteps)
+2. **Executor** — pure Python loop calls typed tools step-by-step, resolving $step_N placeholders
+3. **check_done** — routes back to executor or ends (also aborts after 3 errors)
 
 ## Key Files
 - `main.py` — FastAPI app, request parsing, credential injection
-- `agent.py` — LangGraph agent setup and invocation
-- `tools.py` — tripletex_get/post/put/delete LangChain tools
-- `prompts.py` — system prompt with API patterns and scoring guidance
+- `agent.py` — LangGraph StateGraph with planner/executor/check_done nodes
+- `tools.py` — credentials, _make_request, load_tools() from swagger
+- `swagger_tools.py` — parses swagger.json → 40 typed StructuredTools (curated allowlist)
+- `state.py` — AgentState and PlanStep TypedDict schemas
+- `prompts.py` — PLANNER_PROMPT (JSON plan output) + EXECUTOR_FALLBACK_PROMPT
+- `swagger.json` — OpenAPI 3.0 spec (read at startup, 3.6MB)
 
 ## Running Locally
 ```bash
