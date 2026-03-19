@@ -3,7 +3,7 @@
 import json
 import os
 import re
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -47,7 +47,12 @@ def build_agent():
         # Parse JSON from response (handle markdown code blocks)
         plan = _parse_plan_json(raw)
 
-        log.info("Plan parsed", steps=len(plan), plan=json.dumps(plan, indent=2)[:2000])
+        log.info(
+            ">>>PLAN_START<<<\n"
+            f"{json.dumps(plan, indent=2)}\n"
+            ">>>PLAN_END<<<",
+            steps=len(plan),
+        )
 
         return {
             "plan": plan,
@@ -215,24 +220,19 @@ def _is_api_error(result_str: str) -> bool:
         return False
 
 
-SELF_HEAL_LOG = os.path.join(os.path.dirname(__file__), "self_heal_log.md")
-
-
 def _log_self_heal(tool_name: str, original_args: dict, error_response: str, fixed_args: dict | None, retry_succeeded: bool) -> None:
-    """Append a self-heal attempt to self_heal_log.md for later analysis."""
-    try:
-        timestamp = datetime.now().isoformat(timespec="seconds")
-        with open(SELF_HEAL_LOG, "a") as f:
-            f.write(f"\n## {timestamp} — `{tool_name}`\n\n")
-            f.write(f"**Original args:**\n```json\n{json.dumps(original_args, indent=2, default=str)}\n```\n\n")
-            f.write(f"**API error:**\n```json\n{error_response[:2000]}\n```\n\n")
-            if fixed_args:
-                f.write(f"**LLM fix:**\n```json\n{json.dumps(fixed_args, indent=2, default=str)}\n```\n\n")
-            else:
-                f.write("**LLM fix:** _(failed to produce fix)_\n\n")
-            f.write(f"**Retry succeeded:** {'Yes' if retry_succeeded else 'No'}\n\n---\n")
-    except Exception as e:
-        log.warning(f"Could not write self-heal log: {e}")
+    """Log a self-heal attempt with clear delimiters for easy extraction from cloud logs."""
+    log.warning(
+        ">>>SELF_HEAL_START<<<\n"
+        f"tool: {tool_name}\n"
+        f"original_args: {json.dumps(original_args, indent=2, default=str)}\n"
+        f"api_error: {error_response[:2000]}\n"
+        f"llm_fix: {json.dumps(fixed_args, indent=2, default=str) if fixed_args else 'NONE'}\n"
+        f"retry_succeeded: {retry_succeeded}\n"
+        ">>>SELF_HEAL_END<<<",
+        tool=tool_name,
+        retry_succeeded=retry_succeeded,
+    )
 
 
 def _ask_llm_to_fix_args(

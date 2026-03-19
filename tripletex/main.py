@@ -71,6 +71,13 @@ async def solve(request: Request, body: SolveRequest):
         base_url=body.tripletex_credentials.base_url,
         token_prefix=body.tripletex_credentials.session_token[:8] + "...",
     )
+    # Log the full prompt with clear delimiters so it can be copied as a test example
+    log.info(
+        ">>>PROMPT_START<<<\n"
+        f"{body.prompt}\n"
+        ">>>PROMPT_END<<<",
+        request_id=request_id,
+    )
 
     # Optional API key protection
     api_key = os.environ.get("API_KEY")
@@ -101,6 +108,14 @@ async def solve(request: Request, body: SolveRequest):
         except Exception as e:
             log.warning(f"Could not decode file: {f.filename}", error=str(e), request_id=request_id)
             file_context += f"\n[File: {f.filename} — could not decode]\n"
+
+    if file_context:
+        log.info(
+            ">>>FILES_START<<<\n"
+            f"{file_context}\n"
+            ">>>FILES_END<<<",
+            request_id=request_id,
+        )
 
     # Run the agent
     try:
