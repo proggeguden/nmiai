@@ -77,7 +77,7 @@ def build_agent():
         log.info(
             f"Executing step {step['step_number']}: {description}",
             tool=tool_name,
-            args=args,
+            tool_args=args,
         )
 
         # Resolve $step_N placeholders
