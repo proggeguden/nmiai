@@ -6,7 +6,7 @@ calls Tripletex REST API, returns `{"status": "completed"}`.
 Scored on field-by-field correctness + API call efficiency.
 
 ## Stack
-- Python + FastAPI + LangGraph StateGraph + Gemini `gemini-2.5-flash`
+- Python + FastAPI + LangGraph StateGraph + Gemini `gemini-2.5-pro`
 - Cloud Run (GCP) for deployment
 
 ## Architecture: Planner → Executor → Self-Heal

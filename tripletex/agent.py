@@ -24,7 +24,7 @@ def build_agent():
     tool_map = {t.name: t for t in tools}
 
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
+        model="gemini-2.5-pro",
         google_api_key=os.environ["GOOGLE_API_KEY"],
         temperature=0,
     )
