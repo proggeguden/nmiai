@@ -9,4 +9,7 @@ COPY . .
 
 EXPOSE 8080
 
+ENV LOG_FORMAT=json
+ENV LOG_LEVEL=INFO
+
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
