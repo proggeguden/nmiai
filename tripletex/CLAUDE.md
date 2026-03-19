@@ -19,8 +19,8 @@ Scored on field-by-field correctness + API call efficiency.
 ## Running Locally
 ```bash
 cp .env.example .env  # add GOOGLE_API_KEY
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8080
+pip3 install -r requirements.txt
+python3 -m uvicorn main:app --reload --port 8080
 ```
 Local HTTPS tunnel for testing submissions:
 ```bash
