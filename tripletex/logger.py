@@ -115,18 +115,23 @@ class _Logger:
 
     def debug(self, msg: str, **kwargs):
         self._log.debug(msg, extra=kwargs, stacklevel=2)
+        sys.stdout.flush()
 
     def info(self, msg: str, **kwargs):
         self._log.info(msg, extra=kwargs, stacklevel=2)
+        sys.stdout.flush()
 
     def warning(self, msg: str, **kwargs):
         self._log.warning(msg, extra=kwargs, stacklevel=2)
+        sys.stdout.flush()
 
     def error(self, msg: str, **kwargs):
         self._log.error(msg, extra=kwargs, stacklevel=2)
+        sys.stdout.flush()
 
     def exception(self, msg: str, **kwargs):
         self._log.exception(msg, extra=kwargs, stacklevel=2)
+        sys.stdout.flush()
 
 
 def get_logger(name: str) -> _Logger:

@@ -34,6 +34,8 @@ produce a JSON array of execution steps. Each step calls exactly one tool.
 7. When searching, use the most specific filter available (name, email, etc.).
 8. For DELETE tasks: search first to find the ID, then delete.
 9. For UPDATE tasks: GET first to get current version, then update with version.
+10. When creating multiple entities of the same type, use the bulk tool (e.g. create_employees_bulk)
+    with a JSON array instead of multiple individual create calls. This saves API calls.
 
 ## Output format
 Return ONLY a JSON array of steps, no other text:

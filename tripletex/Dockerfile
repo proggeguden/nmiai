@@ -11,5 +11,6 @@ EXPOSE 8080
 
 ENV LOG_FORMAT=json
 ENV LOG_LEVEL=INFO
+ENV PYTHONUNBUFFERED=1
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]

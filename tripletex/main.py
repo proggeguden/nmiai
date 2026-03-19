@@ -1,5 +1,6 @@
 import base64
 import os
+import sys
 import time
 import traceback
 import uuid
@@ -130,6 +131,7 @@ async def solve(request: Request, body: SolveRequest):
             traceback=traceback.format_exc(),
         )
         # Still return completed — we don't want to timeout; partial work may have happened
+        sys.stdout.flush()
         return JSONResponse({"status": "completed"})
 
     stats = get_stats()
@@ -142,4 +144,5 @@ async def solve(request: Request, body: SolveRequest):
         api_errors=stats["api_errors"],
     )
 
+    sys.stdout.flush()
     return JSONResponse({"status": "completed"})

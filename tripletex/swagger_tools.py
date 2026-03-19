@@ -114,7 +114,7 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "update_department": "Update department by ID. Include version.",
     "delete_department": "Delete department by ID.",
     "search_vouchers": "Search ledger vouchers. Use dateFrom, dateTo. Returns {values: [...]}.",
-    "create_voucher": "Create a ledger voucher. Required: date. NOTE: vouchers also need 'postings' which is not yet supported as a flat arg — use the raw body for complex vouchers.",
+    "create_voucher": "Create a ledger voucher. Required: date, postings (JSON array of {account: {id}, amount}). Debit=positive, credit=negative.",
 }
 
 # Nested $ref fields that should be flattened to _id args
@@ -190,6 +190,7 @@ REQUIRED_FIELDS: dict[str, list[tuple[str, Any]]] = {
     ],
     "create_voucher": [
         ("date", None),
+        ("postings", None),
     ],
 }
 
@@ -414,6 +415,14 @@ def _build_body_tool(
                 nested_rebuilders["orderLines"] = "order_lines_json"
                 continue
 
+            if prop_name == "postings" and schema_name == "Voucher":
+                fields["postings"] = (Optional[str], Field(
+                    default=None,
+                    description='Postings as JSON array. Each item: {"account": {"id": <int>}, "amount": <number>}. Debit positive, credit negative.'
+                ))
+                nested_rebuilders["postings"] = "postings_json"
+                continue
+
             if ref and prop_name in ref_map:
                 # Flatten ref to _id field
                 flat_name = f"{_camel_to_snake(prop_name)}_id"
@@ -549,6 +558,14 @@ def _rebuild_body(kwargs: dict, nested_rebuilders: dict, schema_name: Optional[s
                 return f"Error: order_lines must be valid JSON array"
             continue
 
+        # Handle postings JSON
+        if key == "postings" and nested_rebuilders.get("postings") == "postings_json":
+            try:
+                body["postings"] = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                return f"Error: postings must be valid JSON array"
+            continue
+
         # Handle order_ids for invoice
         if key == "order_ids":
             try:
@@ -590,6 +607,45 @@ def _swagger_type_to_python(prop_def: dict) -> type:
     return str
 
 
+BULK_ENDPOINTS = [
+    ("create_employees_bulk", "/employee/list", "Employee", "Create multiple employees in one call. items_json: JSON array of employee objects (camelCase fields: firstName, lastName, userType, etc.)."),
+    ("create_customers_bulk", "/customer/list", "Customer", "Create multiple customers in one call. items_json: JSON array of customer objects (camelCase fields: name, isCustomer, etc.)."),
+    ("create_products_bulk", "/product/list", "Product", "Create multiple products in one call. items_json: JSON array of product objects (camelCase fields: name, priceExcludingVatCurrency, etc.)."),
+    ("create_orders_bulk", "/order/list", "Order", "Create multiple orders in one call (max 100). items_json: JSON array of order objects (camelCase fields: customer.id, orderDate, deliveryDate, orderLines, etc.)."),
+    ("create_departments_bulk", "/department/list", "Department", "Create multiple departments in one call. items_json: JSON array of department objects (camelCase fields: name, etc.)."),
+    ("create_projects_bulk", "/project/list", "Project", "Create multiple projects in one call. items_json: JSON array of project objects (camelCase fields: name, projectManager.id, startDate, etc.)."),
+]
+
+
+def _build_bulk_tools(make_request_fn) -> list[StructuredTool]:
+    """Build hand-crafted bulk create tools for /list endpoints."""
+    tools = []
+    for tool_name, endpoint, schema_name, description in BULK_ENDPOINTS:
+        fields = {
+            "items_json": (str, Field(description="JSON array of objects to create. Use camelCase field names matching the Tripletex API.")),
+        }
+        model = create_model(f"{tool_name}_args", **fields)
+
+        def _make_run(ep, tn):
+            def _run(items_json: str):
+                try:
+                    items = json.loads(items_json)
+                except (json.JSONDecodeError, TypeError):
+                    return json.dumps({"status": 400, "message": "items_json must be valid JSON array"})
+                if not isinstance(items, list):
+                    return json.dumps({"status": 400, "message": "items_json must be a JSON array, not a single object"})
+                return make_request_fn("POST", ep, body=items)
+            return _run
+
+        tools.append(StructuredTool.from_function(
+            func=_make_run(endpoint, tool_name),
+            name=tool_name,
+            description=description,
+            args_schema=model,
+        ))
+    return tools
+
+
 def generate_tools(swagger_path: str, make_request_fn) -> list[StructuredTool]:
     """Parse swagger.json and generate typed tools.
 
@@ -621,6 +677,9 @@ def generate_tools(swagger_path: str, make_request_fn) -> list[StructuredTool]:
             t = _build_body_tool(spec, path, method, tool_name, description, make_request_fn)
 
         tools.append(t)
+
+    # Add bulk /list tools
+    tools.extend(_build_bulk_tools(make_request_fn))
 
     return tools
 
