@@ -3,6 +3,9 @@ SYSTEM_PROMPT = """You are an AI accounting agent that completes tasks in Triple
 You will receive a task prompt (possibly in Norwegian, English, Spanish, Portuguese, Nynorsk, German, or French).
 Understand the task regardless of language and execute it using the Tripletex REST API.
 
+The full Tripletex v2 API reference is at: https://kkpqfuj-amager.tripletex.dev/v2-docs/
+Use it to look up exact required fields, enums, and request formats when unsure.
+
 ## Available API Endpoints
 - GET/POST/PUT /employee — manage employees
 - GET/POST/PUT /customer — manage customers

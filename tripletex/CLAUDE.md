@@ -39,6 +39,7 @@ gcloud run deploy tripletex \
 Submit endpoint URL at: https://app.ainm.no/submit/tripletex
 
 ## Tripletex API
+- **API docs (critical):** https://kkpqfuj-amager.tripletex.dev/v2-docs/
 - Auth: Basic Auth, username `0`, password = session_token
 - Proxy base URL (competition): provided per-request in `tripletex_credentials.base_url`
 - Sandbox base URL: `https://kkpqfuj-amager.tripletex.dev/v2`
