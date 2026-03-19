@@ -43,7 +43,10 @@ def call_solve(prompt: str, label: str = ""):
 
     resp = requests.post(f"{BASE_URL}/solve", json=payload, timeout=310)
     print(f"Status: {resp.status_code}")
-    print(f"Response: {resp.json()}")
+    try:
+        print(f"Response: {resp.json()}")
+    except Exception:
+        print(f"Response (raw): {resp.text}")
     return resp
 
 

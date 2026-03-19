@@ -107,5 +107,27 @@ def setup_logging() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-def get_logger(name: str) -> logging.Logger:
-    return logging.getLogger(name)
+class _Logger:
+    """Thin wrapper so callers can pass extra fields as kwargs instead of extra={}."""
+
+    def __init__(self, name: str):
+        self._log = logging.getLogger(name)
+
+    def debug(self, msg: str, **kwargs):
+        self._log.debug(msg, extra=kwargs, stacklevel=2)
+
+    def info(self, msg: str, **kwargs):
+        self._log.info(msg, extra=kwargs, stacklevel=2)
+
+    def warning(self, msg: str, **kwargs):
+        self._log.warning(msg, extra=kwargs, stacklevel=2)
+
+    def error(self, msg: str, **kwargs):
+        self._log.error(msg, extra=kwargs, stacklevel=2)
+
+    def exception(self, msg: str, **kwargs):
+        self._log.exception(msg, extra=kwargs, stacklevel=2)
+
+
+def get_logger(name: str) -> _Logger:
+    return _Logger(name)
