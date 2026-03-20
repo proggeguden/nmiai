@@ -1,0 +1,175 @@
+SHOPPING LIST — Products to Photograph
+==================================================
+
+1. EGG FRITTGÅENDE M/L 6PK PRIOR
+   Barcode: 7039610000196
+   Annotations: 64, Has ref: Yes
+   ⚠ Confused 19 times in val
+
+2. MÜSLI FRUKT MÜSLI 700G AXA
+   Barcode: N/A
+   Annotations: 14, Has ref: NO
+   ⚠ Confused 2 times in val
+
+3. LADY GREY TE 200G TWININGS
+   Barcode: 70177087807
+   Annotations: 6, Has ref: Yes
+   ⚠ Confused 3 times in val
+
+4. Galåvolden Store Gårdsegg 6stk
+   Barcode: N/A
+   Annotations: 6, Has ref: NO
+   ⚠ Confused 3 times in val
+
+5. Tørresvik Gård Kvalitetsegg 10stk
+   Barcode: N/A
+   Annotations: 33, Has ref: NO
+   ⚠ Confused 6 times in val
+
+6. Jacobs 10 Gårdsegg
+   Barcode: N/A
+   Annotations: 12, Has ref: NO
+   ⚠ Confused 1 times in val
+
+7. EGG FRITTGÅENDE 12STK PRIOR
+   Barcode: 7039610000172
+   Annotations: 84, Has ref: Yes
+   ⚠ Confused 16 times in val
+
+8. Tørresvik Gårdsegg 6stk
+   Barcode: N/A
+   Annotations: 5, Has ref: NO
+   ⚠ Confused 1 times in val
+
+9. BRUSCHETTA LIGURISK 130G OLIVINO
+   Barcode: 8032529645341
+   Annotations: 1, Has ref: NO
+
+10. FRIELE FROKOST KOFFEINFRI FILTERMALT 250G
+   Barcode: N/A
+   Annotations: 1, Has ref: NO
+
+11. GRANOLA RASPBERRY  500G START!
+   Barcode: 7310130013423
+   Annotations: 1, Has ref: Yes
+
+12. STORFE SHORT RIBS GREATER OMAHA LV
+   Barcode: N/A
+   Annotations: 1, Has ref: NO
+
+13. SJOKOLADEDRIKK 10X32G RETT I KOPPEN
+   Barcode: 7039010563857
+   Annotations: 4, Has ref: Yes
+   ⚠ Confused 1 times in val
+
+14. ESPRESSO ITALIAN HELE BØNNER 500G JACOBS
+   Barcode: 7040913337001
+   Annotations: 5, Has ref: Yes
+   ⚠ Confused 1 times in val
+
+15. SMØREMYK MELKEFRI 400G BERIT
+   Barcode: N/A
+   Annotations: 2, Has ref: NO
+
+16. Leka Egg 10stk
+   Barcode: N/A
+   Annotations: 2, Has ref: NO
+
+17. EGG FRITTGÅENDE M/L/XL SOLEGG 12STK PRIO
+   Barcode: 7039610009021
+   Annotations: 50, Has ref: Yes
+   ⚠ Confused 7 times in val
+
+18. FRIELE FROKOST HEL 500G
+   Barcode: N/A
+   Annotations: 9, Has ref: NO
+   ⚠ Confused 1 times in val
+
+19. SMØR USALTET 250G TINE
+   Barcode: 7038010011702
+   Annotations: 3, Has ref: Yes
+
+20. MELANGE FLYTENDE MARGARIN M/SMØR 500ML
+   Barcode: N/A
+   Annotations: 3, Has ref: NO
+
+21. GRANOLA CRAZELNUT 500G START!
+   Barcode: 7310130013416
+   Annotations: 3, Has ref: Yes
+
+22. Sunnmørsegg 10stk
+   Barcode: N/A
+   Annotations: 3, Has ref: NO
+
+23. Galåvolden Store Gårdsegg 10stk
+   Barcode: N/A
+   Annotations: 4, Has ref: NO
+
+24. EARL GREY TEA ØKOLOGISK 15POS JACOBS
+   Barcode: 7035620008542
+   Annotations: 2, Has ref: Yes
+
+25. SVARTHAVREGRYN LETTKOKTE 900G DEN SORTE
+   Barcode: N/A
+   Annotations: 6, Has ref: NO
+
+26. Gårdsegg fra Fana 10stk
+   Barcode: N/A
+   Annotations: 6, Has ref: NO
+
+27. OB PROCOMFORT NORMAL 16ST
+   Barcode: 3574660245615
+   Annotations: 1, Has ref: Yes
+
+28. MORENEPOTETER GULE 650G BJERTNÆS&HOEL
+   Barcode: 7090037180045
+   Annotations: 1, Has ref: Yes
+
+29. DAVE&JON'S DADLER SOUR COLA 125G
+   Barcode: 7350054797405
+   Annotations: 1, Has ref: Yes
+
+30. PANNEKAKER GROVE STEKTE 480G ÅMLI
+   Barcode: 7090000698027
+   Annotations: 1, Has ref: Yes
+
+31. GRØNN TE CHAI 25POS TWININGS
+   Barcode: 70177173357
+   Annotations: 1, Has ref: Yes
+
+32. SANDWICH PESTO 37G WASA
+   Barcode: 7300400483025
+   Annotations: 1, Has ref: Yes
+
+33. HAVREGRYN STORE GLUTENFRI 1KG AXA
+   Barcode: 7044416014810
+   Annotations: 1, Has ref: Yes
+
+34. EGG M/L ØKOLOGISKE 10STK VILJE
+   Barcode: 7035620057359
+   Annotations: 1, Has ref: Yes
+
+35. FLAT WHITE 16KAPSLER DOLCE GUSTO
+   Barcode: 7613036596251
+   Annotations: 1, Has ref: Yes
+
+36. EXCELSO COLOMBIA HELE BØNNER 500G JACOBS
+   Barcode: 7040913336981
+   Annotations: 1, Has ref: Yes
+
+37. FROKOSTBLANDING LION 350G NESTLE
+   Barcode: 5900020023582
+   Annotations: 1, Has ref: Yes
+
+38. ASPARGES GRØNN
+   Barcode: 4521
+   Annotations: 1, Has ref: Yes
+
+39. GÅRDSEGG EKSTRA STORE 6STK EK
+   Barcode: 7090000515027
+   Annotations: 1, Has ref: Yes
+
+40. SURDEIGKJEKS 100G SÆTRES BESTE
+   Barcode: 7039317008167
+   Annotations: 1, Has ref: Yes
+
