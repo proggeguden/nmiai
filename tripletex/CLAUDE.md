@@ -50,7 +50,7 @@ python3 build_endpoint_catalog.py --schema Customer  # show one schema
 | Var | Default | Purpose |
 |-----|---------|---------|
 | `GOOGLE_API_KEY` | (required) | Gemini API key |
-| `GEMINI_MODEL` | `gemini-2.5-pro` | Model name |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Model name |
 | `USE_GENERIC_TOOLS` | `true` | Set to `false` to use legacy typed tools |
 
 ## Running Locally

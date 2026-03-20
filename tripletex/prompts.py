@@ -42,7 +42,7 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - "prima"/"bonus"/"Prämie"/"bonificación" = bonus
 - "lønnsslipp"/"payslip"/"nómina"/"Gehaltsabrechnung"/"bulletin de paie" = payslip
 
-## Workflow recipes
+## Workflow hints (use as guidance, adapt to the specific task)
 1. **Create customer + invoice**: create customer → create order (with orderLines, deliveryDate=orderDate) → create invoice (or use PUT /order/{{id}}/:invoice)
 2. **Register payment on "existing" invoice**: create customer (with org number, name) → create order (with orderLines matching the described invoice amount, set deliveryDate=orderDate) → PUT /order/{{id}}/:invoice to create invoice → GET /invoice (by customer ID) to get invoice ID and amount → GET /invoice/paymentType → PUT /invoice/{{id}}/:payment
 3. **Send invoice**: create invoice → PUT /invoice/{{id}}/:send with sendType=EMAIL
@@ -50,8 +50,8 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 5. **Create project with manager**: create department → create employee (with department, userType="STANDARD") →
    PUT /employee/entitlement/:grantEntitlementsByTemplate (query_params: employeeId=$step_N.value.id, template="ALL_PRIVILEGES") →
    create customer → create project with projectManager:{{id}} referencing the employee
-6. **Travel expense**: find/create employee → create travel expense with travelDetails nested object
-7. **Voucher**: find ledger accounts → create voucher with postings array (debit=positive, credit=negative, must sum to 0)
+6. **Travel expense**: POST /travelExpense creates the shell (employee, travelDetails). Costs and per diems are separate sub-resources: POST /travelExpense/cost, POST /travelExpense/perDiemCompensation — each needs travelExpense:{{id}} reference.
+7. **Voucher**: Postings use debit=positive, credit=negative, must sum to 0. If posting has vatType, use GROSS amount — Tripletex auto-generates the VAT line. For supplier invoices: credit to 2400 (AP) with supplier ref, debit to expense account with vatType.
 8. **Register supplier**: POST /supplier with name, organizationNumber, email
 9. **Update entity**: GET first to get current version → PUT with version field
 10. **Delete entity**: search to find ID → DELETE /entity/{{id}}
@@ -117,6 +117,24 @@ Return ONLY a JSON array of steps, no other text:
 {task}
 """
 
+PLANNER_PROFILES = [
+    {
+        "name": "cautious",
+        "temperature": 0,
+        "prefix": "You are a cautious planner. Always check prerequisites exist before creating dependent entities. Prefer more steps to prevent errors.",
+    },
+    {
+        "name": "efficient",
+        "temperature": 0.2,
+        "prefix": "You are an efficiency-focused planner. Minimize API calls. Use bulk endpoints. Skip optional lookups when defaults work.",
+    },
+    {
+        "name": "creative",
+        "temperature": 0.4,
+        "prefix": "You are a creative planner. Consider alternative approaches. If the obvious approach has known pitfalls, find a workaround.",
+    },
+]
+
 EXECUTOR_FALLBACK_PROMPT = """Given this API response, extract the requested value.
 
 API response:
@@ -128,6 +146,30 @@ If the response contains a "values" array, use the first matching item.
 If the response contains a "value" object, use that directly.
 
 Return ONLY the extracted value (e.g., just the number 123), no explanation."""
+
+REPLAN_PROMPT = """A Tripletex API call failed. Decide how to proceed.
+
+Failed step: {method} {path}
+Args: {args}
+Error: {error_response}
+Endpoint schema: {endpoint_schema}
+
+Remaining plan steps: {remaining_steps}
+Previous results: {previous_results}
+Original task: {original_task}
+
+You have 3 options:
+1. **retry** — Fix the args and retry the same endpoint. Use when the error is about wrong field values, missing fields, or wrong format.
+2. **skip** — Skip this step entirely. Use when the step is not essential or the error indicates a fundamental limitation.
+3. **replace** — Replace this step AND all remaining steps with new steps. Use when a completely different approach is needed (e.g., wrong endpoint, need to break into sub-steps, need to add prerequisite steps).
+
+Return ONLY a JSON object:
+- Retry: {{"action": "retry", "args": {{"method": "...", "path": "...", "query_params": {{}}, "body": {{}}}}}}
+- Skip: {{"action": "skip", "reason": "..."}}
+- Replace: {{"action": "replace", "steps": [{{"step_number": N, "tool_name": "call_api", "args": {{}}, "description": "..."}}]}}
+
+For "replace", start step_number from {next_step_number}. Use $step_N.value.id to reference results from completed steps.
+"""
 
 FIX_ARGS_PROMPT = """A Tripletex API call failed. Fix the call_api arguments to avoid the error.
 

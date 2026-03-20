@@ -21,4 +21,5 @@ class AgentState(TypedDict):
     results: dict[str, Any]  # "step_1" -> parsed JSON response
     completed_steps: list[int]
     error_count: int
+    replan_count: int
     original_prompt: str

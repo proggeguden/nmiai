@@ -134,5 +134,77 @@
     "category": "payroll",
     "source": "gcloud-log",
     "description": "Run payroll with base salary + bonus (Spanish)"
+  },
+  {
+    "id": 18,
+    "prompt": "Opprett ein ordre for kunden Vestfjord AS (org.nr 960144015) med produkta Konsulenttimar (1874) til 34750 kr og Nettverksteneste (9344) til 14350 kr. Konverter ordren til faktura og registrer full betaling.",
+    "language": "nn",
+    "category": "payment",
+    "source": "gcloud-log",
+    "description": "Create order with products, invoice, and register payment (Nynorsk)"
+  },
+  {
+    "id": 19,
+    "prompt": "Establezca un precio fijo de 266550 NOK en el proyecto \"Seguridad de datos\" para Montaña SL (org. nº 865036981). El director del proyecto es Sofía Pérez (sofia.perez@example.org). Facture al cliente el 50 % del precio fijo como pago parcial.",
+    "language": "es",
+    "category": "project",
+    "source": "gcloud-log",
+    "description": "Create fixed-price project with partial invoice (Spanish)"
+  },
+  {
+    "id": 20,
+    "prompt": "Erfassen Sie 14 Stunden für Anna Wagner (anna.wagner@example.org) auf der Aktivität \"Analyse\" im Projekt \"Sicherheitsaudit\" für Waldstein GmbH (Org.-Nr. 948366207). Stundensatz: 1150 NOK/h. Erstellen Sie eine Projektrechnung an den Kunden basierend auf den erfassten Stunden.",
+    "language": "de",
+    "category": "invoice",
+    "source": "gcloud-log",
+    "description": "Log hours and generate project invoice (German)"
+  },
+  {
+    "id": 21,
+    "prompt": "Crie uma fatura para o cliente Montanha Lda (org. nº 869972401) com três linhas de produto: Sessão de formação (7733) a 22950 NOK com 25 % IVA, Licença de software (6106) a 10250 NOK com 15 % IVA (alimentos), e Manutenção (1351) a 3150 NOK com 0 % IVA (isento).",
+    "language": "pt",
+    "category": "invoice",
+    "source": "gcloud-log",
+    "description": "Create invoice with multiple VAT rates (Portuguese)"
+  },
+  {
+    "id": 22,
+    "prompt": "Enregistrez le fournisseur Rivière SARL avec le numéro d'organisation 853420409. E-mail : faktura@riviresarl.no.",
+    "language": "fr",
+    "category": "supplier",
+    "source": "gcloud-log",
+    "description": "Register supplier (French)"
+  },
+  {
+    "id": 23,
+    "prompt": "Enregistrez une note de frais de déplacement pour Arthur Robert (arthur.robert@example.org) pour \"Visite client Kristiansand\". Le voyage a duré 5 jours avec indemnités journalières (taux journalier 800 NOK). Dépenses : billet d'avion 3850 NOK et taxi 650 NOK.",
+    "language": "fr",
+    "category": "travel",
+    "source": "gcloud-log",
+    "description": "Register travel expense with per diem (French)"
+  },
+  {
+    "id": 24,
+    "prompt": "Create three departments in Tripletex: \"Drift\", \"Innkjøp\", and \"Salg\".",
+    "language": "en",
+    "category": "department",
+    "source": "gcloud-log",
+    "description": "Create three departments (English)"
+  },
+  {
+    "id": 25,
+    "prompt": "Crie uma dimensão contabilística personalizada \"Region\" com os valores \"Vestlandet\" e \"Midt-Norge\". Em seguida, lance um documento na conta 6860 por 31050 NOK, vinculado ao valor de dimensão \"Vestlandet\".",
+    "language": "pt",
+    "category": "voucher",
+    "source": "gcloud-log",
+    "description": "Create custom accounting dimension and post voucher (Portuguese)"
+  },
+  {
+    "id": 26,
+    "prompt": "Hemos recibido la factura INV-2026-1625 del proveedor Viento SL (org. nº 822028365) por 21300 NOK con IVA incluido. El importe corresponde a servicios de oficina (cuenta 7140). Registre la factura del proveedor con el IVA soportado correcto (25 %).",
+    "language": "es",
+    "category": "invoice",
+    "source": "gcloud-log",
+    "description": "Register supplier invoice with VAT (Spanish)"
   }
 ]

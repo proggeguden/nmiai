@@ -47,3 +47,24 @@
 **Error:** Produktnummeret 7127 er i bruk.
 **Request body:** [{name, number: "7127", priceExcludingVatCurrency}, ...]
 **Self-heal:** attempted, succeeded — removed number field to auto-generate
+
+## PUT /order/{id}/:invoice — 422 (bank account)
+**Date:** 2026-03-20
+**Error:** Faktura kan ikke opprettes før selskapet har registrert et bankkontonummer.
+**Request body:** N/A — query_params: {invoiceDate, sendToCustomer}
+**Self-heal:** attempted, failed — self-healer can't fix missing bank account
+**Fix applied:** ensure_bank_account step now auto-prepended to invoicing plans
+
+## POST /travelExpense — 422 (invalid fields)
+**Date:** 2026-03-20
+**Error:** Feltet eksisterer ikke i objektet. (costs, perDiemCompensations)
+**Request body:** {employee:{id}, title, travelDetails:{...}, costs:[...], perDiemCompensations:[...]}
+**Self-heal:** attempted, failed — "costs" and "perDiemCompensations" are not valid fields on TravelExpense
+**Note:** TravelExpense only has: project, employee, department, travelDetails. Per diem and costs are likely managed via separate endpoints or travelExpense sub-resources.
+
+## POST /ledger/voucher — 422 (system-generated postings)
+**Date:** 2026-03-20
+**Error:** Posteringene på rad 0 (guiRow 0) er systemgenererte og kan ikke opprettes eller endres på utsiden av Tripletex.
+**Request body:** {date, description, postings:[{account:{id}, supplier:{id}, amount:-21300}, {account:{id}, amount:21300, vatType:{id:1}}]}
+**Self-heal:** attempted, failed — vatType on a posting triggers system-generated lines that conflict
+**Note:** When using vatType on postings, Tripletex auto-generates VAT postings. Don't manually create both the gross amount and VAT posting — let the system handle VAT splitting.

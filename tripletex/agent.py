@@ -1,5 +1,6 @@
 """LangGraph agent with planner/executor architecture for Tripletex."""
 
+import concurrent.futures
 import json
 import os
 import re
@@ -11,7 +12,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 
 from logger import get_logger
-from prompts import FIX_ARGS_PROMPT, PLANNER_PROMPT
+from prompts import FIX_ARGS_PROMPT, PLANNER_PROMPT, PLANNER_PROFILES, REPLAN_PROMPT
 from state import AgentState
 from tools import load_tools
 
@@ -19,6 +20,8 @@ log = get_logger("tripletex.agent")
 
 # Sentinel for unresolved $step_N placeholders (empty search results, etc.)
 _UNRESOLVED = "__UNRESOLVED__"
+
+MAX_REPLANS = 2  # max replan attempts per invocation
 
 
 def validate_plan(plan: list[dict]) -> list[dict]:
@@ -28,6 +31,8 @@ def validate_plan(plan: list[dict]) -> list[dict]:
     - Prepends bank account registration when plan involves invoicing
     - Adds missing required fields with defaults
     - Removes conflicting fields
+    - Strips product "number" field from POST /product/list
+    - Strips inline costs/perDiems from POST /travelExpense
     - Validates enum values
     """
     try:
@@ -72,6 +77,25 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         method = args.get("method", "")
         path = args.get("path", "")
         body = args.get("body", {})
+
+        # Quick fix: strip product "number" field from POST /product or /product/list
+        if method == "POST" and path in ("/product", "/product/list"):
+            if isinstance(body, list):
+                for item in body:
+                    if isinstance(item, dict) and "number" in item:
+                        del item["number"]
+                        log.info("Validation: stripped 'number' from product in POST /product/list")
+            elif isinstance(body, dict) and "number" in body:
+                del body["number"]
+                log.info("Validation: stripped 'number' from POST /product body")
+
+        # Quick fix: strip inline costs/perDiems from POST /travelExpense
+        if method == "POST" and path == "/travelExpense" and isinstance(body, dict):
+            for inline_field in ("costs", "perDiemCompensations"):
+                if inline_field in body:
+                    del body[inline_field]
+                    log.info(f"Validation: stripped inline '{inline_field}' from POST /travelExpense")
+
         if not body or not isinstance(body, dict):
             continue
 
@@ -249,18 +273,93 @@ def _extract_text(content) -> str:
     return str(content)
 
 
+def _score_plan(plan: list[dict], prompt: str) -> float:
+    """Score a plan for quality. Higher is better."""
+    score = 100.0
+    if not plan:
+        return 0.0
+
+    # Penalty: too many steps
+    if len(plan) > 10:
+        score -= (len(plan) - 10) * 2
+    # Penalty: too few steps for complex tasks
+    if len(plan) < 2 and len(prompt) > 100:
+        score -= 20
+
+    # Bonus: employee dedup check before POST /employee
+    has_emp_post = any(
+        s.get("args", {}).get("method") == "POST"
+        and "/employee" in s.get("args", {}).get("path", "")
+        for s in plan if s.get("tool_name") == "call_api"
+    )
+    has_emp_get = any(
+        s.get("args", {}).get("method") == "GET"
+        and s.get("args", {}).get("path") == "/employee"
+        for s in plan if s.get("tool_name") == "call_api"
+    )
+    if has_emp_post and has_emp_get:
+        score += 10
+    if has_emp_post and not has_emp_get:
+        score -= 10
+
+    # Penalty: product "number" field (will cause duplicate error)
+    for step in plan:
+        if step.get("tool_name") != "call_api":
+            continue
+        args = step.get("args", {})
+        body = args.get("body", {})
+        if args.get("path") in ("/product", "/product/list"):
+            items = body if isinstance(body, list) else [body]
+            if any("number" in item for item in items if isinstance(item, dict)):
+                score -= 15
+
+    # Penalty: travel expense with inline costs
+    for step in plan:
+        if step.get("tool_name") != "call_api":
+            continue
+        args = step.get("args", {})
+        body = args.get("body", {})
+        if isinstance(body, dict) and args.get("path") == "/travelExpense":
+            if "costs" in body or "perDiemCompensations" in body:
+                score -= 20
+
+    return score
+
+
+def _score_and_select_plan(
+    plans: list[tuple[str, list[dict]]], prompt: str
+) -> tuple[str, list[dict]]:
+    """Score all candidate plans and return the best one."""
+    if not plans:
+        return "fallback", []
+
+    best_name, best_plan = plans[0]
+    best_score = _score_plan(best_plan, prompt)
+
+    for name, plan in plans[1:]:
+        s = _score_plan(plan, prompt)
+        log.info(f"Plan '{name}' scored {s:.1f} ({len(plan)} steps)")
+        if s > best_score:
+            best_name, best_plan, best_score = name, plan, s
+
+    log.info(f"Plan '{best_name}' selected with score {best_score:.1f}")
+    return best_name, best_plan
+
+
 def build_agent():
     """Build the planner/executor StateGraph."""
     tools, tool_summaries = load_tools()
     tool_map = {t.name: t for t in tools}
 
+    default_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+
     llm = ChatGoogleGenerativeAI(
-        model=os.environ.get("GEMINI_MODEL", "gemini-3.1-pro-preview"),
+        model=default_model,
         google_api_key=os.environ["GOOGLE_API_KEY"],
         temperature=0,
     )
 
-    # --- Node: planner ---
+    # --- Node: planner (multi-agent) ---
     def planner(state: AgentState) -> dict:
         prompt_text = PLANNER_PROMPT.format(
             today=date.today().isoformat(),
@@ -268,29 +367,51 @@ def build_agent():
             task=state["original_prompt"],
         )
 
-        log.info("Planner invoked", prompt_length=len(prompt_text))
+        log.info("Multi-agent planner invoked", prompt_length=len(prompt_text), profiles=len(PLANNER_PROFILES))
 
-        response = llm.invoke([HumanMessage(content=prompt_text)])
-        raw = _extract_text(response.content)
+        plans = []
 
-        log.info("Planner raw output", output=raw[:2000])
+        def run_planner(profile):
+            full_prompt = profile["prefix"] + "\n\n" + prompt_text
+            profile_llm = ChatGoogleGenerativeAI(
+                model=default_model,
+                google_api_key=os.environ["GOOGLE_API_KEY"],
+                temperature=profile["temperature"],
+            )
+            response = profile_llm.invoke([HumanMessage(content=full_prompt)])
+            raw = _extract_text(response.content)
+            return profile["name"], _parse_plan_json(raw), raw
 
-        # Parse JSON from response (handle markdown code blocks)
-        plan = _parse_plan_json(raw)
-        plan = validate_plan(plan)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            futures = [pool.submit(run_planner, p) for p in PLANNER_PROFILES]
+            for f in concurrent.futures.as_completed(futures):
+                try:
+                    name, plan, raw = f.result()
+                    log.info(f"Planner '{name}' returned {len(plan)} steps", output=raw[:1000])
+                    if plan:
+                        plans.append((name, plan))
+                except Exception as e:
+                    log.warning(f"Planner failed: {e}")
+
+        # Score and pick best plan
+        best_name, best = _score_and_select_plan(plans, state["original_prompt"])
+        best = validate_plan(best)
 
         log.info(
-            f">>>PLAN_START<<<\n{json.dumps(plan, indent=2)}\n>>>PLAN_END<<<",
-            steps=len(plan),
+            f">>>PLAN_START<<<\n{json.dumps(best, indent=2)}\n>>>PLAN_END<<<",
+            steps=len(best),
+            winner=best_name,
+            candidates=len(plans),
         )
 
         return {
-            "plan": plan,
+            "plan": best,
             "current_step": 0,
             "results": {},
             "completed_steps": [],
             "error_count": state.get("error_count", 0),
-            "messages": [AIMessage(content=f"Plan: {json.dumps(plan)}")],
+            "replan_count": 0,
+            "messages": [AIMessage(content=f"Plan ({best_name}): {json.dumps(best)}")],
         }
 
     # --- Node: executor ---
@@ -299,6 +420,7 @@ def build_agent():
         step_idx = state["current_step"]
         results = dict(state.get("results", {}))
         error_count = state.get("error_count", 0)
+        replan_count = state.get("replan_count", 0)
         completed = list(state.get("completed_steps", []))
 
         if step_idx >= len(plan):
@@ -330,6 +452,7 @@ def build_agent():
                     "results": results,
                     "completed_steps": completed,
                     "error_count": error_count,
+                    "replan_count": replan_count,
                     "messages": [AIMessage(content=f"Step {step['step_number']} done: bank account ensured")],
                 }
 
@@ -345,6 +468,7 @@ def build_agent():
                 "current_step": step_idx + 1,
                 "results": results,
                 "error_count": error_count,
+                "replan_count": replan_count,
                 "completed_steps": completed,
                 "messages": [AIMessage(content=f"Step {step['step_number']} skipped: dependency unresolved")],
             }
@@ -360,34 +484,160 @@ def build_agent():
                 "current_step": step_idx + 1,
                 "results": results,
                 "error_count": error_count,
+                "replan_count": replan_count,
                 "completed_steps": completed,
                 "messages": [AIMessage(content=f"Error: {error_msg}")],
             }
 
         tool = tool_map[tool_name]
-        result_str, parsed, error_count = _call_tool_with_retry(
-            tool, resolved_args, llm, error_count
-        )
 
+        # First attempt
+        try:
+            result_str = tool.invoke(resolved_args)
+        except Exception as e:
+            error_msg = f"Tool {tool.name} raised: {str(e)}"
+            log.error(error_msg)
+            results[f"step_{step['step_number']}"] = {"error": error_msg}
+            error_count += 1
+            completed.append(step["step_number"])
+            return {
+                "current_step": step_idx + 1,
+                "results": results,
+                "error_count": error_count,
+                "replan_count": replan_count,
+                "completed_steps": completed,
+                "messages": [AIMessage(content=f"Error: {error_msg}")],
+            }
+
+        is_error, status_code = _is_api_error(result_str)
+
+        if not is_error:
+            # Success on first try
+            try:
+                parsed = json.loads(result_str)
+            except (json.JSONDecodeError, TypeError):
+                parsed = {"raw": result_str}
+            results[f"step_{step['step_number']}"] = parsed
+            log.info(f"Step {step['step_number']} completed", result_preview=str(parsed)[:500])
+            completed.append(step["step_number"])
+            return {
+                "current_step": step_idx + 1,
+                "results": results,
+                "completed_steps": completed,
+                "error_count": error_count,
+                "replan_count": replan_count,
+                "messages": [AIMessage(content=f"Step {step['step_number']} done: {str(parsed)[:200]}")],
+            }
+
+        # API error — use adaptive self-heal (replan)
+        if status_code in RETRYABLE_STATUS_CODES and replan_count < MAX_REPLANS:
+            log.warning(f"API error {status_code}, attempting adaptive replan ({replan_count+1}/{MAX_REPLANS})")
+
+            replan_result = _ask_llm_to_replan(
+                llm, resolved_args, result_str,
+                plan[step_idx + 1:],  # remaining steps
+                results,
+                state["original_prompt"],
+                step["step_number"] + 1,
+            )
+
+            if replan_result and replan_result.get("action") == "retry":
+                # Retry with fixed args
+                fixed_args = replan_result.get("args", {})
+                _log_self_heal(tool.name, resolved_args, result_str, fixed_args, retry_succeeded=True)
+                try:
+                    retry_result_str = tool.invoke(fixed_args)
+                except Exception as e:
+                    retry_result_str = json.dumps({"error": str(e)})
+
+                retry_is_error, retry_status = _is_api_error(retry_result_str)
+                if not retry_is_error:
+                    try:
+                        parsed = json.loads(retry_result_str)
+                    except (json.JSONDecodeError, TypeError):
+                        parsed = {"raw": retry_result_str}
+                    results[f"step_{step['step_number']}"] = parsed
+                    log.info(f"Step {step['step_number']} succeeded after retry")
+                    completed.append(step["step_number"])
+                    return {
+                        "current_step": step_idx + 1,
+                        "results": results,
+                        "completed_steps": completed,
+                        "error_count": error_count,
+                        "replan_count": replan_count + 1,
+                        "messages": [AIMessage(content=f"Step {step['step_number']} done (retried): {str(parsed)[:200]}")],
+                    }
+                else:
+                    # Retry also failed — count 1 error, move on
+                    log.warning(f"Retry also failed with status {retry_status}")
+                    _log_self_heal(tool.name, resolved_args, result_str, fixed_args, retry_succeeded=False)
+                    try:
+                        parsed = json.loads(retry_result_str)
+                    except (json.JSONDecodeError, TypeError):
+                        parsed = {"raw": retry_result_str}
+                    results[f"step_{step['step_number']}"] = parsed
+                    error_count += 1
+                    completed.append(step["step_number"])
+                    return {
+                        "current_step": step_idx + 1,
+                        "results": results,
+                        "completed_steps": completed,
+                        "error_count": error_count,
+                        "replan_count": replan_count + 1,
+                        "messages": [AIMessage(content=f"Step {step['step_number']} failed after retry")],
+                    }
+
+            elif replan_result and replan_result.get("action") == "skip":
+                # Skip this step
+                reason = replan_result.get("reason", "replan decided to skip")
+                log.info(f"Replan: skipping step {step['step_number']} — {reason}")
+                results[f"step_{step['step_number']}"] = {"skipped": True, "reason": reason}
+                completed.append(step["step_number"])
+                return {
+                    "current_step": step_idx + 1,
+                    "results": results,
+                    "completed_steps": completed,
+                    "error_count": error_count + 1,  # the original error still counts
+                    "replan_count": replan_count + 1,
+                    "messages": [AIMessage(content=f"Step {step['step_number']} skipped by replan: {reason}")],
+                }
+
+            elif replan_result and replan_result.get("action") == "replace":
+                # Replace remaining plan with new steps
+                new_steps = replan_result.get("steps", [])
+                log.info(f"Replan: replacing step {step['step_number']} + remaining with {len(new_steps)} new steps")
+                # Keep completed steps, splice in new steps
+                new_plan = plan[:step_idx] + new_steps
+                results[f"step_{step['step_number']}"] = {"skipped": True, "reason": "replaced by replan"}
+                completed.append(step["step_number"])
+                return {
+                    "plan": new_plan,
+                    "current_step": step_idx + 1 if not new_steps else step_idx,
+                    "results": results,
+                    "completed_steps": completed,
+                    "error_count": error_count + 1,
+                    "replan_count": replan_count + 1,
+                    "messages": [AIMessage(content=f"Step {step['step_number']} replaced by replan ({len(new_steps)} new steps)")],
+                }
+        elif status_code not in RETRYABLE_STATUS_CODES:
+            log.warning(f"API error {status_code} — not retryable, skipping self-heal")
+
+        # Out of replans or non-retryable — record error and move on
+        log.warning(f"Step {step['step_number']} failed with status {status_code}")
+        try:
+            parsed = json.loads(result_str)
+        except (json.JSONDecodeError, TypeError):
+            parsed = {"raw": result_str}
         results[f"step_{step['step_number']}"] = parsed
-
-        log.info(
-            f"Step {step['step_number']} completed",
-            tool=tool_name,
-            result_preview=str(parsed)[:500],
-        )
-
+        error_count += 1
         completed.append(step["step_number"])
         return {
             "current_step": step_idx + 1,
             "results": results,
             "completed_steps": completed,
             "error_count": error_count,
-            "messages": [
-                AIMessage(
-                    content=f"Step {step['step_number']} done: {str(parsed)[:200]}"
-                )
-            ],
+            "replan_count": replan_count,
+            "messages": [AIMessage(content=f"Step {step['step_number']} failed: {str(parsed)[:200]}")],
         }
 
     # --- Node: check_done ---
@@ -431,6 +681,7 @@ def run_agent(agent, prompt: str, file_context: str = "") -> None:
         "results": {},
         "completed_steps": [],
         "error_count": 0,
+        "replan_count": 0,
         "original_prompt": user_message,
     }
 
@@ -439,11 +690,13 @@ def run_agent(agent, prompt: str, file_context: str = "") -> None:
     # Log final state
     completed = result.get("completed_steps", [])
     errors = result.get("error_count", 0)
+    replans = result.get("replan_count", 0)
     log.info(
         "Agent finished",
         completed_steps=len(completed),
         total_steps=len(result.get("plan", [])),
         errors=errors,
+        replans=replans,
     )
 
 
@@ -468,9 +721,6 @@ def _parse_plan_json(raw: str) -> list[dict]:
     except json.JSONDecodeError:
         log.error("Failed to parse plan JSON", raw=raw[:500])
         return []
-
-
-MAX_RETRIES = 1  # one retry after LLM fix — keeps total API errors to 1 per step
 
 
 def _is_api_error(result_str: str) -> tuple[bool, int]:
@@ -518,42 +768,62 @@ def _log_self_heal(
     )
 
 
-def _ask_llm_to_fix_args(llm, original_args: dict, error_response: str) -> dict | None:
-    """Ask the LLM to fix call_api arguments based on the API error. Returns fixed args or None."""
-    # Extract method/path from the call_api args
+def _ask_llm_to_replan(
+    llm,
+    original_args: dict,
+    error_response: str,
+    remaining_steps: list[dict],
+    results: dict,
+    original_task: str,
+    next_step_number: int,
+) -> dict | None:
+    """Ask the LLM to decide how to proceed after an API error.
+
+    Returns one of:
+    - {"action": "retry", "args": {...}}
+    - {"action": "skip", "reason": "..."}
+    - {"action": "replace", "steps": [...]}
+    - None on failure
+    """
     method = original_args.get("method", "POST")
     path = original_args.get("path", "")
-    query_params = original_args.get("query_params", {})
-    body = original_args.get("body", {})
 
     # Get endpoint schema for rich context
     try:
         from generic_tools import get_endpoint_schema
-
         endpoint_schema = get_endpoint_schema(method, path)
     except Exception:
         endpoint_schema = "(unavailable)"
 
-    prompt = FIX_ARGS_PROMPT.format(
+    # Format remaining steps and previous results compactly
+    remaining_str = json.dumps(remaining_steps, indent=2, default=str)[:2000] if remaining_steps else "[]"
+    results_str = json.dumps(
+        {k: str(v)[:200] for k, v in results.items()},
+        indent=2,
+        default=str,
+    )[:2000]
+
+    prompt = REPLAN_PROMPT.format(
         method=method,
         path=path,
-        query_params=json.dumps(query_params, indent=2, default=str)
-        if query_params
-        else "{}",
-        body=json.dumps(body, indent=2, default=str) if body else "{}",
+        args=json.dumps(original_args, indent=2, default=str)[:1500],
         error_response=error_response[:2000],
-        endpoint_schema=endpoint_schema[:3000],
+        endpoint_schema=str(endpoint_schema)[:3000],
+        remaining_steps=remaining_str,
+        previous_results=results_str,
+        original_task=original_task[:500],
+        next_step_number=next_step_number,
     )
 
     try:
         resp = llm.invoke([HumanMessage(content=prompt)])
         raw = _extract_text(resp.content)
-        fixed = _parse_json_object(raw)
-        if fixed and isinstance(fixed, dict):
-            log.info("LLM suggested fixed args", fixed_args=fixed)
-            return fixed
+        parsed = _parse_json_object(raw)
+        if parsed and isinstance(parsed, dict) and "action" in parsed:
+            log.info(f"Replan decision: {parsed.get('action')}", replan=parsed)
+            return parsed
     except Exception as e:
-        log.warning(f"LLM fix-args call failed: {e}")
+        log.warning(f"Replan LLM call failed: {e}")
 
     return None
 
@@ -573,73 +843,6 @@ def _parse_json_object(raw: str) -> dict | None:
         return json.loads(raw)
     except json.JSONDecodeError:
         return None
-
-
-def _call_tool_with_retry(
-    tool, resolved_args: dict, llm, error_count: int
-) -> tuple[str, dict, int]:
-    """Call a tool, and if it returns a retryable error (400/422), ask the LLM to fix args and retry once.
-
-    Non-retryable errors (401, 403, 404, 409, 5xx) are returned immediately without retry.
-
-    Returns (result_str, parsed_result, updated_error_count).
-    """
-    for attempt in range(1 + MAX_RETRIES):
-        try:
-            result_str = tool.invoke(resolved_args)
-        except Exception as e:
-            error_msg = f"Tool {tool.name} raised: {str(e)}"
-            log.error(error_msg)
-            return error_msg, {"error": error_msg}, error_count + 1
-
-        is_error, status_code = _is_api_error(result_str)
-
-        if not is_error:
-            # Success
-            try:
-                parsed = json.loads(result_str)
-            except (json.JSONDecodeError, TypeError):
-                parsed = {"raw": result_str}
-            return result_str, parsed, error_count
-
-        # API error — only retry on retryable status codes
-        if attempt < MAX_RETRIES and status_code in RETRYABLE_STATUS_CODES:
-            log.warning(
-                f"API error {status_code} from {tool.name}, attempting self-heal",
-                attempt=attempt + 1,
-            )
-            fixed_args = _ask_llm_to_fix_args(llm, resolved_args, result_str)
-            if fixed_args:
-                _log_self_heal(
-                    tool.name,
-                    resolved_args,
-                    result_str,
-                    fixed_args,
-                    retry_succeeded=True,
-                )
-                resolved_args = fixed_args
-                continue
-            else:
-                _log_self_heal(
-                    tool.name, resolved_args, result_str, None, retry_succeeded=False
-                )
-        elif attempt < MAX_RETRIES and status_code not in RETRYABLE_STATUS_CODES:
-            log.warning(
-                f"API error {status_code} from {tool.name} — not retryable, skipping self-heal",
-            )
-
-        # Out of retries or non-retryable — return the error
-        log.warning(
-            f"Tool {tool.name} failed with status {status_code} after {attempt + 1} attempt(s)"
-        )
-        try:
-            parsed = json.loads(result_str)
-        except (json.JSONDecodeError, TypeError):
-            parsed = {"raw": result_str}
-        return result_str, parsed, error_count + 1
-
-    # Should not reach here, but just in case
-    return result_str, {"raw": result_str}, error_count + 1
 
 
 # ────────────────────────────────────────────────────────────────────────────

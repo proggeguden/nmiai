@@ -37,7 +37,8 @@ TIER1_TAGS = {
     "invoice", "invoice/paymentType", "project", "project/participant",
     "department",
     "ledger/voucher", "ledger/account", "ledger/vatType",
-    "travelExpense", "contact", "currency", "country",
+    "travelExpense", "travelExpense/cost", "travelExpense/perDiemCompensation",
+    "contact", "currency", "country",
     # Salary/payroll
     "salary/transaction", "salary/payslip", "salary/type",
     "employee/employment", "employee/employment/details",
@@ -48,7 +49,8 @@ GOTCHA_NOTES = {
     "POST /product": "NOTE: Do NOT send priceIncludingVatCurrency — it conflicts with priceExcludingVatCurrency.",
     "POST /invoice": "NOTE: Company must have a registered bank account first, or this will fail.",
     "POST /employee": "NOTE: department.id may be required even though schema says optional. userType is REQUIRED — use 'STANDARD' for normal employees, 'EXTENDED' for administrators.",
-    "POST /ledger/voucher": "NOTE: postings cannot be null — must be a non-empty array.",
+    "POST /ledger/voucher": "NOTE: postings cannot be null — must be a non-empty array. If posting has vatType, use GROSS amount — Tripletex auto-generates the VAT line.",
+    "POST /travelExpense": "NOTE: Only creates the shell (employee, travelDetails). Costs and per diems are SEPARATE sub-resources: POST /travelExpense/cost, POST /travelExpense/perDiemCompensation.",
     "POST /order": "NOTE: deliveryDate is REQUIRED even though schema says optional. Use orderDate value if not specified.",
 }
 
@@ -78,6 +80,8 @@ PRIORITY_ENDPOINTS = {
     "POST /ledger/voucher", "GET /ledger/voucher",
     # Travel
     "POST /travelExpense",
+    "POST /travelExpense/cost",
+    "POST /travelExpense/perDiemCompensation",
 }
 
 # Patches swagger schema gaps with known requirements from real API errors
