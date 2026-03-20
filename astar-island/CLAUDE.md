@@ -93,7 +93,8 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 - Binary forest adjacency for settlements, coastal-only for ports (~25-28 buckets)
 - Coastal adjacency for plains and settlements
 - Adjacent forest for plains, empty cells
-- Adjacent settlement for forest, ruin cells
+- 3-level adjacent settlement for forest (0/1/2+), interior flag (adj_forest≥4)
+- Adjacent settlement for ruin cells
 - BFS-precomputed distances for efficiency
 - Bayesian smoothing towards global prior (K=5)
 
@@ -101,15 +102,17 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 - Port probability boost: coastal cells near settlements (d≤3) get minimum 5%/3% Port mass
 - Winter severity calibration: estimate settlement survival rate from observations, scale predictions
 - Continuous distance interpolation: blend between adjacent distance brackets based on raw distance
+- Expansion modulation (Step 1.75): scale Settlement+Port predictions for d≤6 cells, wider clamp [0.3, 3.5]
+- Forest entropy injection (Step 1.85): shrink over-confident Forest predictions when observed retention < 0.85
 
 **Adaptive smoothing**: Per-cell blending uses terrain-dependent k values:
 - Settlements/ports k=8 (high variance → trust model more)
 - Plains/forest/empty k=3 (predictable → trust observations more)
 
 **Backtest performance** (weighted KL, lower is better):
-- Rounds 1–7 avg: ~0.067 (5-seed spatial model)
-- Best: 0.038 (round 4), Worst: 0.142 (round 7, harsh winter)
-- Rounds 1–6 avg: ~0.058
+- Rounds 1–8 avg: ~0.0497 (5-seed spatial model)
+- Best: 0.021 (round 8), Worst: 0.124 (round 7, harsh winter)
+- Rounds 1–6 avg: ~0.042
 
 **Settlement cluster density** (Phase 4f):
 - Binary `is_clustered` (≥2 settlements within Manhattan d≤5) added to Settlement and Plains bucket keys
