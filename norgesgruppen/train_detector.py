@@ -25,7 +25,7 @@ def main():
         epochs=300,
         patience=50,
         imgsz=1280,
-        batch=4,
+        batch=2,
         device=0,
         # Augmentation
         mosaic=1.0,
