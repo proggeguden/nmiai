@@ -198,12 +198,14 @@ def backtest_round_enhanced(round_id, verbose=True):
 
     # Compute forward rates from GT
     forward_rates = _compute_forward_rates(initial_states, all_gt, height, width, seeds_count)
+    # Extract expansion rate for expansion modulation
+    gt_expansion_rate = forward_rates.get("expansion")
 
     # Score all seeds with model variants
     model_variants = {}
-    for model_name, gm, sm, fr in [
-        ("5seed-Spatial", global_model, spatial_model, None),
-        ("5seed-Sp+Forward", global_model, spatial_model, forward_rates),
+    for model_name, gm, sm, fr, er in [
+        ("5seed-Spatial", global_model, spatial_model, None, gt_expansion_rate),
+        ("5seed-Sp+Forward", global_model, spatial_model, forward_rates, gt_expansion_rate),
     ]:
         kl_scores = []
         for seed_idx in range(seeds_count):
@@ -211,7 +213,8 @@ def backtest_round_enhanced(round_id, verbose=True):
             init_grid = initial_states[seed_idx]["grid"]
             pred = build_prediction(height, width, init_grid, [],
                                     transition_model=gm, spatial_model=sm,
-                                    forward_rates=fr, spatial_obs=spatial_obs)
+                                    forward_rates=fr, spatial_obs=spatial_obs,
+                                    expansion_rate=er)
             wkl, _ = score_predictions(pred, gt)
             kl_scores.append(float(wkl))
         model_variants[model_name] = float(np.mean(kl_scores))
@@ -226,7 +229,8 @@ def backtest_round_enhanced(round_id, verbose=True):
         pred = build_prediction(height, width, init_grid, [],
                                 transition_model=global_model,
                                 spatial_model=spatial_model,
-                                spatial_obs=spatial_obs)
+                                spatial_obs=spatial_obs,
+                                expansion_rate=gt_expansion_rate)
         wkl, _ = score_predictions(pred, gt)
         per_seed_kl.append(float(wkl))
 

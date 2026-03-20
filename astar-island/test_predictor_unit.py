@@ -219,7 +219,7 @@ class TestComputeBucketKey:
         cluster = _precompute_cluster_density(GRID_5x5_MIXED)
         key = compute_bucket_key(GRID_5x5_MIXED, 2, 1, dist, cluster)
         assert key[0] == 4
-        assert len(key) == 3  # (4, dist_bucket, has_adj_settlement)
+        assert len(key) == 4  # (4, dist_bucket, has_adj_settlement, is_coastal)
 
     def test_ruin_cell_key(self):
         dist = _precompute_settlement_distances(GRID_5x5_MIXED)
@@ -474,7 +474,7 @@ class TestValidatePredictions:
 
     def test_below_floor_raises(self):
         pred = np.full((3, 3, 6), 1/6)
-        pred[0, 0, 0] = 0.001  # below PROB_FLOOR (0.005)
+        pred[0, 0, 0] = 0.001  # below PROB_FLOOR (0.003)
         pred[0, 0, 1:] = (1 - 0.001) / 5
         with pytest.raises(AssertionError):
             validate_predictions(pred, 3, 3)

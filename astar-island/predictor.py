@@ -32,7 +32,7 @@ TERRAIN_TO_CLASS = {
 STATIC_CODES = {10, 5}  # Ocean → always Empty, Mountain → always Mountain
 
 # Probability floor to avoid KL divergence → infinity
-PROB_FLOOR = 0.005
+PROB_FLOOR = 0.003
 
 # Adaptive smoothing: k controls how much we trust the bucket model vs per-cell observations
 # High k → trust bucket model more; Low k → trust empirical observations more
@@ -189,7 +189,7 @@ def compute_bucket_key(initial_grid, r, c, settlement_dists=None, cluster_densit
     elif code == 0:  # Empty
         return (0, dist_bucket, has_adj_forest)
     elif code == 4:  # Forest
-        return (4, dist_bucket, has_adj_settlement)
+        return (4, dist_bucket, has_adj_settlement, is_coastal)
     elif code == 3:  # Ruin — dropped has_adj_forest
         return (3, dist_bucket, has_adj_settlement)
     else:
@@ -869,7 +869,8 @@ def _apply_forward_calibration(predictions, initial_grid, settlement_dists, rate
 def build_prediction(height, width, initial_grid, observations,
                      transition_model=None, spatial_model=None,
                      survival_rate=None, forward_rates=None,
-                     settlement_stats=None, spatial_obs=None):
+                     settlement_stats=None, spatial_obs=None,
+                     expansion_rate=None):
     """Build a H×W×6 probability tensor.
 
     Uses spatial_model (per-bucket) when available, falls back to
@@ -994,6 +995,59 @@ def build_prediction(height, width, initial_grid, observations,
         if settlement_dists is None:
             settlement_dists = _precompute_settlement_distances(initial_grid)
         _apply_forward_calibration(predictions, initial_grid, settlement_dists, forward_rates)
+
+    # Step 1.75: Expansion rate modulation — scale settlement predictions for nearby cells
+    if expansion_rate is not None:
+        if settlement_dists is None:
+            settlement_dists = _precompute_settlement_distances(initial_grid)
+    if expansion_rate is not None and settlement_dists is not None:
+        # Compute model's implicit expansion rate for Plains/Forest cells near settlements
+        model_exp = 0.0
+        exp_count = 0
+        for r in range(height):
+            for c in range(width):
+                code = initial_grid[r][c]
+                if code in (11, 4) and settlement_dists[r][c] <= 4:
+                    model_exp += predictions[r, c, 1]
+                    exp_count += 1
+        if exp_count > 0:
+            model_avg = model_exp / exp_count
+            if model_avg > 0.005:
+                scale = expansion_rate / model_avg
+                scale = max(0.5, min(scale, 2.5))
+                if abs(scale - 1.0) > 0.05:  # only adjust if meaningful difference
+                    for r in range(height):
+                        for c in range(width):
+                            code = initial_grid[r][c]
+                            if code in (11, 4) and settlement_dists[r][c] <= 4:
+                                predictions[r, c, 1] *= scale
+                                predictions[r, c] = np.maximum(predictions[r, c], 0.001)
+                                predictions[r, c] /= predictions[r, c].sum()
+
+    # Step 1.8: Confidence calibration — shrink toward global prior
+    if transition_model:
+        # Ensure we have settlement_dists
+        if settlement_dists is None:
+            settlement_dists = _precompute_settlement_distances(initial_grid)
+        for r in range(height):
+            for c in range(width):
+                code = initial_grid[r][c]
+                if code in STATIC_CODES:
+                    continue
+                global_prior = transition_model.get(code)
+                if global_prior is None:
+                    continue
+                d = settlement_dists[r][c]
+                # Near settlements: high uncertainty, more calibration
+                # Far from settlements: mostly static, trust model
+                if d <= 2:
+                    strength = 0.10
+                elif d <= 4:
+                    strength = 0.06
+                else:
+                    strength = 0.02
+                predictions[r, c] = (1 - strength) * predictions[r, c] + strength * global_prior
+                predictions[r, c] /= predictions[r, c].sum()
 
     # Step 2: Blend per-cell observations (for directly observed cells)
     if observations:

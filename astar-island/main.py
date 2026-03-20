@@ -20,7 +20,7 @@ import api_client
 from predictor import (
     build_prediction, predictions_to_list, validate_predictions,
     learn_spatial_transition_model, estimate_survival_rate, estimate_all_rates,
-    extract_settlement_stats,
+    extract_settlement_stats, estimate_expansion_rate,
 )
 
 app = FastAPI()
@@ -121,6 +121,13 @@ def run_pipeline(round_id):
         seed_observations[seed_idx] = obs
         all_observations.extend(obs)
 
+    # Safety: abort if no observations collected (queries exhausted / rate limited)
+    if len(all_observations) == 0:
+        raise ValueError(
+            "No observations collected — queries likely exhausted. "
+            "Aborting to avoid overwriting previous submission with uninformed predictions."
+        )
+
     # 3. Learn spatial transition model from all observations
     initial_grids = [s["grid"] for s in initial_states]
     global_model, spatial_model, spatial_obs = learn_spatial_transition_model(
@@ -130,7 +137,9 @@ def run_pipeline(round_id):
     # Estimate winter severity and all forward model rates
     survival_rate = estimate_survival_rate(initial_grids, all_observations)
     forward_rates = estimate_all_rates(initial_grids, all_observations)
+    expansion_rate = estimate_expansion_rate(initial_grids, all_observations)
     print(f"Estimated survival rate: {survival_rate}")
+    print(f"Estimated expansion rate: {expansion_rate}")
     print(f"Forward model rates: {forward_rates}")
 
     # Extract settlement stats from observations
@@ -165,7 +174,8 @@ def run_pipeline(round_id):
                                 spatial_model=spatial_model,
                                 survival_rate=survival_rate,
                                 settlement_stats=settlement_stats,
-                                spatial_obs=spatial_obs)
+                                spatial_obs=spatial_obs,
+                                expansion_rate=expansion_rate)
         pred_list = predictions_to_list(pred)
         validate_predictions(pred_list, height, width)
 
