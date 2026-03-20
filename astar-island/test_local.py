@@ -76,6 +76,7 @@ def backtest_round(round_id):
     """Backtest our predictor against ground truth from a completed round.
 
     Compares global model (per-code) vs spatial model (per-bucket).
+    Uses GT from all seeds (simulating multi-seed observation strategy).
     """
     print(f"\n{'='*60}")
     print(f"Backtesting round: {round_id}")
@@ -86,18 +87,37 @@ def backtest_round(round_id):
     seeds_count = detail["seeds_count"]
     initial_states = detail["initial_states"]
 
-    # Use ground truth from seed 0 to simulate learning from observations
-    gt0 = np.array(api_client.get_analysis(round_id, 0)["ground_truth"])
-    init_grid = initial_states[0]["grid"]
+    # Load ground truth for all seeds
+    all_gt = {}
+    for seed_idx in range(seeds_count):
+        all_gt[seed_idx] = np.array(api_client.get_analysis(round_id, seed_idx)["ground_truth"])
 
-    # Build global transition model from GT probabilities
+    # Build models from ALL seeds' GT (simulates multi-seed observation)
     global_probs = {}
-    for r in range(height):
-        for c in range(width):
-            code = init_grid[r][c]
-            if code not in global_probs:
-                global_probs[code] = np.zeros(NUM_CLASSES)
-            global_probs[code] += gt0[r, c]
+    spatial_probs = {}
+    spatial_obs = {}
+
+    for seed_idx in range(seeds_count):
+        gt = all_gt[seed_idx]
+        init_grid = initial_states[seed_idx]["grid"]
+        fmap = compute_feature_map(init_grid)
+
+        for r in range(height):
+            for c in range(width):
+                code = init_grid[r][c]
+                bucket = fmap[r][c]
+
+                # Global counts
+                if code not in global_probs:
+                    global_probs[code] = np.zeros(NUM_CLASSES)
+                global_probs[code] += gt[r, c]
+
+                # Spatial counts
+                if bucket not in spatial_probs:
+                    spatial_probs[bucket] = np.zeros(NUM_CLASSES)
+                    spatial_obs[bucket] = 0
+                spatial_probs[bucket] += gt[r, c]
+                spatial_obs[bucket] += 1
 
     global_model = {}
     for code, probs in global_probs.items():
@@ -105,27 +125,40 @@ def backtest_round(round_id):
         if total > 0:
             global_model[code] = probs / total
 
-    # Build spatial transition model from GT probabilities
-    fmap = compute_feature_map(init_grid)
-    spatial_probs = {}
-    spatial_obs = {}
-    for r in range(height):
-        for c in range(width):
-            bucket = fmap[r][c]
-            if bucket not in spatial_probs:
-                spatial_probs[bucket] = np.zeros(NUM_CLASSES)
-                spatial_obs[bucket] = 0
-            spatial_probs[bucket] += gt0[r, c]
-            spatial_obs[bucket] += 1
-
     spatial_model = {}
     for bucket, probs in spatial_probs.items():
-        if spatial_obs[bucket] >= 5:  # lower threshold for backtest (GT is clean)
+        if spatial_obs[bucket] >= 5:
             total = probs.sum()
             if total > 0:
                 spatial_model[bucket] = probs / total
 
-    print(f"\nModels: {len(global_model)} terrain codes, {len(spatial_model)} spatial buckets")
+    # Also build single-seed models for comparison
+    gt0 = all_gt[0]
+    init_grid_0 = initial_states[0]["grid"]
+    fmap_0 = compute_feature_map(init_grid_0)
+
+    single_global_probs = {}
+    single_spatial_probs = {}
+    single_spatial_obs = {}
+    for r in range(height):
+        for c in range(width):
+            code = init_grid_0[r][c]
+            bucket = fmap_0[r][c]
+            if code not in single_global_probs:
+                single_global_probs[code] = np.zeros(NUM_CLASSES)
+            single_global_probs[code] += gt0[r, c]
+            if bucket not in single_spatial_probs:
+                single_spatial_probs[bucket] = np.zeros(NUM_CLASSES)
+                single_spatial_obs[bucket] = 0
+            single_spatial_probs[bucket] += gt0[r, c]
+            single_spatial_obs[bucket] += 1
+
+    single_global = {code: p / p.sum() for code, p in single_global_probs.items() if p.sum() > 0}
+    single_spatial = {b: p / p.sum() for b, p in single_spatial_probs.items()
+                      if single_spatial_obs[b] >= 5 and p.sum() > 0}
+
+    print(f"\nModels: {len(global_model)} terrain codes, {len(spatial_model)} spatial buckets (multi-seed)")
+    print(f"Single-seed: {len(single_global)} terrain codes, {len(single_spatial)} spatial buckets")
     for bucket in sorted(spatial_model.keys(), key=str):
         probs = spatial_model[bucket]
         n = spatial_obs[bucket]
@@ -133,17 +166,20 @@ def backtest_round(round_id):
         top_str = ", ".join(f"{CLASS_NAMES[i]}={p:.3f}" for i, p in top if p > 0.005)
         print(f"  {bucket} (n={n}): {top_str}")
 
-    # Score all seeds with both models
-    print(f"\n{'Model':<10} | {'Seed 0':>8} {'Seed 1':>8} {'Seed 2':>8} {'Seed 3':>8} {'Seed 4':>8} | {'Avg':>8}")
-    print("-" * 75)
+    # Score all seeds with all model variants
+    print(f"\n{'Model':<16} | {'Seed 0':>8} {'Seed 1':>8} {'Seed 2':>8} {'Seed 3':>8} {'Seed 4':>8} | {'Avg':>8}")
+    print("-" * 83)
 
+    last_scores = None
     for model_name, gm, sm in [
-        ("Global", global_model, None),
-        ("Spatial", global_model, spatial_model),
+        ("1seed-Global", single_global, None),
+        ("1seed-Spatial", single_global, single_spatial),
+        ("5seed-Global", global_model, None),
+        ("5seed-Spatial", global_model, spatial_model),
     ]:
         kl_scores = []
         for seed_idx in range(seeds_count):
-            gt = np.array(api_client.get_analysis(round_id, seed_idx)["ground_truth"])
+            gt = all_gt[seed_idx]
             init_grid_s = initial_states[seed_idx]["grid"]
             pred = build_prediction(height, width, init_grid_s, [],
                                     transition_model=gm, spatial_model=sm)
@@ -152,9 +188,10 @@ def backtest_round(round_id):
 
         avg = np.mean(kl_scores)
         scores_str = " ".join(f"{s:.4f}" for s in kl_scores)
-        print(f"{model_name:<10} | {scores_str} | {avg:.4f}")
+        print(f"{model_name:<16} | {scores_str} | {avg:.4f}")
+        last_scores = kl_scores
 
-    return np.mean(kl_scores)  # return spatial model score
+    return np.mean(last_scores)  # return best model score (5seed-Spatial)
 
 
 def test_pipeline(round_id, submit=False):

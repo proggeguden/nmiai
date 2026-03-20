@@ -47,11 +47,48 @@ def terrain_code_to_class(code):
 # Spatial feature computation
 # ---------------------------------------------------------------------------
 
-def compute_bucket_key(initial_grid, r, c):
+def _precompute_settlement_distances(initial_grid):
+    """Precompute Manhattan distance to nearest settlement for all cells.
+
+    Returns H×W list of lists with distances (999 if no settlements exist).
+    """
+    H = len(initial_grid)
+    W = len(initial_grid[0])
+    settlements = []
+    for r in range(H):
+        for c in range(W):
+            if initial_grid[r][c] in (1, 2):
+                settlements.append((r, c))
+
+    if not settlements:
+        return [[999] * W for _ in range(H)]
+
+    # BFS from all settlements simultaneously for efficiency
+    dist = [[999] * W for _ in range(H)]
+    from collections import deque
+    q = deque()
+    for sr, sc in settlements:
+        dist[sr][sc] = 0
+        q.append((sr, sc))
+
+    while q:
+        r, c = q.popleft()
+        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < H and 0 <= nc < W and dist[nr][nc] > dist[r][c] + 1:
+                dist[nr][nc] = dist[r][c] + 1
+                q.append((nr, nc))
+
+    return dist
+
+
+def compute_bucket_key(initial_grid, r, c, settlement_dists=None):
     """Compute spatial bucket key for a cell based on its neighbors.
 
     Features are computed from the initial grid (fully visible, no queries needed).
     Returns a tuple used as dict key for the spatial transition model.
+
+    settlement_dists: precomputed Manhattan distance grid (optional, for efficiency).
     """
     code = initial_grid[r][c]
     H = len(initial_grid)
@@ -78,21 +115,19 @@ def compute_bucket_key(initial_grid, r, c):
                 elif n in (1, 2):
                     adj_settlement += 1
 
-    # Check for settlement within Manhattan distance 2
-    near_settlement = False
-    for dr in range(-2, 3):
-        for dc in range(-2, 3):
-            if abs(dr) + abs(dc) > 2:
-                continue
-            if dr == 0 and dc == 0:
-                continue
-            nr, nc = r + dr, c + dc
-            if 0 <= nr < H and 0 <= nc < W:
-                if initial_grid[nr][nc] in (1, 2):
-                    near_settlement = True
-                    break
-        if near_settlement:
-            break
+    # Compute distance bucket to nearest settlement
+    if settlement_dists is not None:
+        d = settlement_dists[r][c]
+    else:
+        # Fallback: compute distance manually (slower)
+        d = 999
+        for sr in range(H):
+            for sc in range(W):
+                if initial_grid[sr][sc] in (1, 2):
+                    d = min(d, abs(r - sr) + abs(c - sc))
+
+    # 3-level distance bucket: 0=near(≤2), 1=mid(3-4), 2=far(5+)
+    dist_bucket = 0 if d <= 2 else (1 if d <= 4 else 2)
 
     is_coastal = adj_ocean > 0
     has_adj_forest = adj_forest > 0
@@ -103,13 +138,13 @@ def compute_bucket_key(initial_grid, r, c):
     elif code == 2:  # Port
         return (2, has_adj_forest)
     elif code == 11: # Plains
-        return (11, near_settlement, is_coastal)
+        return (11, dist_bucket, is_coastal)
     elif code == 0:  # Empty
-        return (0, near_settlement)
+        return (0, dist_bucket)
     elif code == 4:  # Forest
-        return (4, near_settlement)
+        return (4, dist_bucket)
     elif code == 3:  # Ruin
-        return (3, near_settlement)
+        return (3, dist_bucket)
     else:
         return (code,)
 
@@ -121,7 +156,8 @@ def compute_feature_map(initial_grid):
     """
     H = len(initial_grid)
     W = len(initial_grid[0])
-    return [[compute_bucket_key(initial_grid, r, c) for c in range(W)]
+    settlement_dists = _precompute_settlement_distances(initial_grid)
+    return [[compute_bucket_key(initial_grid, r, c, settlement_dists) for c in range(W)]
             for r in range(H)]
 
 

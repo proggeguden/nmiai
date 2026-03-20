@@ -1,8 +1,8 @@
 """FastAPI app for the Astar Island /solve endpoint.
 
 Strategy: hidden parameters are shared across all 5 seeds in a round.
-So we observe heavily on 1 seed to learn transition probabilities,
-then apply that model to predict all 5 seeds.
+Spread 10 queries per seed across all 5 seeds for diverse terrain coverage,
+then learn a spatial transition model from all observations combined.
 """
 
 import time
@@ -56,12 +56,12 @@ async def solve(request: Request, body: SolveRequest):
 
 
 def run_pipeline(round_id):
-    """Full pipeline: observe seed 0 → learn transitions → predict all seeds.
+    """Full pipeline: observe all seeds → learn transitions → predict all seeds.
 
     Query budget (50) is SHARED across all seeds. Strategy:
-    - Spend all 50 queries on seed 0 to learn transition probabilities
-    - 9 tiles for full coverage × ~5 repeats each = good statistics
-    - Apply learned model to all 5 seeds using their initial grids
+    - Spread 10 queries per seed across all 5 seeds for diverse terrain coverage
+    - Hidden parameters are shared, so observations from any seed teach us
+    - More seeds → better spatial bucket coverage → better model
     """
 
     # 1. Get round details
@@ -80,25 +80,38 @@ def run_pipeline(round_id):
     width = detail.get("map_width", len(initial_states[0]["grid"][0]))
     print(f"Grid: {width}x{height}, Seeds: {seeds_count}, Max queries: {queries_max}")
 
-    # 2. Observe seed 0 with all queries to learn transition model
-    print(f"\n--- Learning phase: observing seed 0 with {queries_max} queries ---")
-    observations = observe_seed(round_id, seed_index=0,
-                                height=height, width=width,
-                                max_queries=queries_max,
-                                initial_grid=initial_states[0]["grid"])
-    print(f"Collected {len(observations)} observations")
+    # 2. Observe all seeds (spread queries evenly for diverse coverage)
+    queries_per_seed = queries_max // seeds_count
+    all_observations = []
+    seed_observations = {}  # seed_idx → list of observations
 
-    # Tag observations with seed index for the transition model
-    for obs in observations:
-        obs["seed_index"] = 0
+    for seed_idx in range(seeds_count):
+        n_queries = queries_per_seed
+        # Give remaining queries to last seed
+        if seed_idx == seeds_count - 1:
+            n_queries = queries_max - len(all_observations)
 
-    # 3. Learn spatial transition model from observations
+        print(f"\n--- Learning phase: observing seed {seed_idx} with {n_queries} queries ---")
+        obs = observe_seed(round_id, seed_index=seed_idx,
+                           height=height, width=width,
+                           max_queries=n_queries,
+                           initial_grid=initial_states[seed_idx]["grid"])
+        print(f"Collected {len(obs)} observations from seed {seed_idx}")
+
+        # Tag observations with seed index
+        for o in obs:
+            o["seed_index"] = seed_idx
+
+        seed_observations[seed_idx] = obs
+        all_observations.extend(obs)
+
+    # 3. Learn spatial transition model from all observations
     global_model, spatial_model = learn_spatial_transition_model(
-        [initial_states[0]["grid"]],
-        observations
+        [s["grid"] for s in initial_states],
+        all_observations
     )
     from predictor import CLASS_NAMES
-    print(f"Learned: {len(global_model)} terrain codes, {len(spatial_model)} spatial buckets")
+    print(f"\nLearned: {len(global_model)} terrain codes, {len(spatial_model)} spatial buckets")
     for bucket, probs in sorted(spatial_model.items(), key=str):
         top = sorted(enumerate(probs), key=lambda x: -x[1])[:3]
         top_str = ", ".join(f"{CLASS_NAMES[i]}={p:.2f}" for i, p in top if p > 0.01)
@@ -110,8 +123,8 @@ def run_pipeline(round_id):
         print(f"\n--- Predicting seed {seed_idx} ---")
         initial_grid = initial_states[seed_idx]["grid"]
 
-        # For seed 0, also pass direct observations for per-cell blending
-        seed_obs = observations if seed_idx == 0 else []
+        # Pass this seed's observations for per-cell blending
+        seed_obs = seed_observations.get(seed_idx, [])
 
         pred = build_prediction(height, width, initial_grid, seed_obs,
                                 transition_model=global_model,
