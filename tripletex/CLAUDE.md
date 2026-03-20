@@ -101,7 +101,7 @@ Submit endpoint URL at: https://app.ainm.no/submit/tripletex
 6. Re-test and redeploy
 
 ## Current Status (2026-03-20)
-See `PLAN.md` in project root for the full iteration roadmap.
+See `PLAN.md` for the full iteration roadmap.
 The agent is functional and deployed. Main areas for improvement:
 planner accuracy, efficiency optimization, self-heal success rate,
 and test coverage across all 7 languages and task categories.
