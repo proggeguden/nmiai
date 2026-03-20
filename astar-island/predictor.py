@@ -938,6 +938,17 @@ def build_prediction(height, width, initial_grid, observations,
                             predictions[r, c] = np.maximum(predictions[r, c], 0.001)
                             predictions[r, c] /= predictions[r, c].sum()
 
+                # Harsh winter: boost Ruin and Forest for settlement/port cells
+                if scale < 0.8:
+                    ruin_boost = (1.0 - scale) * 0.3
+                    for r in range(height):
+                        for c in range(width):
+                            if initial_grid[r][c] in (1, 2):
+                                predictions[r, c, 3] *= (1.0 + ruin_boost)
+                                predictions[r, c, 4] *= (1.0 + ruin_boost * 0.3)
+                                predictions[r, c] = np.maximum(predictions[r, c], 0.001)
+                                predictions[r, c] /= predictions[r, c].sum()
+
     # Step 1.7: Forward model calibration
     if forward_rates is not None:
         # Ensure we have settlement_dists even without spatial model
