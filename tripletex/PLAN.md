@@ -1,64 +1,53 @@
 # Tripletex — Road to Perfect Score
 
-**Goal:** World-class score (correctness × efficiency). Current baseline: 38/38 local tests passing, efficiency-optimized planner.
+**Goal:** World-class score (correctness × efficiency). Current baseline: 26 local test prompts, efficiency-optimized planner.
 
-## Status: Round 10 Complete (2026-03-20)
+## Status: Round 11 Complete (2026-03-20)
 
 ### Architecture
 ```
-Prompt → Single Planner (efficient, t=0) → validate_plan() → Executor → Adaptive Self-Heal → Done
+Prompt → Single Planner (efficient, t=0) → validate_plan() → Executor → Deterministic Fixes → Adaptive Self-Heal → Done
                                                                    ↓
                                                            call_api / lookup_endpoint
 ```
 
-- **Single planner**: efficiency-focused profile (replaced 3 parallel profiles — faster, same quality)
-- **validate_plan()**: strips vatType lookups, fixes fields/dates, injects department, injects travel paymentType
-- **Adaptive self-heal**: retry/skip/replace actions (can restructure remaining plan)
+- **Single planner**: efficiency-focused profile (t=0)
+- **validate_plan()**: strips vatType lookups, fixes fields/dates, injects department, injects travel paymentType, fixes PUT /company/{id} → PUT /company
+- **Deterministic error handlers**: bank account, department, product number fixes WITHOUT LLM calls
+- **Adaptive self-heal**: retry/skip/replace actions via LLM (fallback after deterministic fixes)
 - **Default model**: gemini-2.5-flash (overridable via GEMINI_MODEL)
-- **38 test prompts** across 10 categories and 7 languages — **all passing**
 
-### Local Test Results (Round 10)
+### Changes in Round 11 (Docs-Driven Rethink)
 
-**38/38 tests pass** — full suite verified after efficiency optimizations.
+**Prompt rewrite (prompts.py):**
+1. Replaced 15 workflow hints with task-category **playbooks** (Employees, Customers, Products, Invoicing, Projects, Travel, Vouchers, Payroll, Departments)
+2. Consolidated 28 rules → 10 essential cross-cutting rules
+3. Added **API Tips** section matching competition format (fields, pagination, response wrapping)
+4. Simplified vocabulary section
+5. Updated output example to use POST (not GET) as first step — reinforces "create don't search"
 
-### Changes in Round 10 (Efficiency Optimization)
+**Bug fixes (agent.py → validate_plan()):**
+6. Added singleton path normalization: PUT /company/{id} → PUT /company
 
-**Prompt changes (prompts.py):**
-1. Combined invoice+payment hint (paidAmount + paymentTypeId=0 in query_params)
-2. Combined invoice+send hint (sendToCustomer=true)
-3. Known vatType IDs table (1,3,5,6,33 — no GET needed)
-4. New rules 27-28 for combo endpoints
-5. Single planner profile (replaced cautious/efficient/creative)
-6. Strengthened Rule 1 ("this is the #1 scoring criterion")
+**New deterministic error handlers (agent.py → executor):**
+7. Bank account missing → run ensure_bank_account + retry (no LLM call)
+8. Missing department.id on employee → fetch department + retry (no LLM call)
+9. Duplicate product number → strip number field + retry (no LLM call)
 
-**Validation changes (agent.py → validate_plan()):**
-7. Strip GET /ledger/vatType for known IDs, replace $step refs with literal IDs
-8. Fix fields filter dot→parentheses (prevents 400)
-9. Fix date range From >= To by bumping To +1 day (prevents 422)
-10. Convert null voucher postings to []
-11. Auto-inject GET /department + ref for POST /employee without department
-
-**Architecture changes (agent.py):**
-12. Single planner call (removed ThreadPoolExecutor, 3 profiles, _score_and_select_plan)
-13. Strengthened scoring: per-step cost (-3/step), combo bonuses (+5), bulk bonuses (+3), lookup penalties (-5)
-
-**Expected impact:** ~25-40 fewer API calls across the test suite.
-
-### Known Remaining Issues
-- Some vatType errors still occur when planner uses non-standard vatType numbers
-- Employee dedup generates extra skipped steps (efficiency cost, not correctness)
-- travelExpense/cost may still 422 on some field combinations
-- Not yet deployed — need scored submission to measure real efficiency gain
+**Catalog improvements (build_endpoint_catalog.py):**
+10. Added "company" to TIER1_TAGS
+11. Added PUT /company, GET /company to PRIORITY_ENDPOINTS
+12. Added gotcha notes for company singleton endpoint
 
 ---
 
 ## Next Steps (Priority Order)
 
-1. **Deploy and submit** — measure real efficiency scores vs previous submission
-2. **Harvest production logs** — compare error rates pre/post Round 10
-3. **Response validation** — post-execution check that critical steps succeeded
-4. **Parallel-safe credentials** — contextvars for concurrent safety
-5. **Further vatType fixes** — handle edge cases where planner uses non-standard numbers
+1. **Deploy and submit** — measure real scores with Round 11 changes
+2. **Harvest production logs** — check if prompt rewrite improved plan quality
+3. **Analyze errors** — are deterministic fixes triggering? Are playbooks reducing errors?
+4. **Response validation** — post-execution check that critical steps succeeded
+5. **Further iterate** — based on production log patterns
 
 ---
 
@@ -75,6 +64,6 @@ Prompt → Single Planner (efficient, t=0) → validate_plan() → Executor → 
 
 ## Score Tracking
 
-| Date | Submission | Correctness | Efficiency | Notes |
-|------|-----------|-------------|------------|-------|
-| | | | | (fill in after each scored submission) |
+| Date | Round | Correctness | Efficiency | Notes |
+|------|-------|-------------|------------|-------|
+| | R11 | | | Docs-driven prompt rewrite + deterministic error handlers |

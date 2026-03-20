@@ -35,7 +35,7 @@ TIER1_TAGS = {
     "employee", "employee/entitlement", "customer", "supplier", "product",
     "order", "order/orderline",
     "invoice", "invoice/paymentType", "project", "project/participant",
-    "department",
+    "department", "company",
     "ledger/voucher", "ledger/account", "ledger/vatType",
     "travelExpense", "travelExpense/cost", "travelExpense/perDiemCompensation",
     "contact", "currency", "country",
@@ -54,6 +54,8 @@ GOTCHA_NOTES = {
     "POST /travelExpense/perDiemCompensation": "NOTE: 'location' (string) is REQUIRED even though schema says optional. Set to destination city name.",
     "POST /travelExpense/cost": "NOTE: Requires travelExpense:{id} reference. Set category, cost, paymentType, currency.",
     "POST /order": "NOTE: deliveryDate is REQUIRED even though schema says optional. Use orderDate value if not specified.",
+    "PUT /company": "NOTE: Singleton endpoint — NO ID in path. Use PUT /company, NOT PUT /company/{id}. Updates the company entity.",
+    "GET /company": "NOTE: Singleton endpoint — returns the single company. No ID needed.",
 }
 
 # ~35 operations that the agent actually uses — get full endpoint cards
@@ -84,6 +86,8 @@ PRIORITY_ENDPOINTS = {
     "POST /travelExpense",
     "POST /travelExpense/cost",
     "POST /travelExpense/perDiemCompensation",
+    # Company
+    "PUT /company", "GET /company",
 }
 
 # Patches swagger schema gaps with known requirements from real API errors
