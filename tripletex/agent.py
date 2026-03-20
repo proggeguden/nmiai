@@ -274,6 +274,11 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                     del body[inline_field]
                     log.info(f"Validation: stripped inline '{inline_field}' from POST /travelExpense")
 
+        # Fix PUT /company/{id} → PUT /company (singleton endpoint, no ID in path)
+        if method == "PUT" and re.match(r'^/company/\d+$', path):
+            args["path"] = "/company"
+            log.info("Validation: fixed PUT /company/{id} → PUT /company (singleton)")
+
         if not body or not isinstance(body, dict):
             continue
 
@@ -753,7 +758,106 @@ def build_agent():
                 "messages": [AIMessage(content=f"Step {step['step_number']} done: {str(parsed)[:200]}")],
             }
 
-        # API error — use adaptive self-heal (replan)
+        # API error — try deterministic fixes first, then LLM replan
+        error_lower = result_str.lower() if result_str else ""
+
+        # Deterministic fix: bank account not registered
+        if status_code in RETRYABLE_STATUS_CODES and "bankkontonummer" in error_lower:
+            log.info("Deterministic fix: bank account missing, running ensure_bank_account and retrying")
+            call_api_tool = tool_map.get("call_api")
+            if call_api_tool:
+                _, _, error_count = _ensure_bank_account(call_api_tool, error_count)
+                try:
+                    retry_result_str = tool.invoke(resolved_args)
+                    retry_is_error, retry_status = _is_api_error(retry_result_str)
+                    if not retry_is_error:
+                        try:
+                            parsed = json.loads(retry_result_str)
+                        except (json.JSONDecodeError, TypeError):
+                            parsed = {"raw": retry_result_str}
+                        results[f"step_{step['step_number']}"] = parsed
+                        log.info(f"Step {step['step_number']} succeeded after bank account fix")
+                        completed.append(step["step_number"])
+                        return {
+                            "current_step": step_idx + 1,
+                            "results": results,
+                            "completed_steps": completed,
+                            "error_count": error_count,
+                            "replan_count": replan_count,
+                            "messages": [AIMessage(content=f"Step {step['step_number']} done (bank account fixed): {str(parsed)[:200]}")],
+                        }
+                except Exception:
+                    pass  # fall through to LLM replan
+
+        # Deterministic fix: missing department.id on employee
+        if status_code in RETRYABLE_STATUS_CODES and "department" in error_lower and "/employee" in resolved_args.get("path", ""):
+            log.info("Deterministic fix: missing department.id, fetching department")
+            call_api_tool = tool_map.get("call_api")
+            if call_api_tool:
+                dept_result = call_api_tool.invoke({
+                    "method": "GET", "path": "/department",
+                    "query_params": {"from": 0, "count": 1, "fields": "id"},
+                })
+                try:
+                    dept_parsed = json.loads(dept_result)
+                    dept_values = dept_parsed.get("values", [])
+                    if dept_values:
+                        dept_id = dept_values[0].get("id")
+                        if dept_id and isinstance(resolved_args.get("body"), dict):
+                            resolved_args["body"]["department"] = {"id": dept_id}
+                            retry_result_str = tool.invoke(resolved_args)
+                            retry_is_error, _ = _is_api_error(retry_result_str)
+                            if not retry_is_error:
+                                try:
+                                    parsed = json.loads(retry_result_str)
+                                except (json.JSONDecodeError, TypeError):
+                                    parsed = {"raw": retry_result_str}
+                                results[f"step_{step['step_number']}"] = parsed
+                                log.info(f"Step {step['step_number']} succeeded after department fix")
+                                completed.append(step["step_number"])
+                                return {
+                                    "current_step": step_idx + 1,
+                                    "results": results,
+                                    "completed_steps": completed,
+                                    "error_count": error_count,
+                                    "replan_count": replan_count,
+                                    "messages": [AIMessage(content=f"Step {step['step_number']} done (department fixed)")],
+                                }
+                except (json.JSONDecodeError, TypeError, Exception):
+                    pass  # fall through to LLM replan
+
+        # Deterministic fix: duplicate product number
+        if status_code in RETRYABLE_STATUS_CODES and "produktnummeret" in error_lower and "er i bruk" in error_lower:
+            log.info("Deterministic fix: duplicate product number, stripping number field")
+            body = resolved_args.get("body")
+            if isinstance(body, list):
+                for item in body:
+                    if isinstance(item, dict):
+                        item.pop("number", None)
+            elif isinstance(body, dict):
+                body.pop("number", None)
+            try:
+                retry_result_str = tool.invoke(resolved_args)
+                retry_is_error, _ = _is_api_error(retry_result_str)
+                if not retry_is_error:
+                    try:
+                        parsed = json.loads(retry_result_str)
+                    except (json.JSONDecodeError, TypeError):
+                        parsed = {"raw": retry_result_str}
+                    results[f"step_{step['step_number']}"] = parsed
+                    log.info(f"Step {step['step_number']} succeeded after product number fix")
+                    completed.append(step["step_number"])
+                    return {
+                        "current_step": step_idx + 1,
+                        "results": results,
+                        "completed_steps": completed,
+                        "error_count": error_count,
+                        "replan_count": replan_count,
+                        "messages": [AIMessage(content=f"Step {step['step_number']} done (product number fixed)")],
+                    }
+            except Exception:
+                pass  # fall through to LLM replan
+
         if status_code in RETRYABLE_STATUS_CODES and replan_count < MAX_REPLANS:
             log.warning(f"API error {status_code}, attempting adaptive replan ({replan_count+1}/{MAX_REPLANS})")
 
