@@ -158,6 +158,24 @@ All 4 priority items implemented and submitted:
 | 3 | **Lightweight forward model** (4h) | ❌ Disabled | Consistently hurts in backtest |
 | 4 | **Deploy to Cloud Run** (4i) | Not started | Automation |
 
+### Overnight iteration findings (2026-03-20)
+
+**Attempted and failed:**
+- **Stronger forest entropy injection** ❌: Increased shrink max 0.15→0.22, multipliers up. R2 regressed +24.9% (0.0321→0.0400). The blunt shrink over-corrects on moderate rounds where forest retention is legitimately high. Needs per-round conditioning, not global strength.
+- **Forest smoothing K reduction (4→2)** ➖: Zero effect in backtest. With 5 seeds of GT, each bucket has hundreds of obs so K barely matters. Only relevant in production with 50 queries.
+
+**Current error profile (avg KL 0.0497):**
+- Plains: ~60% of loss, wkl=0.048 avg — biggest target but hard to improve without regressing
+- Forest: ~33% of loss, wkl=0.061 avg — worst cells are Forest near settlements (pred 89% vs GT 73%)
+- R7 is the outlier (KL 0.124) — harsh winter. R3 also tough (KL 0.056, near-total collapse)
+- Sp+Forward consistently worse than pure Spatial
+
+**Promising directions not yet tried:**
+- Plains bucket refinement: split by distance + cluster density interaction
+- Per-round adaptive entropy injection: condition forest shrink on observed survival rate, not just retention
+- Ruin-to-forest transition: currently under-predicted, especially near forests in harsh winters
+- Confidence calibration tuning: the Step 1.8 calibration parameters may be suboptimal
+
 ---
 
 ## Simulation Phase Summary (for modeling reference)

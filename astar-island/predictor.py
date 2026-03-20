@@ -1009,7 +1009,7 @@ def build_prediction(height, width, initial_grid, observations,
         for r in range(height):
             for c in range(width):
                 code = initial_grid[r][c]
-                if code in (11, 4) and settlement_dists[r][c] <= 6:
+                if code in (11, 4) and settlement_dists[r][c] <= 8:
                     model_exp += predictions[r, c, 1]
                     exp_count += 1
         if exp_count > 0:
@@ -1022,9 +1022,9 @@ def build_prediction(height, width, initial_grid, observations,
                         for c in range(width):
                             code = initial_grid[r][c]
                             d = settlement_dists[r][c]
-                            if code in (11, 4) and d <= 6:
-                                # Decay effect for d=5-6
-                                effective_scale = 1.0 + (scale - 1.0) * max(0.0, 1.0 - max(0, d - 4) / 3.0)
+                            if code in (11, 4) and d <= 8:
+                                # Decay effect for d=5-8
+                                effective_scale = 1.0 + (scale - 1.0) * max(0.0, 1.0 - max(0, d - 4) / 5.0)
                                 predictions[r, c, 1] *= effective_scale
                                 # Also scale Port for coastal cells
                                 is_coastal = any(
