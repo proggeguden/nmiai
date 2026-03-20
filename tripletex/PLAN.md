@@ -2,208 +2,65 @@
 
 **Goal:** World-class score (correctness × efficiency). Current baseline: functional agent, generic 2-tool system, planner/executor/self-heal pipeline.
 
-## Status: Current State (2026-03-20)
-- **Architecture redesigned**: Generic `call_api` tool replaces 46 typed tools
-- 2 tools: `call_api` + `lookup_endpoint` (covers ALL 800 API endpoints)
-- Auto-generated endpoint catalog from swagger.json (Tier 1: ~130 endpoints in prompt, Tier 2: all 800 via lookup)
-- Smart self-heal: only retries 400/422, includes full endpoint schema in fix prompt
-- Recursive placeholder resolution (works through nested dicts/lists)
-- Model configurable via GEMINI_MODEL env var
-- **Test system**: `test_local.py` reads real prompts from `md/test_prompts.json` (8 prompts, 4 categories, 4 languages)
-- **Log harvesting**: `/harvest-logs` Claude Code skill extracts prompts + errors from Cloud Run
+## Status: Round 9 Complete (2026-03-20)
 
-## Current Architecture
-
+### Architecture
 ```
-Prompt → Planner (1 LLM call) → Executor (pure Python loop) → Self-heal (on 400/422) → Done
-                                      ↓
-                              call_api / lookup_endpoint
+Prompt → Multi-Agent Planner (3 parallel LLM calls) → Score & Select → Executor → Adaptive Self-Heal → Done
+                                                                            ↓
+                                                                    call_api / lookup_endpoint
 ```
 
-**Strengths:** single-LLM-call planning, recursive placeholder resolution, targeted self-heal, production logging, auto-generated endpoint catalog.
+- **Multi-agent planner**: 3 profiles (cautious/efficient/creative), scored, best wins
+- **Adaptive self-heal**: retry/skip/replace actions (can restructure remaining plan)
+- **Default model**: gemini-2.5-flash (overridable via GEMINI_MODEL)
+- **26 test prompts** across 10 categories and 7 languages
+- **Log harvesting**: `/harvest-logs` skill for Cloud Run logs
 
-**Key constraint:** Every 4xx error and every extra API call reduces score. Perfect correctness unlocks 2x efficiency bonus.
+### Local Test Results (Round 9)
+
+**Tested (10/26) — all pass, warnings fixed:**
+- Simple CRUD: 2 (departments nn), 5 (supplier nb), 7 (customer en), 22 (supplier fr), 24 (departments en)
+- Complex: 6 (project en), 23 (travel fr), 25 (voucher pt), 26 (supplier invoice es), 4 (send invoice es)
+
+**Not yet tested locally (16/26):**
+- Payment: 1 (es), 3 (de), 11 (fr cancel), 14 (fr products+pay), 18 (nn products+pay)
+- Invoice: 9 (en hours), 10 (en hours), 12 (nb credit note), 13 (en hours), 20 (de hours), 21 (pt multi-VAT)
+- Employee: 8 (en)
+- Payroll: 15 (es), 16 (en), 17 (es)
+- Project: 19 (es fixed-price)
+
+### Fixes Applied in Round 9
+1. Adaptive self-heal (retry/skip/replace) replaces fixed-args-only self-heal
+2. Multi-agent planner (3 parallel, scored)
+3. gemini-2.5-flash default
+4. Lighter recipes (hints not mandates)
+5. validate_plan: strip product numbers, travel inline fields, voucher voucherType, add project startDate, add voucher row numbers
+6. Ternary and OR-fallback placeholder resolution
+7. Planner rules 19-24 (simple placeholders, startDate, vatType path, no voucherType, no custom dimensions, integer IDs)
+8. Catalog: travel sub-endpoints, perDiem location, voucher gotchas
+9. LOG_FILE support for local warning analysis
+
+### Known Remaining Issues
+- Employee dedup generates extra skipped steps (efficiency cost, not correctness)
+- travelExpense/cost may still 422 on some field combinations
+- Custom dimensions (test 25) — planner now works around API limitation via descriptions
 
 ---
 
-## Tier 1 — High Impact, Low Effort
+## Next Steps (Priority Order)
 
-### 1.1 Plan Validation Layer
-**File:** `agent.py` (after planner, before executor)
-
-After the planner generates a JSON plan, validate it before execution:
-- All `tool_name` values are in `[call_api, lookup_endpoint]`
-- All `$step_N` references point to earlier steps (no forward refs)
-- All paths start with `/`
-- Required fields present for known endpoints (cross-check with catalog schemas)
-- If validation fails, ask LLM to re-plan with specific error feedback (max 1 re-plan)
-
-**Why:** Catches hallucinated endpoints, forward references, and missing fields before they become 4xx errors. Each prevented error is a direct scoring win.
-
-### 1.2 Workflow-Specific Plan Templates
-**File:** `prompts.py`
-
-Add concrete, tested plan examples for the most common task categories:
-- **Invoice creation**: exact step sequence with all required fields
-- **Payment registration**: search → find invoice → get payment types → PUT /:payment
-- **Employee creation**: POST with required department.id
-- **Customer creation**: POST with address fields
-- **Project creation**: find/create manager → POST project
-
-These aren't rigid templates — they're few-shot examples that guide the planner toward proven step sequences. Extract them from successful test runs.
-
-**Why:** Few-shot examples massively reduce planner errors on common tasks. The planner currently gets format examples but not domain-specific workflow examples.
-
-### 1.3 Smarter Error Abort Logic
-**File:** `agent.py`, `check_done` function
-
-Currently aborts after 3 errors regardless of type. Improve:
-- **Auth errors (401/403):** abort immediately (credentials broken, no recovery)
-- **Not found (404):** continue (search may have zero results, next step creates it)
-- **Conflict (409):** continue (entity already exists, may be fine)
-- **Schema errors (400/422):** count toward limit (self-heal already tried)
-- **5xx:** retry once with backoff, then skip step
-
-**Why:** Some "errors" are informational (404 on search = doesn't exist yet). Aborting early throws away work that was already done correctly.
-
-### 1.4 Bulk Endpoint Optimization
-**File:** `prompts.py` (planner rules)
-
-Add explicit planner instructions:
-- When creating multiple entities of the same type, always use the `/list` bulk endpoint (POST with array body)
-- Example: creating 3 departments → 1 POST `/department/list` instead of 3 POST `/department`
-- Add rule: "If the prompt asks to create N things of the same type, plan a single bulk call"
-
-**Why:** 3 calls → 1 call is a huge efficiency win. The rule exists (#6) but needs a concrete example to be reliable.
-
-### 1.5 Model Upgrade
-- [ ] Test with GEMINI_MODEL=gemini-3.1-pro-preview (or latest available)
-- [ ] Compare plan quality and first-try correctness vs gemini-2.5-pro
-- [ ] Check if newer model reduces self-heal needs
-
----
-
-## Tier 2 — High Impact, Medium Effort
-
-### 2.1 Response Validation (Post-Execution Check)
-**File:** new node in `agent.py` StateGraph, or post-loop in executor
-
-After all steps complete, do a lightweight validation:
-- For "create X" tasks: verify the created entity ID exists in results
-- For "register payment" tasks: verify the payment response shows success
-- For "create + send invoice" tasks: verify both creation and send succeeded
-- If critical step failed, attempt a recovery sequence
-
-This is NOT a full re-run. It's a single check: "did the last critical step succeed?"
-
-**Why:** Currently the agent returns `completed` even if the final important step failed. A check catches this.
-
-### 2.2 Dynamic Self-Heal Context
-**File:** `agent.py`, `_ask_llm_to_fix_args`
-
-Currently self-heal gets the endpoint schema. Enhance with:
-- The specific error from `md/api_errors.md` if it matches (known fix patterns)
-- The results of previous successful steps (so LLM can reference created IDs)
-- Common gotcha notes relevant to that endpoint
-
-**Why:** Self-heal success rate is the biggest lever after plan quality. Richer context = better fixes.
-
-### 2.3 Placeholder Resolution Hardening
-**File:** `agent.py`, `_resolve_placeholder`
-
-Current issues:
-- No type coercion: `$step_1.value.id` returns string "123" when API expects int 123
-- LLM fallback is expensive and sometimes hallucinates
-
-Fix:
-- After resolution, if value looks numeric, cast to int
-- Add path validation: if `$step_N` result doesn't have the expected path, log a clear error instead of falling through to LLM
-- Cache resolved placeholders per step (avoid re-resolving same reference)
-
-**Why:** Type mismatches cause subtle 422 errors that self-heal struggles with because the "fix" is a type cast, not a field change.
-
-### 2.4 Expand Test Suite
-**File:** `md/test_prompts.json`, `test_local.py`
-
-Current coverage: 8 prompts across 4 categories and 4 languages. Expand to:
-- All 7 languages (add French, Portuguese, plus more Norwegian variants)
-- All task categories (voucher, product, travel expense, order, delete, update)
-- Edge cases: multi-step tasks, tasks with prerequisites, tasks referencing non-existent entities
-- Use `/harvest-logs` to continuously add real submission prompts
-
-Add validation to `test_local.py`: after each test, verify expected entities exist via GET calls.
-
-**Why:** Can't improve what you can't measure. Broader test coverage catches regressions and reveals weak categories.
-
-### 2.5 Catalog & Prompt Tuning
-- [ ] Add more GOTCHA_NOTES to `build_endpoint_catalog.py` based on submission errors
-- [ ] Tune TIER1_TAGS if some needed endpoints are missing from Tier 1
-- [ ] Improve compact schema format if LLM misreads required fields
-- [ ] Add language vocabulary as new languages are encountered
-- [ ] Optimize planner rules based on common plan mistakes
-
----
-
-## Tier 3 — Medium Impact, Higher Effort
-
-### 3.1 Parallel-Safe Credentials
-**File:** `tools.py`
-
-Replace module-level globals with `contextvars.ContextVar`:
-```python
-from contextvars import ContextVar
-_base_url: ContextVar[str] = ContextVar('base_url')
-_session_token: ContextVar[str] = ContextVar('session_token')
-```
-
-**Why:** Required if you ever run multiple submissions concurrently. Low urgency for Cloud Run (1 request per instance) but prevents nasty bugs.
-
-### 3.2 Adaptive Planner (Learn from Errors)
-**File:** `agent.py`, `prompts.py`
-
-After a self-heal succeeds, inject the lesson back into the planner prompt for future runs:
-- Maintain a small "lessons learned" section in the prompt (or a separate file)
-- Auto-populated from successful self-heal patterns in `md/api_errors.md`
-- Example: "When creating employees, always include department.id — the API requires it even though the schema marks it optional"
-
-**Why:** Converts runtime fixes into permanent planning improvements. Closes the feedback loop.
-
-### 3.3 File Attachment Intelligence
-**File:** `main.py`
-
-Currently files are appended as raw text. Improve:
-- CSV: parse headers, detect if it's a list of entities to create (→ bulk endpoint)
-- JSON: validate structure, extract entity type
-- PDF: extract text, summarize with 1 LLM call
-- Pass structured summary to planner, not raw content
-
-**Why:** File-based prompts are likely a task category. Better file parsing = better plans.
-
-### 3.4 Request Timeout & Partial Recovery
-**File:** `agent.py`, `main.py`
-
-Add per-step timeout (30s default). If a step times out:
-- Log it as a transient error
-- Skip the step, continue with remaining steps
-- If a critical step times out, retry once
-
-Add a global timeout handler in main.py (Cloud Run gives 300s by default):
-- If approaching timeout, execute remaining steps without self-heal (faster)
-
-**Why:** Prevents hanging on slow LLM calls. Graceful degradation under time pressure.
-
-### 3.5 Reduce Unnecessary LLM Calls
-- Minimize `lookup_endpoint` usage (ensure Tier 1 covers all common tasks)
-- Reduce LLM fallback in placeholder resolution (better path parsing)
-- Minimize search calls by using specific filters (`fields` param, exact matches)
+1. **Run remaining 16 tests locally** — fix any new warning patterns
+2. **Harvest production logs** — compare error rates pre/post Round 9
+3. **Employee dedup optimization** — reduce wasted GET+skip cycles
+4. **Response validation** — post-execution check that critical steps succeeded
+5. **Parallel-safe credentials** — contextvars for concurrent safety
 
 ---
 
 ## Iteration Protocol
 
-For each iteration:
-
-1. **Measure** — Run all prompts in `test_local.py`, note pass/fail per category
+1. **Measure** — Run all prompts in `test_local.py`, note warnings per test
 2. **Harvest** — `/harvest-logs` to pull real submission data
 3. **Diagnose** — Review plans and errors: is the problem planning, execution, or self-heal?
 4. **Fix** — Pick the highest-impact item from this plan
