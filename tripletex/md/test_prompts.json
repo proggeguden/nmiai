@@ -62,5 +62,53 @@
     "category": "employee",
     "source": "submission",
     "description": "Create employee with details (English)"
+  },
+  {
+    "id": 9,
+    "prompt": "Log 29 hours for Ella Williams (ella.williams@example.org) on the activity \"Testing\" in the project \"Platform Integration\" for Windmill Ltd (org no. 839360274). Hourly rate: 1350 NOK/h. Generate a project invoice to the customer based on the logged hours.",
+    "language": "en",
+    "category": "invoice",
+    "source": "gcloud-log",
+    "description": "Log hours and generate project invoice (English)"
+  },
+  {
+    "id": 10,
+    "prompt": "Log 14 hours for Thomas Smith (thomas.smith@example.org) on the activity \"Design\" in the project \"App Development\" for Brightstone Ltd (org no. 982658691). Hourly rate: 1950 NOK/h. Generate a project invoice to the customer based on the logged hours.",
+    "language": "en",
+    "category": "invoice",
+    "source": "gcloud-log",
+    "description": "Log hours and generate project invoice (English)"
+  },
+  {
+    "id": 11,
+    "prompt": "Le paiement de Lumière SARL (nº org. 937075405) pour la facture \"Conseil en données\" (39100 NOK HT) a été retourné par la banque. Annulez le paiement afin que la facture affiche à nouveau le montant impayé.",
+    "language": "fr",
+    "category": "payment",
+    "source": "gcloud-log",
+    "description": "Cancel returned bank payment on invoice (French)"
+  },
+  {
+    "id": 12,
+    "prompt": "Kunden Tindra AS (org.nr 911680521) har reklamert på fakturaen for \"Systemutvikling\" (8050 kr ekskl. MVA). Opprett en fullstendig kreditnota som reverserer hele fakturaen.",
+    "language": "nb",
+    "category": "invoice",
+    "source": "gcloud-log",
+    "description": "Create full credit note reversing invoice (Norwegian)"
+  },
+  {
+    "id": 13,
+    "prompt": "Log 13 hours for Hannah Brown (hannah.brown@example.org) on the activity \"Analyse\" in the project \"App Development\" for Brightstone Ltd (org no. 970020896). Hourly rate: 1850 NOK/h. Generate a project invoice to the customer based on the logged hours.",
+    "language": "en",
+    "category": "invoice",
+    "source": "gcloud-log",
+    "description": "Log hours and generate project invoice (English)"
+  },
+  {
+    "id": 14,
+    "prompt": "Créez une commande pour le client Océan SARL (nº org. 984524706) avec les produits Licence logicielle (7127) à 6750 NOK et Stockage cloud (8796) à 9700 NOK. Convertissez la commande en facture et enregistrez le paiement intégral.",
+    "language": "fr",
+    "category": "invoice",
+    "source": "gcloud-log",
+    "description": "Create order with products, invoice, and register payment (French)"
   }
 ]

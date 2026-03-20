@@ -35,6 +35,9 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - "bestilling"/"ordre"/"order"/"pedido"/"Bestellung" = order
 - "bilag"/"voucher"/"Beleg" = voucher
 - "konto"/"account"/"cuenta"/"Konto"/"compte" = ledger account
+- "kreditnota"/"credit note"/"nota de crédito"/"Gutschrift"/"avoir" = credit note
+- "timeføring"/"log hours"/"registrer timer" = time entry / hour logging
+- "annuler"/"kanseller"/"cancel"/"stornieren" = cancel/reverse
 
 ## Workflow recipes
 1. **Create customer + invoice**: create customer → create order (with orderLines, deliveryDate=orderDate) → create invoice (or use PUT /order/{{id}}/:invoice)
@@ -47,6 +50,10 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 8. **Register supplier**: POST /supplier with name, organizationNumber, email
 9. **Update entity**: GET first to get current version → PUT with version field
 10. **Delete entity**: search to find ID → DELETE /entity/{{id}}
+11. **Log hours + project invoice**: create department → create employee (with department) → create customer → create project (with customer, optionally projectManager) → create order (with project, orderLines=hours*rate, deliveryDate=orderDate) → PUT /order/{{id}}/:invoice
+12. **Credit note (reverse invoice)**: create customer → create order → PUT /order/{{id}}/:invoice → PUT /invoice/{{id}}/:createCreditNote with date and comment in query_params
+13. **Cancel/reverse payment**: create customer → create order → PUT /order/{{id}}/:invoice (with paidAmount to simulate initial payment) → PUT /invoice/{{id}}/:payment with negative paidAmount to reverse
+14. **Order with existing products**: create customer → POST /product/list (bulk create, omit number field to auto-generate) → create order with product references in orderLines
 
 ## Rules
 1. **Minimize API calls.** Every call counts against the efficiency score. Every 4xx error costs even more.
@@ -67,6 +74,9 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
     Only use GET to search when you genuinely don't know the entity (e.g. looking up paymentType or vatType).
 14. For POST /order: deliveryDate is REQUIRED — use the orderDate value if not specified.
 15. For POST /employee: userType is REQUIRED — use "STANDARD" for normal employees, "EXTENDED" for administrators.
+16. For POST /project: projectManager may fail with "har ikke fått tilgang som prosjektleder". If the task doesn't strictly require a specific manager, omit projectManager to avoid errors.
+17. For GET /invoice with date filters: invoiceDateTo must be strictly AFTER invoiceDateFrom (exclusive end). Use the next day.
+18. For POST /product/list: omit the "number" field to auto-generate — existing product numbers cause 422.
 
 ## Output format
 Return ONLY a JSON array of steps, no other text:
