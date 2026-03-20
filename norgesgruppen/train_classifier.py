@@ -24,12 +24,13 @@ CROPS_DIR = DATA_DIR / "crops"
 SAVE_DIR = Path(__file__).parent / "runs" / "classifier"
 
 IMG_SIZE = 260  # EfficientNet-B2 native resolution
-BATCH_SIZE = 64
+BATCH_SIZE = 192
 NUM_EPOCHS = 80
-LR = 1e-3
+LR = 3e-3  # scale with batch size (3x batch → 3x LR)
 LABEL_SMOOTHING = 0.1
-NUM_WORKERS = 4
+NUM_WORKERS = 8
 REF_OVERSAMPLE = 10  # oversample reference images for rare classes
+USE_AMP = True  # mixed precision for speed
 
 
 class CropDataset(Dataset):
@@ -124,9 +125,9 @@ def main():
         transforms.RandomHorizontalFlip(),
         transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.05),
         transforms.RandomRotation(15),
-        transforms.RandomErasing(p=0.3),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        transforms.RandomErasing(p=0.3),
     ])
 
     val_transform = transforms.Compose([
@@ -157,6 +158,7 @@ def main():
 
     SAVE_DIR.mkdir(parents=True, exist_ok=True)
     best_acc = 0.0
+    scaler = torch.amp.GradScaler(enabled=USE_AMP)
 
     for epoch in range(NUM_EPOCHS):
         # Train
@@ -167,12 +169,15 @@ def main():
 
         for images, labels in train_loader:
             images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            loss = criterion(outputs, labels)
+
+            with torch.amp.autocast("cuda", enabled=USE_AMP):
+                outputs = model(images)
+                loss = criterion(outputs, labels)
 
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             train_loss += loss.item() * images.size(0)
             _, predicted = outputs.max(1)
@@ -189,7 +194,8 @@ def main():
         with torch.no_grad():
             for images, labels in val_loader:
                 images, labels = images.to(device), labels.to(device)
-                outputs = model(images)
+                with torch.amp.autocast("cuda", enabled=USE_AMP):
+                    outputs = model(images)
                 _, predicted = outputs.max(1)
                 val_correct += predicted.eq(labels).sum().item()
                 val_total += labels.size(0)
