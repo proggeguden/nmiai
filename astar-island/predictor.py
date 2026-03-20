@@ -101,7 +101,7 @@ def compute_bucket_key(initial_grid, r, c):
     if code == 1:    # Settlement
         return (1, has_adj_forest, has_adj_settlement)
     elif code == 2:  # Port
-        return (2, forest_bucket)
+        return (2, has_adj_forest)
     elif code == 11: # Plains
         return (11, near_settlement, is_coastal)
     elif code == 0:  # Empty

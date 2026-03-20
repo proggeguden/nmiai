@@ -189,52 +189,41 @@ def test_pipeline(round_id, submit=False):
         print("\n  Round is not active — skipping queries. Use --backtest instead.")
         return True
 
-    # Observe seed 0 with a few queries for testing
-    print(f"\n  Querying seed 0 (4 tiles for quick test)...")
-    observations = []
-    test_positions = [(0, 0), (15, 0), (0, 15), (15, 15)]
-    for x, y in test_positions:
-        try:
-            result = api_client.query_seed(round_id, 0, viewport_x=x, viewport_y=y)
-            vp = result.get("viewport", {})
-            print(f"    ({x},{y}): viewport={vp}, queries={result['queries_used']}/{result['queries_max']}")
-            result["seed_index"] = 0
-            observations.append(result)
-        except Exception as e:
-            print(f"    ({x},{y}) error: {e}")
-            break
-
-    # Learn spatial transition model
-    global_model, spatial_model = learn_spatial_transition_model(
-        [initial_states[0]["grid"]], observations
-    )
-    print(f"\n  Models: {len(global_model)} codes, {len(spatial_model)} spatial buckets")
-
-    # Predict seed 0
-    pred = build_prediction(height, width, initial_states[0]["grid"],
-                            observations, transition_model=global_model,
-                            spatial_model=spatial_model)
-    pred_list = predictions_to_list(pred)
-    validate_predictions(pred_list, height, width)
-    print(f"\n  Prediction valid: shape={pred.shape}, "
-          f"sum=[{pred.sum(axis=2).min():.4f}, {pred.sum(axis=2).max():.4f}], "
-          f"min_prob={pred.min():.6f}")
-
     if submit:
-        print(f"\n  Submitting all 5 seeds...")
-        for seed_idx in range(seeds_count):
-            init_grid = initial_states[seed_idx]["grid"]
-            seed_obs = observations if seed_idx == 0 else []
-            p = build_prediction(height, width, init_grid, seed_obs,
-                                 transition_model=global_model,
-                                 spatial_model=spatial_model)
-            pl = predictions_to_list(p)
-            validate_predictions(pl, height, width)
+        # Full pipeline: use all queries for maximum accuracy
+        from main import run_pipeline
+        print(f"\n  Running full pipeline (all {queries_max} queries)...")
+        result = run_pipeline(round_id)
+        print(f"\n  Result: {result['seeds_submitted']} seeds submitted")
+    else:
+        # Quick test: use 4 queries to check things work
+        print(f"\n  Querying seed 0 (4 tiles for quick test)...")
+        observations = []
+        test_positions = [(0, 0), (15, 0), (0, 15), (15, 15)]
+        for x, y in test_positions:
             try:
-                resp = api_client.submit_prediction(round_id, seed_idx, pl)
-                print(f"    Seed {seed_idx}: {resp.get('status')}")
+                result = api_client.query_seed(round_id, 0, viewport_x=x, viewport_y=y)
+                vp = result.get("viewport", {})
+                print(f"    ({x},{y}): viewport={vp}, queries={result['queries_used']}/{result['queries_max']}")
+                result["seed_index"] = 0
+                observations.append(result)
             except Exception as e:
-                print(f"    Seed {seed_idx} error: {e}")
+                print(f"    ({x},{y}) error: {e}")
+                break
+
+        global_model, spatial_model = learn_spatial_transition_model(
+            [initial_states[0]["grid"]], observations
+        )
+        print(f"\n  Models: {len(global_model)} codes, {len(spatial_model)} spatial buckets")
+
+        pred = build_prediction(height, width, initial_states[0]["grid"],
+                                observations, transition_model=global_model,
+                                spatial_model=spatial_model)
+        pred_list = predictions_to_list(pred)
+        validate_predictions(pred_list, height, width)
+        print(f"\n  Prediction valid: shape={pred.shape}, "
+              f"sum=[{pred.sum(axis=2).min():.4f}, {pred.sum(axis=2).max():.4f}], "
+              f"min_prob={pred.min():.6f}")
 
     print(f"\n{'='*60}")
     print("Pipeline test completed!")

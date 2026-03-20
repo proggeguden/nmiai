@@ -120,13 +120,21 @@ def run_pipeline(round_id):
         validate_predictions(pred_list, height, width)
 
         print(f"  Submitting prediction...")
-        try:
-            resp = api_client.submit_prediction(round_id, seed_idx, pred_list)
-            print(f"  Submit response: {resp}")
-            results.append({"seed_index": seed_idx, "submitted": True, "response": resp})
-        except Exception as e:
-            print(f"  Submit error: {e}")
-            results.append({"seed_index": seed_idx, "submitted": False, "error": str(e)})
+        for attempt in range(3):
+            try:
+                resp = api_client.submit_prediction(round_id, seed_idx, pred_list)
+                print(f"  Submit response: {resp}")
+                results.append({"seed_index": seed_idx, "submitted": True, "response": resp})
+                time.sleep(0.3)  # avoid rate limiting
+                break
+            except Exception as e:
+                if "429" in str(e) and attempt < 2:
+                    print(f"  Rate limited, retrying in 2s...")
+                    time.sleep(2)
+                else:
+                    print(f"  Submit error: {e}")
+                    results.append({"seed_index": seed_idx, "submitted": False, "error": str(e)})
+                    break
 
     return {"seeds_submitted": len(results), "results": results}
 
