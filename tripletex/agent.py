@@ -27,7 +27,7 @@ def build_agent():
     tool_map = {t.name: t for t in tools}
 
     llm = ChatGoogleGenerativeAI(
-        model=os.environ.get("GEMINI_MODEL", "gemini-2.5-pro"),
+        model=os.environ.get("GEMINI_MODEL", "gemini-3.1-pro-preview"),
         google_api_key=os.environ["GOOGLE_API_KEY"],
         temperature=0,
     )
@@ -43,7 +43,11 @@ def build_agent():
         log.info("Planner invoked", prompt_length=len(prompt_text))
 
         response = llm.invoke([HumanMessage(content=prompt_text)])
-        raw = response.content if isinstance(response.content, str) else str(response.content)
+        raw = (
+            response.content
+            if isinstance(response.content, str)
+            else str(response.content)
+        )
 
         log.info("Planner raw output", output=raw[:2000])
 
@@ -51,9 +55,7 @@ def build_agent():
         plan = _parse_plan_json(raw)
 
         log.info(
-            ">>>PLAN_START<<<\n"
-            f"{json.dumps(plan, indent=2)}\n"
-            ">>>PLAN_END<<<",
+            f">>>PLAN_START<<<\n{json.dumps(plan, indent=2)}\n>>>PLAN_END<<<",
             steps=len(plan),
         )
 
@@ -125,7 +127,11 @@ def build_agent():
             "results": results,
             "completed_steps": completed,
             "error_count": error_count,
-            "messages": [AIMessage(content=f"Step {step['step_number']} done: {str(parsed)[:200]}")],
+            "messages": [
+                AIMessage(
+                    content=f"Step {step['step_number']} done: {str(parsed)[:200]}"
+                )
+            ],
         }
 
     # --- Node: check_done ---
@@ -226,7 +232,13 @@ def _is_api_error(result_str: str) -> tuple[bool, int]:
         return False, 0
 
 
-def _log_self_heal(tool_name: str, original_args: dict, error_response: str, fixed_args: dict | None, retry_succeeded: bool) -> None:
+def _log_self_heal(
+    tool_name: str,
+    original_args: dict,
+    error_response: str,
+    fixed_args: dict | None,
+    retry_succeeded: bool,
+) -> None:
     """Log a self-heal attempt with clear delimiters for easy extraction from cloud logs."""
     log.warning(
         ">>>SELF_HEAL_START<<<\n"
@@ -241,9 +253,7 @@ def _log_self_heal(tool_name: str, original_args: dict, error_response: str, fix
     )
 
 
-def _ask_llm_to_fix_args(
-    llm, original_args: dict, error_response: str
-) -> dict | None:
+def _ask_llm_to_fix_args(llm, original_args: dict, error_response: str) -> dict | None:
     """Ask the LLM to fix call_api arguments based on the API error. Returns fixed args or None."""
     # Extract method/path from the call_api args
     method = original_args.get("method", "POST")
@@ -254,6 +264,7 @@ def _ask_llm_to_fix_args(
     # Get endpoint schema for rich context
     try:
         from generic_tools import get_endpoint_schema
+
         endpoint_schema = get_endpoint_schema(method, path)
     except Exception:
         endpoint_schema = "(unavailable)"
@@ -261,7 +272,9 @@ def _ask_llm_to_fix_args(
     prompt = FIX_ARGS_PROMPT.format(
         method=method,
         path=path,
-        query_params=json.dumps(query_params, indent=2, default=str) if query_params else "{}",
+        query_params=json.dumps(query_params, indent=2, default=str)
+        if query_params
+        else "{}",
         body=json.dumps(body, indent=2, default=str) if body else "{}",
         error_response=error_response[:2000],
         endpoint_schema=endpoint_schema[:3000],
@@ -297,7 +310,9 @@ def _parse_json_object(raw: str) -> dict | None:
         return None
 
 
-def _call_tool_with_retry(tool, resolved_args: dict, llm, error_count: int) -> tuple[str, dict, int]:
+def _call_tool_with_retry(
+    tool, resolved_args: dict, llm, error_count: int
+) -> tuple[str, dict, int]:
     """Call a tool, and if it returns a retryable error (400/422), ask the LLM to fix args and retry once.
 
     Non-retryable errors (401, 403, 404, 409, 5xx) are returned immediately without retry.
@@ -330,18 +345,28 @@ def _call_tool_with_retry(tool, resolved_args: dict, llm, error_count: int) -> t
             )
             fixed_args = _ask_llm_to_fix_args(llm, resolved_args, result_str)
             if fixed_args:
-                _log_self_heal(tool.name, resolved_args, result_str, fixed_args, retry_succeeded=True)
+                _log_self_heal(
+                    tool.name,
+                    resolved_args,
+                    result_str,
+                    fixed_args,
+                    retry_succeeded=True,
+                )
                 resolved_args = fixed_args
                 continue
             else:
-                _log_self_heal(tool.name, resolved_args, result_str, None, retry_succeeded=False)
+                _log_self_heal(
+                    tool.name, resolved_args, result_str, None, retry_succeeded=False
+                )
         elif attempt < MAX_RETRIES and status_code not in RETRYABLE_STATUS_CODES:
             log.warning(
                 f"API error {status_code} from {tool.name} — not retryable, skipping self-heal",
             )
 
         # Out of retries or non-retryable — return the error
-        log.warning(f"Tool {tool.name} failed with status {status_code} after {attempt + 1} attempt(s)")
+        log.warning(
+            f"Tool {tool.name} failed with status {status_code} after {attempt + 1} attempt(s)"
+        )
         try:
             parsed = json.loads(result_str)
         except (json.JSONDecodeError, TypeError):
@@ -355,6 +380,7 @@ def _call_tool_with_retry(tool, resolved_args: dict, llm, error_count: int) -> t
 # ────────────────────────────────────────────────────────────────────────────
 # Recursive placeholder resolution
 # ────────────────────────────────────────────────────────────────────────────
+
 
 def _resolve_placeholders_deep(obj: Any, results: dict, llm) -> Any:
     """Recursively resolve $step_N placeholders in nested dicts, lists, and strings."""
@@ -389,7 +415,7 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
 
     # Parse the path: supports .field and [N] indexing
     # e.g. ".value.id", ".values[0].id", ".value.orderLines[0].id"
-    parts = re.findall(r'\.(\w+)|\[(\d+)\]', path_str)
+    parts = re.findall(r"\.(\w+)|\[(\d+)\]", path_str)
 
     for field_part, index_part in parts:
         if field_part:
@@ -427,7 +453,11 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
             description=f"Extract value for path: {path_str} (from placeholder {value})",
         )
         resp = llm.invoke([HumanMessage(content=fallback_prompt)])
-        extracted = resp.content.strip() if isinstance(resp.content, str) else str(resp.content).strip()
+        extracted = (
+            resp.content.strip()
+            if isinstance(resp.content, str)
+            else str(resp.content).strip()
+        )
         # Try to convert to int if it looks like an ID
         try:
             return int(extracted)
