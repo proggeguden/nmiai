@@ -31,8 +31,8 @@ NUM_CLASSES = 356
 
 # WBF ensemble settings
 USE_WBF = True            # fuse two-stage + multi-class predictions
-WBF_TWO_STAGE_WEIGHT = 0.6
-WBF_MULTICLASS_WEIGHT = 0.4
+WBF_TWO_STAGE_WEIGHT = 0.5
+WBF_MULTICLASS_WEIGHT = 0.5
 WBF_IOU_THRESH = 0.5
 WBF_SKIP_BOX_THRESH = 0.01
 
@@ -61,7 +61,7 @@ SOFT_NMS_SIGMA = 0.5    # Gaussian decay parameter
 SOFT_NMS_THRESH = 0.05  # prune boxes below this score after decay
 
 # TTA settings
-USE_TTA = True  # Test-time augmentation for classifier
+USE_TTA = True
 
 # Score formula: final_score = det_conf * cls_conf^SCORE_CLS_POWER
 # 1.0 = original multiplicative, 0.7 = best from sweep
@@ -403,63 +403,81 @@ def postprocess_multiclass(output, scale, pad_w, pad_h, img_w, img_h,
 
 def wbf_fuse(boxes_list, scores_list, labels_list, weights, img_w, img_h,
              iou_thresh=0.5, skip_box_thresh=0.01):
-    """Simple Weighted Boxes Fusion for 2 models.
+    """Weighted Boxes Fusion for 2+ models.
 
-    Normalizes boxes to [0,1], fuses overlapping boxes from different models,
-    and returns the fused results.
+    Uses ensemble_boxes library if available (proper WBF with box averaging),
+    falls back to custom NMS-based fusion.
     """
-    # Normalize boxes to [0, 1]
-    all_boxes = []
-    all_scores = []
-    all_labels = []
+    # Normalize boxes to [0, 1] — required by both implementations
+    norm_boxes_list = []
+    norm_scores_list = []
+    norm_labels_list = []
 
     for i, (boxes, scores, labels) in enumerate(zip(boxes_list, scores_list, labels_list)):
         if len(boxes) == 0:
-            all_boxes.append(np.array([]).reshape(0, 4))
-            all_scores.append(np.array([]))
-            all_labels.append(np.array([], dtype=int))
+            norm_boxes_list.append(np.array([]).reshape(0, 4))
+            norm_scores_list.append(np.array([]))
+            norm_labels_list.append(np.array([], dtype=int))
             continue
         norm_boxes = boxes.copy()
         norm_boxes[:, [0, 2]] /= img_w
         norm_boxes[:, [1, 3]] /= img_h
         norm_boxes = np.clip(norm_boxes, 0, 1)
-        all_boxes.append(norm_boxes)
-        all_scores.append(scores * weights[i])
-        all_labels.append(labels)
+        norm_boxes_list.append(norm_boxes)
+        norm_scores_list.append(scores.astype(np.float32))
+        norm_labels_list.append(labels.astype(int))
 
-    # Simple fusion: take union of all boxes, merge overlapping ones
-    if all(len(b) == 0 for b in all_boxes):
+    if all(len(b) == 0 for b in norm_boxes_list):
         return np.array([]).reshape(0, 4), np.array([]), np.array([], dtype=int)
 
-    # Concatenate all predictions
-    fused_boxes = np.concatenate([b for b in all_boxes if len(b) > 0], axis=0)
-    fused_scores = np.concatenate([s for s in all_scores if len(s) > 0], axis=0)
-    fused_labels = np.concatenate([l for l in all_labels if len(l) > 0], axis=0)
+    # Try proper WBF from ensemble_boxes library
+    try:
+        from ensemble_boxes import weighted_boxes_fusion
+        # ensemble_boxes expects list of arrays, each model's predictions
+        fused_boxes, fused_scores, fused_labels = weighted_boxes_fusion(
+            [b.tolist() for b in norm_boxes_list],
+            [s.tolist() for s in norm_scores_list],
+            [l.tolist() for l in norm_labels_list],
+            weights=list(weights),
+            iou_thr=iou_thresh,
+            skip_box_thr=skip_box_thresh,
+        )
+        fused_boxes = np.array(fused_boxes, dtype=np.float32)
+        fused_scores = np.array(fused_scores, dtype=np.float32)
+        fused_labels = np.array(fused_labels, dtype=int)
+    except ImportError:
+        # Fallback: custom NMS-based fusion
+        fused_boxes = np.concatenate([b for b in norm_boxes_list if len(b) > 0], axis=0)
+        fused_scores = np.concatenate(
+            [s * weights[i] for i, s in enumerate(norm_scores_list) if len(s) > 0], axis=0)
+        fused_labels = np.concatenate([l for l in norm_labels_list if len(l) > 0], axis=0)
 
-    # Filter low scores
-    mask = fused_scores > skip_box_thresh
-    fused_boxes = fused_boxes[mask]
-    fused_scores = fused_scores[mask]
-    fused_labels = fused_labels[mask]
+        mask = fused_scores > skip_box_thresh
+        fused_boxes = fused_boxes[mask]
+        fused_scores = fused_scores[mask]
+        fused_labels = fused_labels[mask]
 
-    # Per-class NMS on fused set
-    keep_all = []
-    for cls in np.unique(fused_labels):
-        cls_mask = fused_labels == cls
-        cls_boxes = fused_boxes[cls_mask]
-        cls_scores = fused_scores[cls_mask]
-        cls_indices = np.where(cls_mask)[0]
-        keep = nms(cls_boxes, cls_scores, iou_thresh)
-        keep_all.extend(cls_indices[keep].tolist())
+        keep_all = []
+        for cls in np.unique(fused_labels):
+            cls_mask = fused_labels == cls
+            cls_boxes = fused_boxes[cls_mask]
+            cls_scores = fused_scores[cls_mask]
+            cls_indices = np.where(cls_mask)[0]
+            keep = nms(cls_boxes, cls_scores, iou_thresh)
+            keep_all.extend(cls_indices[keep].tolist())
 
-    keep_all = np.array(keep_all, dtype=int)
+        keep_all = np.array(keep_all, dtype=int)
+        fused_boxes = fused_boxes[keep_all]
+        fused_scores = fused_scores[keep_all]
+        fused_labels = fused_labels[keep_all]
 
     # Denormalize boxes
-    result_boxes = fused_boxes[keep_all].copy()
-    result_boxes[:, [0, 2]] *= img_w
-    result_boxes[:, [1, 3]] *= img_h
+    result_boxes = fused_boxes.copy()
+    if len(result_boxes) > 0:
+        result_boxes[:, [0, 2]] *= img_w
+        result_boxes[:, [1, 3]] *= img_h
 
-    return result_boxes, fused_scores[keep_all], fused_labels[keep_all]
+    return result_boxes, fused_scores, fused_labels
 
 
 def softmax(x, axis=-1):
@@ -485,9 +503,10 @@ def main():
         mc_session = create_session(MULTICLASS_PATH)
         mc_input_name = mc_session.get_inputs()[0].name
 
-    # Check if classifier has dual output (logits + features)
+    # Check classifier outputs: 2 = standard dual (logits+features), 4 = dual-backbone
     cls_outputs = cls_session.get_outputs()
     has_features = len(cls_outputs) >= 2
+    has_dino = len(cls_outputs) >= 4  # dual-backbone: effnet_logits, effnet_features, dino_logits, dino_features
 
     # Load kNN embeddings if available
     use_knn = EMBEDDINGS_PATH.exists() and has_features
@@ -533,6 +552,8 @@ def main():
         batch_size = 64
         all_logits = []
         all_features = []
+        all_dino_logits = []
+        all_dino_features = []
 
         for i in range(0, len(crop_batch), batch_size):
             batch = crop_batch[i:i + batch_size]
@@ -540,9 +561,18 @@ def main():
             all_logits.append(outputs[0])
             if has_features:
                 all_features.append(outputs[1])
+            if has_dino:
+                all_dino_logits.append(outputs[2])
+                all_dino_features.append(outputs[3])
 
         all_logits = np.concatenate(all_logits, axis=0)
         cls_probs = softmax(all_logits, axis=1)
+
+        # DINOv2 ensemble: average EfficientNet + DINOv2 softmax
+        if has_dino and all_dino_logits:
+            dino_logits = np.concatenate(all_dino_logits, axis=0)
+            dino_probs = softmax(dino_logits, axis=1)
+            cls_probs = 0.5 * cls_probs + 0.5 * dino_probs
 
         if has_features and all_features:
             all_features_cat = np.concatenate(all_features, axis=0)

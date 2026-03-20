@@ -33,22 +33,28 @@ Two-stage pipeline: single-class YOLOv8l detector + EfficientNet-B2 classifier w
 ## Pipeline
 ### Training Scripts
 1. `convert_coco_to_yolo.py` — COCO → YOLO format, supports `--single_class` flag
-2. `train_detector.py` — YOLOv8l single-class, imgsz=1280, batch=2
+2. `train_detector.py` — YOLOv8l single-class, imgsz=1280, batch=2. Flags: `--augmented`, `--aggressive-aug`
 3. `extract_crops.py` — crop annotations + map reference images via metadata.json barcode→category
-4. `train_classifier.py` — EfficientNet-B2 (timm), 260×260, batch=192, AMP, weighted sampling
-5. `precompute_embeddings.py` — extract classifier features for kNN, export dual-output ONNX
+4. `train_classifier.py` — EfficientNet-B2 (timm), 260×260, batch=192, AMP, weighted sampling. Flags: `--letterbox`, `--arcface`, `--aggressive-aug`
+5. `precompute_embeddings.py` — extract classifier features for kNN, export dual-output ONNX. Flags: `--letterbox`, `--arcface`
 6. `train.py` — Multi-class YOLOv8m (for WBF ensemble, future use)
+7. `copy_paste_augment.py` — Generate synthetic training images via copy-paste augmentation (rare class focus)
+8. `train_dino_classifier.py` — DINOv2-ViT-S classifier (robust features). Flags: `--letterbox`, `--aggressive-aug`
+9. `build_dual_classifier.py` — Merge EfficientNet-B2 + DINOv2 into single ONNX (4 outputs)
+10. `train_rtdetr.py` — RT-DETR-L transformer detector (ensemble diversity). Flag: `--augmented`
 
 ### Inference (run.py)
 1. YOLO detect (conf=0.10, max_det=500) → bounding boxes (hard NMS, IoU=0.5)
 2. Crop each detection (5% padding) → resize 260×260
 3. TTA: 4 augmented variants per crop (original, flip, ±5° rotation)
 4. Classify: EfficientNet-B2 → logits + features (one forward pass, dual-output ONNX)
+   - If dual-backbone ONNX (4 outputs): also runs DINOv2, ensembles 0.5×EfficientNet + 0.5×DINOv2
 5. Average TTA softmax probabilities + feature vectors
 6. kNN: cosine similarity to precomputed embeddings → vote distribution
 7. Ensemble: 0.6 × classifier_softmax + 0.4 × knn_vote
-8. Final score = detection_conf × classification_conf^0.7
-9. Graceful fallback: works without embeddings.npy (classifier-only mode)
+8. WBF fusion with multi-class YOLO (uses `ensemble_boxes` library if available, else custom NMS)
+9. Final score = detection_conf × classification_conf^0.7
+10. Graceful fallback: works without embeddings.npy (classifier-only mode)
 
 ### Diagnostics & Tools
 - `validate.py` — full 70/30 competition scoring with per-class AP breakdown

@@ -10,7 +10,7 @@ Output format: embeddings.npy shape (N, D+1) where:
 Also exports classifier to ONNX with dual output (logits + features).
 
 Run after train_classifier.py finishes:
-    python3 precompute_embeddings.py [--letterbox]
+    python3 precompute_embeddings.py [--letterbox] [--arcface]
 """
 
 import json
@@ -77,6 +77,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--letterbox", action="store_true",
                         help="Use letterbox transform (must match training)")
+    parser.add_argument("--arcface", action="store_true",
+                        help="Load ArcFace model (must match training)")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -89,16 +91,28 @@ def main():
     crops = manifest["crops"]
     print(f"Total crops: {len(crops)}, Classes: {num_classes}")
 
-    # Load trained model
-    model = timm.create_model("efficientnet_b2", pretrained=False, num_classes=num_classes)
-    state_dict = torch.load(SAVE_DIR / "best.pt", map_location=device, weights_only=True)
-    model.load_state_dict(state_dict)
-    model = model.to(device)
-    model.eval()
+    if args.arcface:
+        # Load ArcFace model — already outputs (logits, embeddings)
+        from train_classifier import ArcFaceModel
+        backbone = timm.create_model("efficientnet_b2", pretrained=False, num_classes=num_classes)
+        model = ArcFaceModel(backbone, num_classes)
+        state_dict = torch.load(SAVE_DIR / "best.pt", map_location=device, weights_only=True)
+        model.load_state_dict(state_dict)
+        model = model.to(device)
+        model.eval()
+        dual_model = model  # ArcFace already outputs (logits, features)
+        print("Using ArcFace model (512-dim embeddings)")
+    else:
+        # Load standard model
+        model = timm.create_model("efficientnet_b2", pretrained=False, num_classes=num_classes)
+        state_dict = torch.load(SAVE_DIR / "best.pt", map_location=device, weights_only=True)
+        model.load_state_dict(state_dict)
+        model = model.to(device)
+        model.eval()
 
-    # Wrap for dual output
-    dual_model = DualOutputModel(model).to(device)
-    dual_model.eval()
+        # Wrap for dual output
+        dual_model = DualOutputModel(model).to(device)
+        dual_model.eval()
 
     # Transform (must match training mode)
     if args.letterbox:
@@ -166,17 +180,32 @@ def main():
     print("\nExporting dual-output classifier ONNX...")
     dummy = torch.randn(1, 3, IMG_SIZE, IMG_SIZE).to(device)
     onnx_path = OUTPUT_DIR / "classifier.onnx"
-    torch.onnx.export(
-        dual_model, dummy, str(onnx_path),
-        input_names=["input"],
-        output_names=["logits", "features"],
-        dynamic_axes={
-            "input": {0: "batch"},
-            "logits": {0: "batch"},
-            "features": {0: "batch"},
-        },
-        opset_version=17,
-    )
+
+    if args.arcface:
+        # ArcFace model forward(x) without labels returns (logits, embeddings)
+        torch.onnx.export(
+            dual_model, (dummy,), str(onnx_path),
+            input_names=["input"],
+            output_names=["logits", "features"],
+            dynamic_axes={
+                "input": {0: "batch"},
+                "logits": {0: "batch"},
+                "features": {0: "batch"},
+            },
+            opset_version=17,
+        )
+    else:
+        torch.onnx.export(
+            dual_model, dummy, str(onnx_path),
+            input_names=["input"],
+            output_names=["logits", "features"],
+            dynamic_axes={
+                "input": {0: "batch"},
+                "logits": {0: "batch"},
+                "features": {0: "batch"},
+            },
+            opset_version=17,
+        )
     onnx_mb = onnx_path.stat().st_size / (1024 * 1024)
     print(f"Exported to {onnx_path} ({onnx_mb:.1f} MB)")
 
