@@ -38,6 +38,9 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - "kreditnota"/"credit note"/"nota de crédito"/"Gutschrift"/"avoir" = credit note
 - "timeføring"/"log hours"/"registrer timer" = time entry / hour logging
 - "annuler"/"kanseller"/"cancel"/"stornieren" = cancel/reverse
+- "nómina"/"lønn"/"Gehalt"/"salaire"/"salário" = salary/payroll
+- "prima"/"bonus"/"Prämie"/"bonificación" = bonus
+- "lønnsslipp"/"payslip"/"nómina"/"Gehaltsabrechnung"/"bulletin de paie" = payslip
 
 ## Workflow recipes
 1. **Create customer + invoice**: create customer → create order (with orderLines, deliveryDate=orderDate) → create invoice (or use PUT /order/{{id}}/:invoice)
@@ -59,6 +62,25 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 12. **Credit note (reverse invoice)**: create customer → create order → PUT /order/{{id}}/:invoice → PUT /invoice/{{id}}/:createCreditNote with date and comment in query_params
 13. **Cancel/reverse payment**: create customer → create order → PUT /order/{{id}}/:invoice (with paidAmount to simulate initial payment) → PUT /invoice/{{id}}/:payment with negative paidAmount to reverse
 14. **Order with existing products**: create customer → POST /product/list (bulk create, omit number field to auto-generate) → create order with product references in orderLines
+15. **Run payroll (salary)**: create department → create employee (with department, userType) →
+    POST /employee/employment (with employee ref, startDate) →
+    POST /employee/employment/details (with employment ref, date, employmentType="ORDINARY",
+    employmentForm="PERMANENT", remunerationType="MONTHLY_WAGE", workingHoursScheme="NOT_SHIFT",
+    annualSalary=baseSalary*12) →
+    GET /salary/type to find salary type IDs for base pay and bonus →
+    POST /salary/transaction with year, month, payslips containing employee ref and
+    specifications array (one per salary component: salaryType ref + rate + count + amount)
+
+## ID Resolution Shortcuts
+- customer/supplier/employee: POST to create, use $step_N.value.id
+- department: POST /department, reference as {{id: $step_N.value.id}}
+- product: POST /product or /product/list, use id from response
+- ledger account: GET /ledger/account?number=NNNN → $step_N.values[0].id
+- vatType: GET /ledger/vatType?number=N → $step_N.values[0].id
+- paymentType: GET /invoice/paymentType → $step_N.values[0].id
+- salaryType: GET /salary/type → search response for matching type by name/number
+- entitlement: PUT /employee/entitlement/:grantEntitlementsByTemplate (query_params only, no body)
+- employment: POST /employee/employment → $step_N.value.id (needed for employment details)
 
 ## Rules
 1. **Minimize API calls.** Every call counts against the efficiency score. Every 4xx error costs even more.
@@ -69,7 +91,7 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 6. When creating multiple entities of the same type, use bulk /list endpoints (POST body = array).
 7. For dates, use YYYY-MM-DD format.
 8. Do NOT send priceIncludingVatCurrency — it conflicts with priceExcludingVatCurrency.
-9. For invoices: the company must have a bank account. If this fails, it's a system limitation.
+9. For invoices: a bank account is auto-registered if needed — no action required from you.
 10. For PUT action endpoints (/:payment, /:send, /:invoice), parameters go in query_params, not body.
 11. When searching, use the most specific filter available (name, email, organizationNumber, etc.).
 12. Use fields parameter in GET requests to limit response size: query_params: {{"fields": "id,name"}}

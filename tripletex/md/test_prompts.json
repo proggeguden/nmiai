@@ -110,5 +110,29 @@
     "category": "invoice",
     "source": "gcloud-log",
     "description": "Create order with products, invoice, and register payment (French)"
+  },
+  {
+    "id": 15,
+    "prompt": "Ejecute la nómina de Marta López (marta.lopez@example.org) para este mes. El salario base es de 31300 NOK. Añada una bonificación única de 13300 NOK además del salario base.",
+    "language": "es",
+    "category": "payroll",
+    "source": "gcloud-log",
+    "description": "Run payroll with base salary + bonus (Spanish)"
+  },
+  {
+    "id": 16,
+    "prompt": "Run payroll for Lucy Walker (lucy.walker@example.org) for this month. The base salary is 43050 NOK. Add a one-time bonus of 6100 NOK on top of the base salary.",
+    "language": "en",
+    "category": "payroll",
+    "source": "gcloud-log",
+    "description": "Run payroll with base salary + bonus (English)"
+  },
+  {
+    "id": 17,
+    "prompt": "Ejecute la nómina de Fernando López (fernando.lopez@example.org) para este mes. El salario base es de 31300 NOK. Añada una bonificación única de 9200 NOK además del salario base.",
+    "language": "es",
+    "category": "payroll",
+    "source": "gcloud-log",
+    "description": "Run payroll with base salary + bonus (Spanish)"
   }
 ]

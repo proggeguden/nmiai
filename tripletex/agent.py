@@ -20,6 +20,198 @@ log = get_logger("tripletex.agent")
 # Sentinel for unresolved $step_N placeholders (empty search results, etc.)
 _UNRESOLVED = "__UNRESOLVED__"
 
+
+def validate_plan(plan: list[dict]) -> list[dict]:
+    """Validate and auto-fix plan steps against endpoint cards.
+
+    Catches cheapest errors before they hit the API:
+    - Prepends bank account registration when plan involves invoicing
+    - Adds missing required fields with defaults
+    - Removes conflicting fields
+    - Validates enum values
+    """
+    try:
+        from endpoint_catalog import ENDPOINT_CARDS
+    except ImportError:
+        return plan
+
+    # Check if plan involves invoicing (/:invoice action or POST /invoice)
+    needs_bank_account = False
+    for step in plan:
+        if step.get("tool_name") != "call_api":
+            continue
+        args = step.get("args", {})
+        path = args.get("path", "")
+        method = args.get("method", "")
+        if "/:invoice" in path or (method == "POST" and "/invoice" in path):
+            needs_bank_account = True
+            break
+
+    if needs_bank_account:
+        # Prepend: ensure_bank_account meta-step that the executor handles specially.
+        # This avoids wasting an API call if the bank account already exists.
+        bank_step = {
+            "step_number": 1,
+            "tool_name": "ensure_bank_account",
+            "args": {},
+            "description": "Ensure company has a bank account registered (required for invoicing)",
+        }
+
+        # Renumber existing steps
+        for step in plan:
+            step["step_number"] += 1
+            _shift_step_refs(step, offset=1)
+
+        plan = [bank_step] + plan
+        log.info("Validation: prepended ensure_bank_account step for invoicing")
+
+    for step in plan:
+        if step.get("tool_name") != "call_api":
+            continue
+        args = step.get("args", {})
+        method = args.get("method", "")
+        path = args.get("path", "")
+        body = args.get("body", {})
+        if not body or not isinstance(body, dict):
+            continue
+
+        # Normalize path: /customer/123 → /customer/{id}
+        template = _path_to_template(path)
+        key = f"{method} {template}"
+        card = ENDPOINT_CARDS.get(key)
+        if not card:
+            continue
+
+        # Check 1: Add missing required fields with defaults
+        for field_name, field_info in card.get("fields", {}).items():
+            if field_info.get("required") and field_name not in body:
+                default = field_info.get("default")
+                if default:
+                    body[field_name] = default
+                    log.info(f"Validation: added missing {field_name}={default} to {key}")
+                # Special case: deliveryDate copies from orderDate
+                if field_name == "deliveryDate" and "orderDate" in body:
+                    body["deliveryDate"] = body["orderDate"]
+                    log.info(f"Validation: set deliveryDate=orderDate for {key}")
+
+        # Check 2: Remove conflicting fields
+        for conflict_pair in card.get("conflicts", []):
+            present = [f for f in conflict_pair if f in body]
+            if len(present) > 1:
+                for f in present[1:]:
+                    del body[f]
+                    log.info(f"Validation: removed conflicting field {f} from {key}")
+
+        # Also check nested array items (e.g. orderLines)
+        for field_name, field_info in card.get("fields", {}).items():
+            if field_info.get("type") == "array" and field_info.get("items_fields"):
+                items = body.get(field_name, [])
+                if not isinstance(items, list):
+                    continue
+                # Build conflict pairs from items_fields
+                item_conflicts = []
+                for if_name, if_info in field_info["items_fields"].items():
+                    if "conflicts_with" in if_info:
+                        pair = sorted([if_name, if_info["conflicts_with"]])
+                        if pair not in item_conflicts:
+                            item_conflicts.append(pair)
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    for cpair in item_conflicts:
+                        cpresent = [f for f in cpair if f in item]
+                        if len(cpresent) > 1:
+                            for f in cpresent[1:]:
+                                del item[f]
+                                log.info(f"Validation: removed conflicting {f} from {field_name} item in {key}")
+
+        # Check 3: Validate enum values (log warning only)
+        for field_name, field_info in card.get("fields", {}).items():
+            if "enum" in field_info and field_name in body:
+                val = body[field_name]
+                if isinstance(val, str) and not val.startswith("$step_") and val not in field_info["enum"]:
+                    log.warning(f"Validation: {field_name}={val} not in {field_info['enum']}")
+
+    return plan
+
+
+def _path_to_template(path: str) -> str:
+    """Convert /customer/123 → /customer/{id}, /order/456/:invoice → /order/{id}/:invoice"""
+    return re.sub(r'/(\d+)', '/{id}', path)
+
+
+def _ensure_bank_account(call_api_tool, error_count: int) -> tuple[str, dict, int]:
+    """Ensure the company has a bank account registered.
+
+    Searches for existing bank accounts first; only creates one if none found.
+    Returns (result_str, parsed, error_count).
+    """
+    # Step 1: Check for existing bank account
+    search_result = call_api_tool.invoke({
+        "method": "GET",
+        "path": "/ledger/account",
+        "query_params": {"isBankAccount": True, "from": 0, "count": 1, "fields": "id,number,bankAccountNumber"},
+    })
+
+    try:
+        parsed = json.loads(search_result)
+        values = parsed.get("values", [])
+        if values:
+            log.info(f"Bank account already exists: account {values[0].get('number', '?')}")
+            return search_result, parsed, error_count
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Step 2: No bank account found — create one (account 1920 = standard Norwegian bank account)
+    log.info("No bank account found, creating account 1920")
+    create_result = call_api_tool.invoke({
+        "method": "POST",
+        "path": "/ledger/account",
+        "body": {
+            "number": 1920,
+            "name": "Bankkonto",
+            "isBankAccount": True,
+            "bankAccountNumber": "12345678903",
+        },
+    })
+
+    try:
+        parsed = json.loads(create_result)
+        status = parsed.get("status", 0)
+        if isinstance(status, int) and status >= 400:
+            log.warning(f"Failed to create bank account: {create_result[:500]}")
+            error_count += 1
+        else:
+            log.info("Bank account 1920 created successfully")
+    except (json.JSONDecodeError, TypeError):
+        parsed = {"raw": create_result}
+
+    return create_result, parsed, error_count
+
+
+def _shift_step_refs(obj, offset: int):
+    """Shift all $step_N references in a plan step by offset (in-place mutation)."""
+    if isinstance(obj, dict):
+        for k, v in list(obj.items()):
+            if isinstance(v, str):
+                obj[k] = re.sub(
+                    r'\$step_(\d+)',
+                    lambda m: f'$step_{int(m.group(1)) + offset}',
+                    v,
+                )
+            else:
+                _shift_step_refs(v, offset)
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            if isinstance(item, str):
+                obj[i] = re.sub(
+                    r'\$step_(\d+)',
+                    lambda m: f'$step_{int(m.group(1)) + offset}',
+                    item,
+                )
+            else:
+                _shift_step_refs(item, offset)
+
 # Status codes worth retrying with LLM fix (body/param errors)
 RETRYABLE_STATUS_CODES = {400, 422}
 
@@ -85,6 +277,7 @@ def build_agent():
 
         # Parse JSON from response (handle markdown code blocks)
         plan = _parse_plan_json(raw)
+        plan = validate_plan(plan)
 
         log.info(
             f">>>PLAN_START<<<\n{json.dumps(plan, indent=2)}\n>>>PLAN_END<<<",
@@ -121,6 +314,24 @@ def build_agent():
             tool=tool_name,
             tool_args=args,
         )
+
+        # Handle ensure_bank_account meta-step
+        if tool_name == "ensure_bank_account":
+            call_api_tool = tool_map.get("call_api")
+            if call_api_tool:
+                result_str, parsed, error_count = _ensure_bank_account(
+                    call_api_tool, error_count
+                )
+                results[f"step_{step['step_number']}"] = parsed
+                log.info(f"Step {step['step_number']} completed: bank account ensured")
+                completed.append(step["step_number"])
+                return {
+                    "current_step": step_idx + 1,
+                    "results": results,
+                    "completed_steps": completed,
+                    "error_count": error_count,
+                    "messages": [AIMessage(content=f"Step {step['step_number']} done: bank account ensured")],
+                }
 
         # Resolve $step_N placeholders recursively through nested dicts/lists
         resolved_args = _resolve_placeholders_deep(args, results, llm)
