@@ -78,6 +78,25 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         path = args.get("path", "")
         body = args.get("body", {})
 
+        # Quick fix: POST /project — add startDate if missing
+        if method == "POST" and path == "/project" and isinstance(body, dict):
+            if "startDate" not in body:
+                body["startDate"] = date.today().isoformat()
+                log.info("Validation: added missing startDate to POST /project")
+
+        # Quick fix: POST /ledger/voucher — remove voucherType and add row numbers to postings
+        if method == "POST" and path == "/ledger/voucher" and isinstance(body, dict):
+            if "voucherType" in body:
+                del body["voucherType"]
+                log.info("Validation: stripped voucherType from POST /ledger/voucher")
+            # Add explicit row numbers starting from 1 (row 0 is reserved for system-generated VAT lines)
+            postings = body.get("postings", [])
+            if isinstance(postings, list):
+                for idx, posting in enumerate(postings):
+                    if isinstance(posting, dict) and "row" not in posting:
+                        posting["row"] = idx + 1
+                        log.info(f"Validation: added row={idx+1} to voucher posting")
+
         # Quick fix: strip product "number" field from POST /product or /product/list
         if method == "POST" and path in ("/product", "/product/list"):
             if isinstance(body, list):
@@ -887,6 +906,35 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
         chosen = true_ref if values else false_ref
         log.info(f"Resolved ternary placeholder: chose {'true' if values else 'false'} branch → {chosen}")
         return _resolve_placeholder(chosen, results, llm)
+
+    # Handle OR fallback: "123 || $step_N.path" or "$step_N.path || 123"
+    or_match = re.match(r"^\s*(.+?)\s*\|\|\s*(.+?)\s*$", value)
+    if or_match:
+        left, right = or_match.group(1), or_match.group(2)
+        # Determine which side has a $step reference
+        if "$step_" in right and "$step_" not in left:
+            # "literal || $step_ref" — try the step ref first, fallback to literal
+            resolved = _resolve_placeholder(right, results, llm)
+            if resolved is _UNRESOLVED or resolved is None:
+                log.info(f"OR fallback: step ref unresolved, using literal {left}")
+                # Return as int if it looks like a number
+                return int(left) if left.isdigit() else left
+            log.info(f"OR fallback: resolved step ref → {resolved}")
+            return resolved
+        elif "$step_" in left and "$step_" not in right:
+            # "$step_ref || literal" — try step ref first, fallback to literal
+            resolved = _resolve_placeholder(left, results, llm)
+            if resolved is _UNRESOLVED or resolved is None:
+                log.info(f"OR fallback: step ref unresolved, using literal {right}")
+                return int(right) if right.isdigit() else right
+            log.info(f"OR fallback: resolved step ref → {resolved}")
+            return resolved
+        else:
+            # Both have refs or neither — try left first
+            resolved = _resolve_placeholder(left, results, llm)
+            if resolved is not _UNRESOLVED and resolved is not None:
+                return resolved
+            return _resolve_placeholder(right, results, llm)
 
     pattern = r"\$step_(\d+)((?:[\.\[\w\]]+)*)"
     match = re.search(pattern, value)

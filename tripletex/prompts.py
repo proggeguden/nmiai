@@ -50,8 +50,13 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 5. **Create project with manager**: create department → create employee (with department, userType="STANDARD") →
    PUT /employee/entitlement/:grantEntitlementsByTemplate (query_params: employeeId=$step_N.value.id, template="ALL_PRIVILEGES") →
    create customer → create project with projectManager:{{id}} referencing the employee
-6. **Travel expense**: POST /travelExpense creates the shell (employee, travelDetails). Costs and per diems are separate sub-resources: POST /travelExpense/cost, POST /travelExpense/perDiemCompensation — each needs travelExpense:{{id}} reference.
-7. **Voucher**: Postings use debit=positive, credit=negative, must sum to 0. If posting has vatType, use GROSS amount — Tripletex auto-generates the VAT line. For supplier invoices: credit to 2400 (AP) with supplier ref, debit to expense account with vatType.
+6. **Travel expense**: POST /travelExpense creates the shell (employee, travelDetails). Costs and per diems are separate sub-resources:
+   POST /travelExpense/cost (needs travelExpense:{{id}}, category, cost, paymentType, currency).
+   POST /travelExpense/perDiemCompensation (needs travelExpense:{{id}}, location=destination city, count=days, overnightAccommodation).
+7. **Voucher**: First GET /ledger/account?number=NNNN for each account to get the real ID. Do NOT use account numbers as IDs.
+   Do NOT send voucherType. Postings use debit=positive, credit=negative, must sum to 0.
+   If posting has vatType, use GROSS amount — Tripletex auto-generates the VAT line.
+   For supplier invoices: credit to 2400 (AP) with supplier ref, debit to expense account with vatType.
 8. **Register supplier**: POST /supplier with name, organizationNumber, email
 9. **Update entity**: GET first to get current version → PUT with version field
 10. **Delete entity**: search to find ID → DELETE /entity/{{id}}
@@ -105,7 +110,12 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
     with query_params: {{"employeeId": $step_N.value.id, "template": "ALL_PRIVILEGES"}}. Then assign as projectManager.
 17. For GET /invoice with date filters: invoiceDateTo must be strictly AFTER invoiceDateFrom (exclusive end). Use the next day.
 18. For POST /product/list: omit the "number" field to auto-generate — existing product numbers cause 422.
-19. **Placeholders must be simple**: only use $step_N.value.id or $step_N.values[0].id — never ternary expressions or conditionals. The executor handles empty search results automatically.
+19. **Placeholders must be simple**: only use $step_N.value.id or $step_N.values[0].id — never ternary expressions, OR (||) fallbacks, or conditionals. The executor handles empty search results automatically.
+20. For POST /project: startDate is REQUIRED — use today's date if not specified.
+21. For GET /ledger/vatType: use query_params {{"number": "3"}} — do NOT put the number in the URL path. Same for GET /ledger/account: use query_params {{"number": "NNNN"}}.
+22. For POST /ledger/voucher: do NOT send voucherType — certain types auto-generate postings that conflict with yours.
+23. **Custom accounting dimensions are NOT available** via the Tripletex API. If the task asks for dimensions, include relevant info in descriptions/postings instead.
+24. Reference field IDs must be integers: department: {{id: $step_N.value.id}}, NOT department: {{id: "123 || $step_N.value.id"}}.
 
 ## Output format
 Return ONLY a JSON array of steps, no other text:

@@ -1,36 +1,46 @@
-"""Package run.py + best.pt into submission.zip."""
+"""Package two-stage submission: run.py + detector.onnx + classifier.onnx + embeddings.npy."""
 
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).parent
-WEIGHTS = ROOT / "best.pt"
+DETECTOR = ROOT / "detector.onnx"
+CLASSIFIER = ROOT / "classifier.onnx"
+EMBEDDINGS = ROOT / "embeddings.npy"
 
 
 def main():
-    if not WEIGHTS.exists():
-        # Also check runs directory
-        alt = ROOT / "runs" / "detect_mvp" / "weights" / "best.pt"
-        if alt.exists():
-            import shutil
-            shutil.copy2(alt, WEIGHTS)
-            print(f"Copied weights from {alt}")
-        else:
-            print(f"Error: best.pt not found. Train first.")
+    for f in [DETECTOR, CLASSIFIER]:
+        if not f.exists():
+            print(f"Error: {f.name} not found!")
             return
 
     output = ROOT / "submission.zip"
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.write(ROOT / "run.py", "run.py")
-        zf.write(WEIGHTS, "best.pt")
+        zf.write(DETECTOR, "detector.onnx")
+        zf.write(CLASSIFIER, "classifier.onnx")
+        if EMBEDDINGS.exists():
+            zf.write(EMBEDDINGS, "embeddings.npy")
 
     size_mb = output.stat().st_size / (1024 * 1024)
     print(f"Created {output} ({size_mb:.1f} MB)")
 
-    if size_mb > 500:
-        print("WARNING: submission.zip exceeds 500MB limit!")
-    else:
-        print("Size OK (< 500MB)")
+    det_mb = DETECTOR.stat().st_size / (1024 * 1024)
+    cls_mb = CLASSIFIER.stat().st_size / (1024 * 1024)
+    emb_mb = EMBEDDINGS.stat().st_size / (1024 * 1024) if EMBEDDINGS.exists() else 0
+    total_weight_mb = det_mb + cls_mb + emb_mb
+    weight_count = 2 + (1 if EMBEDDINGS.exists() else 0)
+
+    print(f"  detector.onnx:   {det_mb:.1f} MB")
+    print(f"  classifier.onnx: {cls_mb:.1f} MB")
+    if EMBEDDINGS.exists():
+        print(f"  embeddings.npy:  {emb_mb:.1f} MB")
+    print(f"  total weights:   {total_weight_mb:.1f} MB {'OK' if total_weight_mb < 420 else 'OVER LIMIT!'}")
+    print(f"  weight files:    {weight_count}/3 {'OK' if weight_count <= 3 else 'OVER LIMIT!'}")
+
+    if size_mb > 420:
+        print("WARNING: submission.zip exceeds 420MB limit!")
 
 
 if __name__ == "__main__":

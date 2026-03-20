@@ -51,6 +51,8 @@ GOTCHA_NOTES = {
     "POST /employee": "NOTE: department.id may be required even though schema says optional. userType is REQUIRED — use 'STANDARD' for normal employees, 'EXTENDED' for administrators.",
     "POST /ledger/voucher": "NOTE: postings cannot be null — must be a non-empty array. If posting has vatType, use GROSS amount — Tripletex auto-generates the VAT line.",
     "POST /travelExpense": "NOTE: Only creates the shell (employee, travelDetails). Costs and per diems are SEPARATE sub-resources: POST /travelExpense/cost, POST /travelExpense/perDiemCompensation.",
+    "POST /travelExpense/perDiemCompensation": "NOTE: 'location' (string) is REQUIRED even though schema says optional. Set to destination city name.",
+    "POST /travelExpense/cost": "NOTE: Requires travelExpense:{id} reference. Set category, cost, paymentType, currency.",
     "POST /order": "NOTE: deliveryDate is REQUIRED even though schema says optional. Use orderDate value if not specified.",
 }
 
@@ -99,6 +101,8 @@ FIELD_OVERRIDES = {
     "EmploymentDetails.workingHoursScheme": {"required": True, "default": "NOT_SHIFT"},
     "EmploymentDetails.annualSalary": {"note": "Required for MONTHLY_WAGE remunerationType"},
     "EmploymentDetails.hourlyWage": {"note": "Required for HOURLY_WAGE remunerationType"},
+    "Project.startDate": {"required": True, "note": "Use today's date if not specified"},
+    "PerDiemCompensation.location": {"required": True, "note": "Destination city name, e.g. 'Kristiansand'"},
 }
 
 

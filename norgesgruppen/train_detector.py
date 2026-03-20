@@ -1,14 +1,15 @@
-"""Train YOLOv8m for multi-class product detection. Run on GCP GPU VM.
+"""Train YOLOv8l single-class detector. Run on GCP GPU VM.
 
-IMPORTANT: Pin ultralytics==8.1.0 to match sandbox version.
+Setup:
     pip3 install ultralytics==8.1.0
+    pip3 install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+    python3 convert_coco_to_yolo.py --single_class
+    python3 train_detector.py
 """
 
 import torch
-# Monkey-patch: ultralytics 8.1.0 doesn't pass weights_only=False,
-# but torch 2.6.0 defaults to True. Fix for training only.
-_original_torch_load = torch.load
-torch.load = lambda *args, **kwargs: _original_torch_load(*args, **{**kwargs, 'weights_only': False})
+_orig = torch.load
+torch.load = lambda *a, **kw: _orig(*a, **{**kw, 'weights_only': False})
 
 from ultralytics import YOLO
 from pathlib import Path
@@ -17,22 +18,22 @@ DATA_YAML = Path(__file__).parent / "data" / "yolo" / "dataset.yaml"
 
 
 def main():
-    model = YOLO("yolov8m.pt")  # pretrained COCO weights
+    model = YOLO("yolov8l.pt")
 
     model.train(
         data=str(DATA_YAML),
         epochs=300,
         patience=50,
         imgsz=1280,
-        batch=4,  # reduced from 8: 357 classes uses more VRAM
+        batch=4,
         device=0,
-        # Augmentation — critical with only 248 images
+        # Augmentation
         mosaic=1.0,
         mixup=0.15,
         copy_paste=0.1,
         scale=0.5,
         fliplr=0.5,
-        flipud=0.0,  # no vertical flip — shelves don't flip
+        flipud=0.0,
         erasing=0.3,
         # Training params
         lr0=0.01,
@@ -41,14 +42,14 @@ def main():
         cos_lr=True,
         # Output
         project="runs",
-        name="multiclass",
+        name="detector_l",
         exist_ok=True,
         save=True,
         plots=True,
     )
 
     print("\nTraining complete!")
-    print("Best weights: runs/multiclass/weights/best.pt")
+    print("Best weights: runs/detector_l/weights/best.pt")
 
 
 if __name__ == "__main__":

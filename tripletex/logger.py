@@ -102,6 +102,14 @@ def setup_logging() -> None:
     root.setLevel(getattr(logging, log_level, logging.INFO))
     root.handlers = [handler]
 
+    # Also log warnings+ to a file for analysis
+    log_file = os.environ.get("LOG_FILE")
+    if log_file:
+        fh = logging.FileHandler(log_file, mode="w")
+        fh.setLevel(logging.WARNING)
+        fh.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        root.addHandler(fh)
+
     # Quiet noisy third-party loggers
     for noisy in ("httpx", "httpcore", "urllib3", "google", "grpc"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
