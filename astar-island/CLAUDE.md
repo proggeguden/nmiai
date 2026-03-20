@@ -102,17 +102,18 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 - Port probability boost: coastal cells near settlements (d≤3) get minimum 5%/3% Port mass
 - Winter severity calibration: estimate settlement survival rate from observations, scale predictions
 - Continuous distance interpolation: blend between adjacent distance brackets based on raw distance
-- Expansion modulation (Step 1.75): scale Settlement+Port predictions for d≤6 cells, wider clamp [0.3, 3.5]
+- Expansion modulation (Step 1.75): scale Settlement+Port predictions for d≤8 cells, wider clamp [0.3, 3.5]
 - Forest entropy injection (Step 1.85): shrink over-confident Forest predictions when observed retention < 0.85
+- Distance-based temperature scaling (Step 1.8): T=1.10 near settlements (spread), T=0.92 far (sharpen)
 
 **Adaptive smoothing**: Per-cell blending uses terrain-dependent k values:
 - Settlements/ports k=8 (high variance → trust model more)
 - Plains/forest/empty k=3 (predictable → trust observations more)
 
 **Backtest performance** (weighted KL, lower is better):
-- Rounds 1–8 avg: ~0.0497 (5-seed spatial model)
-- Best: 0.021 (round 8), Worst: 0.124 (round 7, harsh winter)
-- Rounds 1–6 avg: ~0.042
+- Rounds 1–8 avg: ~0.0457 (5-seed spatial model + temperature scaling)
+- Best: 0.022 (round 8), Worst: 0.108 (round 7, harsh winter)
+- Rounds 1–6 avg: ~0.039
 
 **Settlement cluster density** (Phase 4f):
 - Binary `is_clustered` (≥2 settlements within Manhattan d≤5) added to Settlement and Plains bucket keys
@@ -218,3 +219,47 @@ The JSON output includes `per_terrain_kl` (which terrain types improved/regresse
 - Higher entropy cells count more
 - Score is normalized: 1.0 = perfect, 0.0 = worst
 - Critical: probability floor of 0.01, or KL divergence → infinity
+
+## Weight System & Leaderboard
+```
+round_weight = 1.05 ^ round_number
+leaderboard_score = max(round_score × round_weight) across all rounds
+```
+
+| Round | Weight | If score=82 | If score=85 | If score=90 |
+|-------|--------|-------------|-------------|-------------|
+| 8     | 1.478  | 121.2       | 125.6       | 133.0       |
+| 10    | 1.629  | 133.6       | 138.4       | 146.6       |
+| 12    | 1.796  | 147.3       | 152.6       | 161.6       |
+| 13    | 1.886  | 154.7       | 160.3       | 169.7       |
+
+**Key insight**: Later rounds are worth exponentially more. Even maintaining the same raw score on a later round dramatically improves leaderboard position.
+
+## Overnight Autonomous Workflow
+
+Three custom skills for autonomous overnight operation:
+
+- `/astar-submit` — Check for active round, submit if not already submitted
+- `/astar-analyze` — Analyze scores, backtest, identify improvement opportunities
+- `/astar-improve` — Make one targeted predictor.py change, test, commit if improved
+
+### Loop setup
+```bash
+# In separate terminal: prevent Mac sleep
+caffeinate -dims
+
+# Auto-submit every 10 minutes
+/loop 10m /astar-submit
+
+# Between rounds (~2.5h gap): iterate on model
+/astar-analyze
+/astar-improve  # repeat multiple times
+```
+
+### Self-improvement cycle (~2 min each)
+1. Read baseline.json → identify dominant error pattern
+2. Make ONE change to predictor.py
+3. Fast gate: `pytest test_predictor_unit.py test_predictor_integration.py -x` (<1s)
+4. Backtest gate: `python3 test_backtest.py --output results_improve.json --baseline baseline.json` (~30s)
+5. If improved: `cp results_improve.json baseline.json && git commit`
+6. If regressed: `git checkout -- predictor.py` and try different approach

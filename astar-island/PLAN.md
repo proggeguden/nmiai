@@ -172,12 +172,15 @@ All 4 priority items implemented and submitted:
 
 **Attempted and improved:**
 - **Widen expansion modulation d≤6→d≤8** ✅: Gradual decay d=5-8 instead of d=5-6. Overall KL 0.0497→0.0491 (-1.2%). R7 improved 0.1243→0.1218, R5 0.0542→0.0526. No regressions.
+- **Distance-based temperature scaling** ✅: Replaced Step 1.8 prior-blending with temperature scaling (d≤2: T=1.10 spread, d=3-4: T=1.03, d≥5: T=0.92 sharpen). Overall KL 0.0491→0.0457 (-6.9%). R3 -19%, R7 -11%, R5 -10.6%. Key insight: model had bidirectional calibration failure — over-confident near settlements, under-confident far away. Temperature scaling fixes both directions simultaneously.
 
 **Promising directions not yet tried:**
 - Plains bucket refinement: split by distance + cluster density interaction
 - Per-round adaptive entropy injection: condition forest shrink on observed survival rate, not just retention
 - Ruin-to-forest transition: currently under-predicted, especially near forests in harsh winters
-- Confidence calibration tuning: the Step 1.8 calibration parameters may be suboptimal
+- Temperature tuning: current T values (1.10/1.03/0.92) may not be optimal; could try per-terrain T
+- Spatial smoothing / MRF-style post-processing: capture spatial correlation between neighboring cells
+- R2/R8 slight regression from temperature scaling: the sharpening at d≥5 may be too aggressive for some conditions
 
 ---
 
