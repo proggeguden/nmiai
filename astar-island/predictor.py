@@ -357,8 +357,16 @@ def learn_spatial_transition_model(initial_grids, observations):
             global_model[code] = probs
 
     # Normalize spatial model with Bayesian smoothing towards global prior
-    # Instead of hard threshold, blend bucket evidence with global model
-    BUCKET_SMOOTH_K = 5.0  # pseudo-count for global prior
+    # Per-terrain K: more data → less smoothing, sparse terrain → more smoothing
+    BUCKET_SMOOTH_K_PER_CODE = {
+        11: 3.0,   # Plains: abundant data
+        4:  4.0,   # Forest
+        0:  4.0,   # Empty
+        1:  8.0,   # Settlement: sparse
+        2: 10.0,   # Port: very sparse
+        3:  6.0,   # Ruin
+    }
+    BUCKET_SMOOTH_K_DEFAULT = 5.0
     spatial_model = {}
     for bucket, counts in spatial_counts.items():
         n = spatial_obs[bucket]
@@ -371,7 +379,8 @@ def learn_spatial_transition_model(initial_grids, observations):
             terrain_code = bucket[0]
             if terrain_code in global_model:
                 global_prior = global_model[terrain_code]
-                weight = n / (n + BUCKET_SMOOTH_K)
+                k = BUCKET_SMOOTH_K_PER_CODE.get(terrain_code, BUCKET_SMOOTH_K_DEFAULT)
+                weight = n / (n + k)
                 spatial_model[bucket] = weight * bucket_prob + (1 - weight) * global_prior
             else:
                 spatial_model[bucket] = bucket_prob
