@@ -997,6 +997,26 @@ def apply_floor(predictions, floor=PROB_FLOOR):
     return predictions
 
 
+def score_predictions(pred, gt):
+    """Compute entropy-weighted KL divergence.
+
+    Args:
+        pred: H×W×6 numpy array of predicted probabilities
+        gt: H×W×6 numpy array of ground truth probabilities
+
+    Returns:
+        (weighted_kl, dynamic_cell_count) tuple
+    """
+    kl = np.sum(gt * np.log((gt + 1e-10) / (pred + 1e-10)), axis=2)
+    entropy = -np.sum(gt * np.log(gt + 1e-10), axis=2)
+    dynamic = entropy > 0.01
+    if dynamic.any():
+        weighted_kl = (kl[dynamic] * entropy[dynamic]).sum() / entropy[dynamic].sum()
+    else:
+        weighted_kl = 0
+    return weighted_kl, dynamic.sum()
+
+
 def predictions_to_list(predictions):
     """Convert numpy predictions to nested list for JSON serialization."""
     return predictions.tolist()

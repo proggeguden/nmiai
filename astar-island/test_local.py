@@ -22,7 +22,7 @@ import api_client
 from predictor import (
     build_prediction, learn_transition_model, learn_spatial_transition_model,
     compute_feature_map, predictions_to_list,
-    validate_predictions, terrain_code_to_class,
+    validate_predictions, terrain_code_to_class, score_predictions,
     NUM_CLASSES, CLASS_NAMES, STATIC_CODES,
     estimate_survival_rate as _est_survival,
 )
@@ -62,15 +62,8 @@ def show_leaderboard():
 
 
 def _score_predictions(pred, gt):
-    """Compute entropy-weighted KL divergence."""
-    kl = np.sum(gt * np.log((gt + 1e-10) / (pred + 1e-10)), axis=2)
-    entropy = -np.sum(gt * np.log(gt + 1e-10), axis=2)
-    dynamic = entropy > 0.01
-    if dynamic.any():
-        weighted_kl = (kl[dynamic] * entropy[dynamic]).sum() / entropy[dynamic].sum()
-    else:
-        weighted_kl = 0
-    return weighted_kl, dynamic.sum()
+    """Compute entropy-weighted KL divergence. Delegates to predictor.score_predictions."""
+    return score_predictions(pred, gt)
 
 
 def backtest_round(round_id):
