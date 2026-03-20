@@ -10,7 +10,7 @@ Output format: embeddings.npy shape (N, D+1) where:
 Also exports classifier to ONNX with dual output (logits + features).
 
 Run after train_classifier.py finishes:
-    python3 precompute_embeddings.py
+    python3 precompute_embeddings.py [--letterbox]
 """
 
 import json
@@ -32,6 +32,23 @@ IMG_SIZE = 260
 BATCH_SIZE = 128
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
+
+
+class LetterboxResize:
+    """Resize preserving aspect ratio, pad to square with mean color."""
+    def __init__(self, size):
+        self.size = size
+
+    def __call__(self, img):
+        w, h = img.size
+        if w < 1 or h < 1:
+            return Image.new("RGB", (self.size, self.size), (124, 116, 104))
+        scale = min(self.size / w, self.size / h)
+        nw, nh = int(w * scale), int(h * scale)
+        resized = img.resize((nw, nh), Image.BILINEAR)
+        canvas = Image.new("RGB", (self.size, self.size), (124, 116, 104))
+        canvas.paste(resized, ((self.size - nw) // 2, (self.size - nh) // 2))
+        return canvas
 
 
 class DualOutputModel(nn.Module):
@@ -56,6 +73,12 @@ class DualOutputModel(nn.Module):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--letterbox", action="store_true",
+                        help="Use letterbox transform (must match training)")
+    args = parser.parse_args()
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load manifest
@@ -77,13 +100,22 @@ def main():
     dual_model = DualOutputModel(model).to(device)
     dual_model.eval()
 
-    # Transform (same as val transform in training)
-    transform = transforms.Compose([
-        transforms.Resize(int(IMG_SIZE * 1.1)),
-        transforms.CenterCrop(IMG_SIZE),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=MEAN, std=STD),
-    ])
+    # Transform (must match training mode)
+    if args.letterbox:
+        print("Using LETTERBOX transform")
+        transform = transforms.Compose([
+            LetterboxResize(IMG_SIZE),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=MEAN, std=STD),
+        ])
+    else:
+        print("Using SQUASH transform")
+        transform = transforms.Compose([
+            transforms.Resize(int(IMG_SIZE * 1.1)),
+            transforms.CenterCrop(IMG_SIZE),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=MEAN, std=STD),
+        ])
 
     # Extract embeddings for all crops
     print("Extracting embeddings...")

@@ -4,7 +4,7 @@ Setup:
     pip3 install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
     pip3 install timm==0.9.12 Pillow
     python3 extract_crops.py   # must run first
-    python3 train_classifier.py
+    python3 train_classifier.py [--letterbox]
 """
 
 import json
@@ -14,8 +14,10 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from torchvision import transforms
+from torchvision.transforms import functional as TF
 from PIL import Image
 import timm
 
@@ -31,6 +33,75 @@ LABEL_SMOOTHING = 0.1
 NUM_WORKERS = 8
 REF_OVERSAMPLE = 10  # oversample reference images for rare classes
 USE_AMP = True  # mixed precision for speed
+
+
+class LetterboxResize:
+    """Resize preserving aspect ratio, pad to square with mean color.
+
+    This preserves width/height information (critical for egg 6-pack vs 12-pack).
+    Pad color = ImageNet mean * 255 ≈ (124, 116, 104).
+    """
+    def __init__(self, size):
+        self.size = size
+
+    def __call__(self, img):
+        w, h = img.size
+        if w < 1 or h < 1:
+            return Image.new("RGB", (self.size, self.size), (124, 116, 104))
+        scale = min(self.size / w, self.size / h)
+        nw, nh = int(w * scale), int(h * scale)
+        resized = img.resize((nw, nh), Image.BILINEAR)
+        canvas = Image.new("RGB", (self.size, self.size), (124, 116, 104))
+        canvas.paste(resized, ((self.size - nw) // 2, (self.size - nh) // 2))
+        return canvas
+
+
+class LetterboxRandomResizedCrop:
+    """Letterbox + random scale/translate augmentation.
+
+    1. Letterbox to target_size (preserving AR)
+    2. Random scale (zoom in/out within the letterboxed image)
+    3. Random translate (shift within padded area)
+    """
+    def __init__(self, size, scale=(0.75, 1.0)):
+        self.size = size
+        self.scale = scale
+
+    def __call__(self, img):
+        import random
+        w, h = img.size
+        if w < 1 or h < 1:
+            return Image.new("RGB", (self.size, self.size), (124, 116, 104))
+
+        # Random scale factor
+        s = random.uniform(self.scale[0], self.scale[1])
+        target = int(self.size / s)
+
+        # Letterbox to target size
+        scale = min(target / w, target / h)
+        nw, nh = int(w * scale), int(h * scale)
+        resized = img.resize((nw, nh), Image.BILINEAR)
+
+        # Place on canvas with random offset
+        canvas = Image.new("RGB", (target, target), (124, 116, 104))
+        max_x = max(0, target - nw)
+        max_y = max(0, target - nh)
+        px = random.randint(0, max_x) if max_x > 0 else 0
+        py = random.randint(0, max_y) if max_y > 0 else 0
+        canvas.paste(resized, (px, py))
+
+        # Center crop back to self.size
+        if target > self.size:
+            left = (target - self.size) // 2
+            top = (target - self.size) // 2
+            canvas = canvas.crop((left, top, left + self.size, top + self.size))
+        elif target < self.size:
+            final = Image.new("RGB", (self.size, self.size), (124, 116, 104))
+            offset = (self.size - target) // 2
+            final.paste(canvas, (offset, offset))
+            canvas = final
+
+        return canvas
 
 
 class CropDataset(Dataset):
@@ -112,6 +183,12 @@ def build_sampler(entries):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--letterbox", action="store_true",
+                        help="Use letterbox (aspect-ratio-preserving) crops instead of squashed")
+    args = parser.parse_args()
+
     manifest_path = CROPS_DIR / "manifest.json"
     if not manifest_path.exists():
         print("Error: Run extract_crops.py first!")
@@ -120,22 +197,39 @@ def main():
     train_entries, val_entries, num_classes = build_datasets(manifest_path)
 
     # Transforms
-    train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(IMG_SIZE, scale=(0.7, 1.0)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.05),
-        transforms.RandomRotation(15),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        transforms.RandomErasing(p=0.3),
-    ])
-
-    val_transform = transforms.Compose([
-        transforms.Resize(int(IMG_SIZE * 1.1)),
-        transforms.CenterCrop(IMG_SIZE),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
+    if args.letterbox:
+        print("Using LETTERBOX transforms (preserving aspect ratio)")
+        train_transform = transforms.Compose([
+            LetterboxRandomResizedCrop(IMG_SIZE, scale=(0.75, 1.0)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.05),
+            transforms.RandomRotation(15),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            transforms.RandomErasing(p=0.3),
+        ])
+        val_transform = transforms.Compose([
+            LetterboxResize(IMG_SIZE),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+    else:
+        print("Using SQUASH transforms (original)")
+        train_transform = transforms.Compose([
+            transforms.RandomResizedCrop(IMG_SIZE, scale=(0.7, 1.0)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.05),
+            transforms.RandomRotation(15),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            transforms.RandomErasing(p=0.3),
+        ])
+        val_transform = transforms.Compose([
+            transforms.Resize(int(IMG_SIZE * 1.1)),
+            transforms.CenterCrop(IMG_SIZE),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
 
     train_ds = CropDataset(train_entries, train_transform)
     val_ds = CropDataset(val_entries, val_transform)
