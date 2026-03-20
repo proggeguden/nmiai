@@ -18,6 +18,7 @@ CLASS_NAMES = ["Empty", "Settlement", "Port", "Ruin", "Forest", "Mountain"]
 
 # Map internal terrain codes to prediction class indices
 TERRAIN_TO_CLASS = {
+    0: 0,   # Empty → Empty
     10: 0,  # Ocean → Empty
     11: 0,  # Plains → Empty
     4: 4,   # Forest → Forest
@@ -27,7 +28,7 @@ TERRAIN_TO_CLASS = {
     3: 3,   # Ruin → Ruin
 }
 
-# Static terrain codes: these never change, always predict 100% one class
+# Terrain codes that are static (never change in simulation)
 STATIC_CODES = {10, 5}  # Ocean → always Empty, Mountain → always Mountain
 
 # Probability floor to avoid KL divergence → infinity
