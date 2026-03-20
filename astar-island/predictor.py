@@ -151,21 +151,18 @@ def compute_bucket_key(initial_grid, r, c, settlement_dists=None):
     has_adj_forest = adj_forest > 0
     has_adj_settlement = adj_settlement > 0
 
-    # Graduated forest adjacency: 0/1/2/3+ adjacent forests
-    adj_forest_level = min(adj_forest, 3)
-
-    if code == 1:    # Settlement
-        return (1, adj_forest_level, has_adj_settlement, is_coastal)
-    elif code == 2:  # Port
-        return (2, adj_forest_level)
+    if code == 1:    # Settlement — binary forest (was graduated adj_forest_level)
+        return (1, has_adj_forest, has_adj_settlement, is_coastal)
+    elif code == 2:  # Port — simplified to coastal only
+        return (2, is_coastal)
     elif code == 11: # Plains
         return (11, dist_bucket, is_coastal, has_adj_forest)
     elif code == 0:  # Empty
         return (0, dist_bucket, has_adj_forest)
     elif code == 4:  # Forest
         return (4, dist_bucket, has_adj_settlement)
-    elif code == 3:  # Ruin
-        return (3, dist_bucket, has_adj_settlement, has_adj_forest)
+    elif code == 3:  # Ruin — dropped has_adj_forest
+        return (3, dist_bucket, has_adj_settlement)
     else:
         return (code,)
 
@@ -173,13 +170,49 @@ def compute_bucket_key(initial_grid, r, c, settlement_dists=None):
 def compute_feature_map(initial_grid):
     """Compute spatial bucket keys for all cells in the grid.
 
-    Returns list of lists of bucket key tuples (H×W).
+    Returns (fmap, settlement_dists):
+        fmap: list of lists of bucket key tuples (H×W)
+        settlement_dists: H×W grid of Manhattan distances to nearest settlement
     """
     H = len(initial_grid)
     W = len(initial_grid[0])
     settlement_dists = _precompute_settlement_distances(initial_grid)
-    return [[compute_bucket_key(initial_grid, r, c, settlement_dists) for c in range(W)]
+    fmap = [[compute_bucket_key(initial_grid, r, c, settlement_dists) for c in range(W)]
             for r in range(H)]
+    return fmap, settlement_dists
+
+
+# Distance bracket midpoints for interpolation
+# Bucket 0=[0,2] → mid 1.0, bucket 1=[3,4] → mid 3.5, bucket 2=[5+] → mid 7.0
+DIST_MIDPOINTS = [1.0, 3.5, 7.0]
+
+
+def _interpolate_dist(d, key, dist_idx, spatial_model):
+    """Interpolate between adjacent distance bracket distributions.
+
+    Smooths the hard bucket boundaries by blending with the neighboring bracket
+    based on the cell's raw distance from the bucket midpoint.
+    """
+    current_bucket = key[dist_idx]
+    current_mid = DIST_MIDPOINTS[current_bucket]
+
+    if d < current_mid and current_bucket > 0:
+        neighbor_bucket = current_bucket - 1
+    elif d > current_mid and current_bucket < 2:
+        neighbor_bucket = current_bucket + 1
+    else:
+        return spatial_model.get(key)  # at edge, no interpolation
+
+    neighbor_key = key[:dist_idx] + (neighbor_bucket,) + key[dist_idx + 1:]
+
+    if neighbor_key not in spatial_model or key not in spatial_model:
+        return spatial_model.get(key)
+
+    # Linear interpolation based on distance from midpoint
+    neighbor_mid = DIST_MIDPOINTS[neighbor_bucket]
+    t = abs(d - current_mid) / abs(neighbor_mid - current_mid)
+    t = min(t, 1.0)
+    return (1 - t) * spatial_model[key] + t * spatial_model[neighbor_key]
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +279,7 @@ def learn_spatial_transition_model(initial_grids, observations):
     for obs in observations:
         seed_idx = obs.get("seed_index", 0)
         if seed_idx not in feature_maps and seed_idx < len(initial_grids):
-            feature_maps[seed_idx] = compute_feature_map(initial_grids[seed_idx])
+            feature_maps[seed_idx], _ = compute_feature_map(initial_grids[seed_idx])
 
     for obs in observations:
         seed_idx = obs.get("seed_index", 0)
@@ -317,25 +350,65 @@ def learn_spatial_transition_model(initial_grids, observations):
 
 
 # ---------------------------------------------------------------------------
+# Winter severity estimation
+# ---------------------------------------------------------------------------
+
+def estimate_survival_rate(initial_grids, observations):
+    """Estimate settlement survival rate from observations.
+
+    Compares initial settlement/port cells to their observed final state.
+    Returns the fraction that survived, or None if insufficient data.
+    """
+    alive_count = 0
+    observed_count = 0
+    for obs in observations:
+        seed_idx = obs.get("seed_index", 0)
+        if seed_idx >= len(initial_grids):
+            continue
+        init_grid = initial_grids[seed_idx]
+        vp = obs["viewport"]
+        grid = obs["grid"]
+        vp_x, vp_y = vp["x"], vp["y"]
+        for dr in range(len(grid)):
+            for dc in range(len(grid[0]) if grid else 0):
+                r, c = vp_y + dr, vp_x + dc
+                if 0 <= r < len(init_grid) and 0 <= c < len(init_grid[0]):
+                    if init_grid[r][c] in (1, 2):  # initial settlement/port
+                        observed_count += 1
+                        final_cls = terrain_code_to_class(grid[dr][dc])
+                        if final_cls in (1, 2):  # still settlement or port
+                            alive_count += 1
+    if observed_count < 20:
+        return None  # not enough data
+    return alive_count / observed_count
+
+
+# ---------------------------------------------------------------------------
 # Prediction building
 # ---------------------------------------------------------------------------
 
 def build_prediction(height, width, initial_grid, observations,
-                     transition_model=None, spatial_model=None):
+                     transition_model=None, spatial_model=None,
+                     survival_rate=None):
     """Build a H×W×6 probability tensor.
 
     Uses spatial_model (per-bucket) when available, falls back to
     transition_model (per-code), then to initial-grid class.
     Per-cell observation counts are blended in for directly observed cells.
+    Distance interpolation smooths bucket boundaries for distance-dependent codes.
     """
+    # Codes that use distance as a bucket feature (dist_idx=1 in the key tuple)
+    DIST_DEPENDENT_CODES = {0, 3, 4, 11}
+
     predictions = np.zeros((height, width, NUM_CLASSES), dtype=np.float64)
 
     # Precompute feature map if we have a spatial model
     fmap = None
+    settlement_dists = None
     if spatial_model:
-        fmap = compute_feature_map(initial_grid)
+        fmap, settlement_dists = compute_feature_map(initial_grid)
 
-    # Step 1: Apply model to all cells
+    # Step 1: Apply model to all cells (with distance interpolation)
     for r in range(height):
         for c in range(width):
             code = initial_grid[r][c]
@@ -343,11 +416,70 @@ def build_prediction(height, width, initial_grid, observations,
             if code in STATIC_CODES:
                 predictions[r, c, terrain_code_to_class(code)] = 1.0
             elif fmap and fmap[r][c] in spatial_model:
-                predictions[r, c] = spatial_model[fmap[r][c]]
+                key = fmap[r][c]
+                # Distance interpolation for distance-dependent terrain codes
+                if settlement_dists is not None and code in DIST_DEPENDENT_CODES:
+                    d = settlement_dists[r][c]
+                    interp = _interpolate_dist(d, key, 1, spatial_model)
+                    if interp is not None:
+                        predictions[r, c] = interp
+                    else:
+                        predictions[r, c] = spatial_model[key]
+                else:
+                    predictions[r, c] = spatial_model[key]
             elif transition_model and code in transition_model:
                 predictions[r, c] = transition_model[code]
             else:
                 predictions[r, c, terrain_code_to_class(code)] = 1.0
+
+    # Step 1.5: Port probability boost for coastal cells near settlements
+    if fmap and settlement_dists:
+        for r in range(height):
+            for c in range(width):
+                code = initial_grid[r][c]
+                if code in STATIC_CODES:
+                    continue
+                d = settlement_dists[r][c]
+                is_coastal = any(
+                    0 <= r + dr < height and 0 <= c + dc < width
+                    and initial_grid[r + dr][c + dc] == 10
+                    for dr in (-1, 0, 1) for dc in (-1, 0, 1) if (dr, dc) != (0, 0)
+                )
+                if is_coastal and d <= 3:
+                    min_port = 0.05 if d <= 1 else 0.03
+                    if predictions[r, c, 2] < min_port:
+                        deficit = min_port - predictions[r, c, 2]
+                        predictions[r, c, 2] = min_port
+                        # Remove deficit from the dominant non-Port class
+                        dominant = max(
+                            (i for i in range(NUM_CLASSES) if i != 2),
+                            key=lambda i: predictions[r, c, i]
+                        )
+                        predictions[r, c, dominant] -= deficit
+                        predictions[r, c] = np.maximum(predictions[r, c], 0.001)
+                        predictions[r, c] /= predictions[r, c].sum()
+
+    # Step 1.6: Winter severity calibration
+    if survival_rate is not None:
+        model_survival = 0
+        model_count = 0
+        for r in range(height):
+            for c in range(width):
+                if initial_grid[r][c] in (1, 2):
+                    model_survival += predictions[r, c, 1] + predictions[r, c, 2]
+                    model_count += 1
+        if model_count > 0:
+            model_rate = model_survival / model_count
+            if model_rate > 0.01:
+                scale = survival_rate / model_rate
+                scale = max(0.3, min(scale, 3.0))  # clamp to avoid wild swings
+                for r in range(height):
+                    for c in range(width):
+                        if initial_grid[r][c] in (1, 2):
+                            predictions[r, c, 1] *= scale  # Settlement
+                            predictions[r, c, 2] *= scale  # Port
+                            predictions[r, c] = np.maximum(predictions[r, c], 0.001)
+                            predictions[r, c] /= predictions[r, c].sum()
 
     # Step 2: Blend per-cell observations (for directly observed cells)
     if observations:

@@ -19,7 +19,7 @@ load_dotenv()
 import api_client
 from predictor import (
     build_prediction, predictions_to_list, validate_predictions,
-    learn_spatial_transition_model,
+    learn_spatial_transition_model, estimate_survival_rate,
 )
 
 app = FastAPI()
@@ -121,10 +121,15 @@ def run_pipeline(round_id):
         all_observations.extend(obs)
 
     # 3. Learn spatial transition model from all observations
+    initial_grids = [s["grid"] for s in initial_states]
     global_model, spatial_model = learn_spatial_transition_model(
-        [s["grid"] for s in initial_states],
-        all_observations
+        initial_grids, all_observations
     )
+
+    # Estimate winter severity from observed settlement survival
+    survival_rate = estimate_survival_rate(initial_grids, all_observations)
+    print(f"Estimated survival rate: {survival_rate}")
+
     from predictor import CLASS_NAMES
     print(f"\nLearned: {len(global_model)} terrain codes, {len(spatial_model)} spatial buckets")
     for bucket, probs in sorted(spatial_model.items(), key=str):
@@ -143,7 +148,8 @@ def run_pipeline(round_id):
 
         pred = build_prediction(height, width, initial_grid, seed_obs,
                                 transition_model=global_model,
-                                spatial_model=spatial_model)
+                                spatial_model=spatial_model,
+                                survival_rate=survival_rate)
         pred_list = predictions_to_list(pred)
         validate_predictions(pred_list, height, width)
 

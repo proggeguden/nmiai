@@ -100,7 +100,7 @@ def backtest_round(round_id):
     for seed_idx in range(seeds_count):
         gt = all_gt[seed_idx]
         init_grid = initial_states[seed_idx]["grid"]
-        fmap = compute_feature_map(init_grid)
+        fmap, _ = compute_feature_map(init_grid)
 
         for r in range(height):
             for c in range(width):
@@ -144,7 +144,7 @@ def backtest_round(round_id):
     # Also build single-seed models for comparison
     gt0 = all_gt[0]
     init_grid_0 = initial_states[0]["grid"]
-    fmap_0 = compute_feature_map(init_grid_0)
+    fmap_0, _ = compute_feature_map(init_grid_0)
 
     single_global_probs = {}
     single_spatial_probs = {}
