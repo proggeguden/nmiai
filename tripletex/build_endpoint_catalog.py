@@ -29,8 +29,10 @@ READONLY_FIELDS = frozenset({
 
 # Tier 1: common accounting entity tags to always include in the planner prompt
 TIER1_TAGS = {
-    "employee", "customer", "supplier", "product", "order", "order/orderline",
-    "invoice", "invoice/paymentType", "project", "department",
+    "employee", "employee/entitlement", "customer", "supplier", "product",
+    "order", "order/orderline",
+    "invoice", "invoice/paymentType", "project", "project/participant",
+    "department",
     "ledger/voucher", "ledger/account", "ledger/vatType",
     "travelExpense", "contact", "currency", "country",
 }

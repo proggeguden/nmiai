@@ -44,13 +44,18 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 2. **Register payment on "existing" invoice**: create customer (with org number, name) → create order (with orderLines matching the described invoice amount, set deliveryDate=orderDate) → PUT /order/{{id}}/:invoice to create invoice → GET /invoice (by customer ID) to get invoice ID and amount → GET /invoice/paymentType → PUT /invoice/{{id}}/:payment
 3. **Send invoice**: create invoice → PUT /invoice/{{id}}/:send with sendType=EMAIL
 4. **Create & send invoice efficiently**: create customer if needed → create order (with orderLines, deliveryDate=orderDate) → PUT /order/{{id}}/:invoice with sendToCustomer=true
-5. **Create project**: find/create employee (manager) → create project with projectManager:{{id}}
+5. **Create project with manager**: create department → create employee (with department, userType="STANDARD") →
+   PUT /employee/entitlement/:grantEntitlementsByTemplate (query_params: employeeId=$step_N.value.id, template="ALL_PRIVILEGES") →
+   create customer → create project with projectManager:{{id}} referencing the employee
 6. **Travel expense**: find/create employee → create travel expense with travelDetails nested object
 7. **Voucher**: find ledger accounts → create voucher with postings array (debit=positive, credit=negative, must sum to 0)
 8. **Register supplier**: POST /supplier with name, organizationNumber, email
 9. **Update entity**: GET first to get current version → PUT with version field
 10. **Delete entity**: search to find ID → DELETE /entity/{{id}}
-11. **Log hours + project invoice**: create department → create employee (with department) → create customer → create project (with customer, optionally projectManager) → create order (with project, orderLines=hours*rate, deliveryDate=orderDate) → PUT /order/{{id}}/:invoice
+11. **Log hours + project invoice**: create department → create employee (with department) →
+    PUT /employee/entitlement/:grantEntitlementsByTemplate (employeeId, template="ALL_PRIVILEGES") →
+    create customer → create project (with customer and projectManager=employee) →
+    create order (with project, orderLines=hours*rate, deliveryDate=orderDate) → PUT /order/{{id}}/:invoice
 12. **Credit note (reverse invoice)**: create customer → create order → PUT /order/{{id}}/:invoice → PUT /invoice/{{id}}/:createCreditNote with date and comment in query_params
 13. **Cancel/reverse payment**: create customer → create order → PUT /order/{{id}}/:invoice (with paidAmount to simulate initial payment) → PUT /invoice/{{id}}/:payment with negative paidAmount to reverse
 14. **Order with existing products**: create customer → POST /product/list (bulk create, omit number field to auto-generate) → create order with product references in orderLines
@@ -68,13 +73,14 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 10. For PUT action endpoints (/:payment, /:send, /:invoice), parameters go in query_params, not body.
 11. When searching, use the most specific filter available (name, email, organizationNumber, etc.).
 12. Use fields parameter in GET requests to limit response size: query_params: {{"fields": "id,name"}}
-13. **The sandbox starts empty.** No customers, employees, suppliers, invoices, or orders exist.
-    If the task references an existing entity (e.g. "customer X has an invoice"), CREATE it first.
-    Do NOT search for entities the task describes — create them directly with the given details.
-    Only use GET to search when you genuinely don't know the entity (e.g. looking up paymentType or vatType).
+13. **The sandbox starts empty** — no customers, suppliers, invoices, or orders exist. CREATE them, don't search.
+    **Exception: employees persist** across submissions. Before creating an employee, GET /employee?email=X first.
+    If found (values array non-empty), reuse the existing employee's ID. Only POST /employee if not found.
 14. For POST /order: deliveryDate is REQUIRED — use the orderDate value if not specified.
 15. For POST /employee: userType is REQUIRED — use "STANDARD" for normal employees, "EXTENDED" for administrators.
-16. For POST /project: projectManager may fail with "har ikke fått tilgang som prosjektleder". If the task doesn't strictly require a specific manager, omit projectManager to avoid errors.
+16. **Project manager access**: A newly created employee cannot be a projectManager until you grant entitlements.
+    After creating the employee, call PUT /employee/entitlement/:grantEntitlementsByTemplate
+    with query_params: {{"employeeId": $step_N.value.id, "template": "ALL_PRIVILEGES"}}. Then assign as projectManager.
 17. For GET /invoice with date filters: invoiceDateTo must be strictly AFTER invoiceDateFrom (exclusive end). Use the next day.
 18. For POST /product/list: omit the "number" field to auto-generate — existing product numbers cause 422.
 
