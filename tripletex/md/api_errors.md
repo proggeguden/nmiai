@@ -1,10 +1,19 @@
-# API errors from submissions
+# API Errors from Submissions
 
-# POST /ledger/voucher
-response: "{"status":422,"code":18000,"message":"Validering feilet.","link":"https://tripletex.no/v2-docs/","developerMessage":null,"validationMessages":[{"field":"postings","message":"Kan ikke være null.","path":"null.postings","rootId":null}],"requestId":"6ffcc86a-9eea-4156-af2c-a861c665a226"}"
+## POST /ledger/voucher — 422
+**Date:** 2026-03-19
+**Error:** Validering feilet. Kan ikke være null. (postings)
+**Request body:** {postings: null}
+**Self-heal:** not attempted
 
-# POST /invoice
-response: "{"status":422,"code":18000,"message":"Validering feilet.","link":"https://tripletex.no/v2-docs/","developerMessage":"VALIDATION_ERROR","validationMessages":[{"field":null,"message":"Faktura kan ikke opprettes før selskapet har registrert et bankkontonummer.","path":null,"rootId":null}],"requestId":"ab8acfea-43e7-4e02-a555-e6e229ab4bff"}"
+## POST /invoice — 422
+**Date:** 2026-03-19
+**Error:** Faktura kan ikke opprettes før selskapet har registrert et bankkontonummer.
+**Request body:** N/A
+**Self-heal:** not attempted
 
-# POST /employee
-response: "{"status":422,"code":18000,"message":"Validering feilet.","link":"https://tripletex.no/v2-docs/","developerMessage":"VALIDATION_ERROR","validationMessages":[{"field":"department.id","message":"Feltet må fylles ut.","path":null,"rootId":null}],"requestId":"70593c03-cb14-4ace-8153-24c373b8f5a0"}"
+## POST /employee — 422
+**Date:** 2026-03-19
+**Error:** Feltet må fylles ut. (department.id)
+**Request body:** {firstName: "Ella", lastName: "Harris", ...}
+**Self-heal:** not attempted
