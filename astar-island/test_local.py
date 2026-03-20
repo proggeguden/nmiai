@@ -20,7 +20,8 @@ import numpy as np
 
 import api_client
 from predictor import (
-    build_prediction, learn_transition_model, predictions_to_list,
+    build_prediction, learn_transition_model, learn_spatial_transition_model,
+    compute_feature_map, predictions_to_list,
     validate_predictions, terrain_code_to_class,
     NUM_CLASSES, CLASS_NAMES,
 )
@@ -59,8 +60,23 @@ def show_leaderboard():
               f"rounds={t['rounds_participated']}")
 
 
+def _score_predictions(pred, gt):
+    """Compute entropy-weighted KL divergence."""
+    kl = np.sum(gt * np.log((gt + 1e-10) / (pred + 1e-10)), axis=2)
+    entropy = -np.sum(gt * np.log(gt + 1e-10), axis=2)
+    dynamic = entropy > 0.01
+    if dynamic.any():
+        weighted_kl = (kl[dynamic] * entropy[dynamic]).sum() / entropy[dynamic].sum()
+    else:
+        weighted_kl = 0
+    return weighted_kl, dynamic.sum()
+
+
 def backtest_round(round_id):
-    """Backtest our predictor against ground truth from a completed round."""
+    """Backtest our predictor against ground truth from a completed round.
+
+    Compares global model (per-code) vs spatial model (per-bucket).
+    """
     print(f"\n{'='*60}")
     print(f"Backtesting round: {round_id}")
     print(f"{'='*60}")
@@ -70,59 +86,75 @@ def backtest_round(round_id):
     seeds_count = detail["seeds_count"]
     initial_states = detail["initial_states"]
 
-    # Use ground truth from seed 0 to build a transition model
-    # (simulates learning from observations)
+    # Use ground truth from seed 0 to simulate learning from observations
     gt0 = np.array(api_client.get_analysis(round_id, 0)["ground_truth"])
-
-    # Build transition model from seed 0's ground truth probabilities
-    transition_probs = {}
     init_grid = initial_states[0]["grid"]
+
+    # Build global transition model from GT probabilities
+    global_probs = {}
     for r in range(height):
         for c in range(width):
             code = init_grid[r][c]
-            if code not in transition_probs:
-                transition_probs[code] = np.zeros(NUM_CLASSES)
-            transition_probs[code] += gt0[r, c]
+            if code not in global_probs:
+                global_probs[code] = np.zeros(NUM_CLASSES)
+            global_probs[code] += gt0[r, c]
 
-    transition_model = {}
-    for code, probs in transition_probs.items():
+    global_model = {}
+    for code, probs in global_probs.items():
         total = probs.sum()
         if total > 0:
-            transition_model[code] = probs / total
+            global_model[code] = probs / total
 
-    print("\nTransition model (learned from seed 0 ground truth):")
-    for code, probs in sorted(transition_model.items()):
+    # Build spatial transition model from GT probabilities
+    fmap = compute_feature_map(init_grid)
+    spatial_probs = {}
+    spatial_obs = {}
+    for r in range(height):
+        for c in range(width):
+            bucket = fmap[r][c]
+            if bucket not in spatial_probs:
+                spatial_probs[bucket] = np.zeros(NUM_CLASSES)
+                spatial_obs[bucket] = 0
+            spatial_probs[bucket] += gt0[r, c]
+            spatial_obs[bucket] += 1
+
+    spatial_model = {}
+    for bucket, probs in spatial_probs.items():
+        if spatial_obs[bucket] >= 5:  # lower threshold for backtest (GT is clean)
+            total = probs.sum()
+            if total > 0:
+                spatial_model[bucket] = probs / total
+
+    print(f"\nModels: {len(global_model)} terrain codes, {len(spatial_model)} spatial buckets")
+    for bucket in sorted(spatial_model.keys(), key=str):
+        probs = spatial_model[bucket]
+        n = spatial_obs[bucket]
         top = sorted(enumerate(probs), key=lambda x: -x[1])[:3]
         top_str = ", ".join(f"{CLASS_NAMES[i]}={p:.3f}" for i, p in top if p > 0.005)
-        print(f"  Code {code}: {top_str}")
+        print(f"  {bucket} (n={n}): {top_str}")
 
-    # Predict and score all seeds
-    print("\nPer-seed results:")
-    kl_scores = []
-    for seed_idx in range(seeds_count):
-        gt = np.array(api_client.get_analysis(round_id, seed_idx)["ground_truth"])
-        init_grid_s = initial_states[seed_idx]["grid"]
+    # Score all seeds with both models
+    print(f"\n{'Model':<10} | {'Seed 0':>8} {'Seed 1':>8} {'Seed 2':>8} {'Seed 3':>8} {'Seed 4':>8} | {'Avg':>8}")
+    print("-" * 75)
 
-        pred = build_prediction(height, width, init_grid_s, [],
-                                transition_model=transition_model)
+    for model_name, gm, sm in [
+        ("Global", global_model, None),
+        ("Spatial", global_model, spatial_model),
+    ]:
+        kl_scores = []
+        for seed_idx in range(seeds_count):
+            gt = np.array(api_client.get_analysis(round_id, seed_idx)["ground_truth"])
+            init_grid_s = initial_states[seed_idx]["grid"]
+            pred = build_prediction(height, width, init_grid_s, [],
+                                    transition_model=gm, spatial_model=sm)
+            wkl, _ = _score_predictions(pred, gt)
+            kl_scores.append(wkl)
 
-        # Entropy-weighted KL divergence
-        kl = np.sum(gt * np.log((gt + 1e-10) / (pred + 1e-10)), axis=2)
-        entropy = -np.sum(gt * np.log(gt + 1e-10), axis=2)
-        dynamic = entropy > 0.01
+        avg = np.mean(kl_scores)
+        scores_str = " ".join(f"{s:.4f}" for s in kl_scores)
+        print(f"{model_name:<10} | {scores_str} | {avg:.4f}")
 
-        if dynamic.any():
-            weighted_kl = (kl[dynamic] * entropy[dynamic]).sum() / entropy[dynamic].sum()
-        else:
-            weighted_kl = 0
-
-        kl_scores.append(weighted_kl)
-        print(f"  Seed {seed_idx}: weighted_KL={weighted_kl:.4f}, "
-              f"dynamic_cells={dynamic.sum()}/{height*width}")
-
-    avg_kl = np.mean(kl_scores)
-    print(f"\nAverage weighted KL: {avg_kl:.4f}")
-    return avg_kl
+    return np.mean(kl_scores)  # return spatial model score
 
 
 def test_pipeline(round_id, submit=False):
@@ -172,19 +204,16 @@ def test_pipeline(round_id, submit=False):
             print(f"    ({x},{y}) error: {e}")
             break
 
-    # Learn transition model
-    transition_model = learn_transition_model(
+    # Learn spatial transition model
+    global_model, spatial_model = learn_spatial_transition_model(
         [initial_states[0]["grid"]], observations
     )
-    print(f"\n  Transition model ({len(transition_model)} codes):")
-    for code, probs in sorted(transition_model.items()):
-        top = sorted(enumerate(probs), key=lambda x: -x[1])[:3]
-        top_str = ", ".join(f"{CLASS_NAMES[i]}={p:.2f}" for i, p in top if p > 0.01)
-        print(f"    Code {code}: {top_str}")
+    print(f"\n  Models: {len(global_model)} codes, {len(spatial_model)} spatial buckets")
 
     # Predict seed 0
     pred = build_prediction(height, width, initial_states[0]["grid"],
-                            observations, transition_model=transition_model)
+                            observations, transition_model=global_model,
+                            spatial_model=spatial_model)
     pred_list = predictions_to_list(pred)
     validate_predictions(pred_list, height, width)
     print(f"\n  Prediction valid: shape={pred.shape}, "
@@ -197,7 +226,8 @@ def test_pipeline(round_id, submit=False):
             init_grid = initial_states[seed_idx]["grid"]
             seed_obs = observations if seed_idx == 0 else []
             p = build_prediction(height, width, init_grid, seed_obs,
-                                 transition_model=transition_model)
+                                 transition_model=global_model,
+                                 spatial_model=spatial_model)
             pl = predictions_to_list(p)
             validate_predictions(pl, height, width)
             try:

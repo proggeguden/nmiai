@@ -19,7 +19,7 @@ load_dotenv()
 import api_client
 from predictor import (
     build_prediction, predictions_to_list, validate_predictions,
-    learn_transition_model,
+    learn_spatial_transition_model,
 )
 
 app = FastAPI()
@@ -91,17 +91,17 @@ def run_pipeline(round_id):
     for obs in observations:
         obs["seed_index"] = 0
 
-    # 3. Learn transition model from observations
-    transition_model = learn_transition_model(
-        [initial_states[0]["grid"]],  # only seed 0's initial grid
+    # 3. Learn spatial transition model from observations
+    global_model, spatial_model = learn_spatial_transition_model(
+        [initial_states[0]["grid"]],
         observations
     )
-    print(f"Learned transitions for {len(transition_model)} terrain codes:")
     from predictor import CLASS_NAMES
-    for code, probs in sorted(transition_model.items()):
+    print(f"Learned: {len(global_model)} terrain codes, {len(spatial_model)} spatial buckets")
+    for bucket, probs in sorted(spatial_model.items(), key=str):
         top = sorted(enumerate(probs), key=lambda x: -x[1])[:3]
         top_str = ", ".join(f"{CLASS_NAMES[i]}={p:.2f}" for i, p in top if p > 0.01)
-        print(f"  Code {code}: {top_str}")
+        print(f"  {bucket}: {top_str}")
 
     # 4. Predict and submit for all seeds
     results = []
@@ -113,7 +113,8 @@ def run_pipeline(round_id):
         seed_obs = observations if seed_idx == 0 else []
 
         pred = build_prediction(height, width, initial_grid, seed_obs,
-                                transition_model=transition_model)
+                                transition_model=global_model,
+                                spatial_model=spatial_model)
         pred_list = predictions_to_list(pred)
         validate_predictions(pred_list, height, width)
 

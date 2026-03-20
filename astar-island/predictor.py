@@ -5,9 +5,9 @@ So observations from any seed teach us the terrain transition probabilities.
 
 Strategy:
 1. Observe heavily on 1-2 seeds to learn transition rates
-2. Build a transition model: P(final_class | initial_terrain_code)
+2. Build a spatial transition model: P(final_class | initial_code, spatial_features)
 3. Apply that model to all 5 seeds using their initial grids
-4. For directly observed cells, blend per-cell counts with the global model
+4. For directly observed cells, blend per-cell counts with the model
 """
 
 import numpy as np
@@ -34,28 +34,107 @@ STATIC_CODES = {10, 5}  # Ocean → always Empty, Mountain → always Mountain
 # Probability floor to avoid KL divergence → infinity
 PROB_FLOOR = 0.01
 
+# Minimum observations per spatial bucket before we trust it
+MIN_BUCKET_OBS = 10
+
 
 def terrain_code_to_class(code):
     """Convert internal terrain code to prediction class index."""
     return TERRAIN_TO_CLASS.get(code, 0)
 
 
+# ---------------------------------------------------------------------------
+# Spatial feature computation
+# ---------------------------------------------------------------------------
+
+def compute_bucket_key(initial_grid, r, c):
+    """Compute spatial bucket key for a cell based on its neighbors.
+
+    Features are computed from the initial grid (fully visible, no queries needed).
+    Returns a tuple used as dict key for the spatial transition model.
+    """
+    code = initial_grid[r][c]
+    H = len(initial_grid)
+    W = len(initial_grid[0])
+
+    if code in STATIC_CODES:
+        return (code,)
+
+    # Count 8-connected neighbors by type
+    adj_forest = 0
+    adj_ocean = 0
+    adj_settlement = 0
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            if dr == 0 and dc == 0:
+                continue
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < H and 0 <= nc < W:
+                n = initial_grid[nr][nc]
+                if n == 4:
+                    adj_forest += 1
+                elif n == 10:
+                    adj_ocean += 1
+                elif n in (1, 2):
+                    adj_settlement += 1
+
+    # Check for settlement within Manhattan distance 2
+    near_settlement = False
+    for dr in range(-2, 3):
+        for dc in range(-2, 3):
+            if abs(dr) + abs(dc) > 2:
+                continue
+            if dr == 0 and dc == 0:
+                continue
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < H and 0 <= nc < W:
+                if initial_grid[nr][nc] in (1, 2):
+                    near_settlement = True
+                    break
+        if near_settlement:
+            break
+
+    is_coastal = adj_ocean > 0
+    has_adj_forest = adj_forest > 0
+    has_adj_settlement = adj_settlement > 0
+
+    if code == 1:    # Settlement
+        return (1, has_adj_forest, has_adj_settlement)
+    elif code == 2:  # Port
+        return (2, has_adj_forest)
+    elif code == 11: # Plains
+        return (11, near_settlement, is_coastal)
+    elif code == 0:  # Empty
+        return (0, near_settlement)
+    elif code == 4:  # Forest
+        return (4, near_settlement)
+    elif code == 3:  # Ruin
+        return (3, near_settlement)
+    else:
+        return (code,)
+
+
+def compute_feature_map(initial_grid):
+    """Compute spatial bucket keys for all cells in the grid.
+
+    Returns list of lists of bucket key tuples (H×W).
+    """
+    H = len(initial_grid)
+    W = len(initial_grid[0])
+    return [[compute_bucket_key(initial_grid, r, c) for c in range(W)]
+            for r in range(H)]
+
+
+# ---------------------------------------------------------------------------
+# Transition model learning
+# ---------------------------------------------------------------------------
+
 def learn_transition_model(initial_grids, observations):
     """Learn P(final_class | initial_terrain_code) from observations.
 
-    Args:
-        initial_grids: list of H×W grids (one per seed that was observed)
-        observations: list of observation dicts from those seeds, each with:
-            - seed_index: which seed this observation is from
-            - viewport: {x, y, w, h}
-            - grid: 2D terrain codes (after simulation)
-
-    Returns:
-        dict mapping initial_terrain_code → np.array of shape (NUM_CLASSES,)
+    Returns dict mapping initial_terrain_code → np.array(NUM_CLASSES).
     """
-    # Count transitions: for each initial terrain code, how often does it
-    # become each class after simulation?
-    transition_counts = {}  # code → np.array(NUM_CLASSES)
+    transition_counts = {}
 
     for obs in observations:
         seed_idx = obs.get("seed_index", 0)
@@ -81,14 +160,12 @@ def learn_transition_model(initial_grids, observations):
                         transition_counts[init_code] = np.zeros(NUM_CLASSES, dtype=np.float64)
                     transition_counts[init_code][final_cls] += 1
 
-    # Normalize to probabilities
     transition_model = {}
     for code, counts in transition_counts.items():
         total = counts.sum()
         if total > 0:
             transition_model[code] = counts / total
         else:
-            # Fallback: predict the class the code maps to
             probs = np.zeros(NUM_CLASSES)
             probs[terrain_code_to_class(code)] = 1.0
             transition_model[code] = probs
@@ -96,33 +173,114 @@ def learn_transition_model(initial_grids, observations):
     return transition_model
 
 
+def learn_spatial_transition_model(initial_grids, observations):
+    """Learn P(final_class | bucket_key) from observations.
+
+    Returns:
+        global_model: dict mapping terrain_code → probability vector (fallback)
+        spatial_model: dict mapping bucket_key → probability vector
+    """
+    global_counts = {}   # code → counts
+    spatial_counts = {}  # bucket_key → counts
+    spatial_obs = {}     # bucket_key → total observations
+
+    # Precompute feature maps for observed seeds
+    feature_maps = {}
+    for obs in observations:
+        seed_idx = obs.get("seed_index", 0)
+        if seed_idx not in feature_maps and seed_idx < len(initial_grids):
+            feature_maps[seed_idx] = compute_feature_map(initial_grids[seed_idx])
+
+    for obs in observations:
+        seed_idx = obs.get("seed_index", 0)
+        if seed_idx >= len(initial_grids):
+            continue
+        initial_grid = initial_grids[seed_idx]
+        fmap = feature_maps[seed_idx]
+
+        vp = obs["viewport"]
+        grid = obs["grid"]
+        vp_x, vp_y = vp["x"], vp["y"]
+        vp_h = len(grid)
+        vp_w = len(grid[0]) if vp_h > 0 else 0
+
+        for dr in range(vp_h):
+            for dc in range(vp_w):
+                r = vp_y + dr
+                c = vp_x + dc
+                if 0 <= r < len(initial_grid) and 0 <= c < len(initial_grid[0]):
+                    init_code = initial_grid[r][c]
+                    final_cls = terrain_code_to_class(grid[dr][dc])
+                    bucket = fmap[r][c]
+
+                    # Global counts
+                    if init_code not in global_counts:
+                        global_counts[init_code] = np.zeros(NUM_CLASSES, dtype=np.float64)
+                    global_counts[init_code][final_cls] += 1
+
+                    # Spatial counts
+                    if bucket not in spatial_counts:
+                        spatial_counts[bucket] = np.zeros(NUM_CLASSES, dtype=np.float64)
+                        spatial_obs[bucket] = 0
+                    spatial_counts[bucket][final_cls] += 1
+                    spatial_obs[bucket] += 1
+
+    # Normalize global model
+    global_model = {}
+    for code, counts in global_counts.items():
+        total = counts.sum()
+        if total > 0:
+            global_model[code] = counts / total
+        else:
+            probs = np.zeros(NUM_CLASSES)
+            probs[terrain_code_to_class(code)] = 1.0
+            global_model[code] = probs
+
+    # Normalize spatial model (with minimum observation threshold)
+    spatial_model = {}
+    for bucket, counts in spatial_counts.items():
+        if spatial_obs[bucket] >= MIN_BUCKET_OBS:
+            total = counts.sum()
+            if total > 0:
+                spatial_model[bucket] = counts / total
+
+    return global_model, spatial_model
+
+
+# ---------------------------------------------------------------------------
+# Prediction building
+# ---------------------------------------------------------------------------
+
 def build_prediction(height, width, initial_grid, observations,
-                     transition_model=None):
+                     transition_model=None, spatial_model=None):
     """Build a H×W×6 probability tensor.
 
-    If transition_model is provided, uses it for all cells (learned from
-    observations across seeds). Per-cell observation counts are blended in
-    for directly observed cells.
-
-    If no transition_model, falls back to per-cell frequency counting.
+    Uses spatial_model (per-bucket) when available, falls back to
+    transition_model (per-code), then to initial-grid class.
+    Per-cell observation counts are blended in for directly observed cells.
     """
     predictions = np.zeros((height, width, NUM_CLASSES), dtype=np.float64)
 
-    # Step 1: Apply transition model (or initial-grid fallback) to all cells
+    # Precompute feature map if we have a spatial model
+    fmap = None
+    if spatial_model:
+        fmap = compute_feature_map(initial_grid)
+
+    # Step 1: Apply model to all cells
     for r in range(height):
         for c in range(width):
             code = initial_grid[r][c]
 
             if code in STATIC_CODES:
-                # Static: 100% one class
                 predictions[r, c, terrain_code_to_class(code)] = 1.0
+            elif fmap and fmap[r][c] in spatial_model:
+                predictions[r, c] = spatial_model[fmap[r][c]]
             elif transition_model and code in transition_model:
                 predictions[r, c] = transition_model[code]
             else:
-                # Fallback: predict the initial class
                 predictions[r, c, terrain_code_to_class(code)] = 1.0
 
-    # Step 2: For directly observed cells, blend per-cell counts with model
+    # Step 2: Blend per-cell observations (for directly observed cells)
     if observations:
         cell_counts = np.zeros((height, width, NUM_CLASSES), dtype=np.float64)
         cell_obs_count = np.zeros((height, width), dtype=np.float64)
@@ -143,23 +301,17 @@ def build_prediction(height, width, initial_grid, observations,
                         cell_counts[r, c, cls] += 1
                         cell_obs_count[r, c] += 1
 
-        # Blend: where we have direct observations, mix per-cell data with model
-        # Weight: more observations → trust per-cell more
         observed_mask = cell_obs_count > 0
         if observed_mask.any():
-            # Normalize per-cell counts
-            cell_totals = cell_obs_count[..., np.newaxis]  # (H, W, 1)
+            cell_totals = cell_obs_count[..., np.newaxis]
             cell_probs = np.zeros_like(cell_counts)
             np.divide(cell_counts, cell_totals, out=cell_probs,
                       where=(cell_totals > 0))
 
-            # Blend weight: alpha = n_obs / (n_obs + k), where k controls
-            # how much we trust the global model vs local observations
-            k = 5.0  # with 5+ observations, trust local data ~50%
+            k = 5.0
             alpha = cell_obs_count / (cell_obs_count + k)
-            alpha = alpha[..., np.newaxis]  # (H, W, 1)
+            alpha = alpha[..., np.newaxis]
 
-            # Only blend non-static cells
             for r in range(height):
                 for c in range(width):
                     if observed_mask[r, c] and initial_grid[r][c] not in STATIC_CODES:
