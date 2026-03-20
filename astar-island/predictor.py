@@ -1024,6 +1024,46 @@ def build_prediction(height, width, initial_grid, observations,
                                 predictions[r, c] = np.maximum(predictions[r, c], 0.001)
                                 predictions[r, c] /= predictions[r, c].sum()
 
+    # Step 1.85: Forest-specific entropy injection
+    # Forest bucket model over-predicts Forest=0.86-0.91 when GT is 0.73-0.80
+    # Shrink Forest mass and redistribute to other classes using global prior
+    if transition_model and transition_model.get(4) is not None:
+        forest_prior = transition_model[4]
+        forest_retention = forest_prior[4]  # P(Forest→Forest) from observations
+        if settlement_dists is None:
+            settlement_dists = _precompute_settlement_distances(initial_grid)
+        # Only shrink when observed forest retention is clearly low
+        # retention > 0.85 = forest mostly stays, don't interfere
+        if forest_retention < 0.85:
+            clearing_signal = max(0.0, 0.85 - forest_retention)  # 0 to ~0.20
+            base_shrink = min(0.15, clearing_signal * 0.6)
+        else:
+            base_shrink = 0.0  # forest mostly stays, skip
+        for r in range(height):
+            for c in range(width):
+                if initial_grid[r][c] != 4:
+                    continue
+                forest_p = predictions[r, c, 4]
+                if forest_p < 0.60:
+                    continue
+                d = settlement_dists[r][c]
+                if d <= 2:
+                    shrink = base_shrink * 1.5
+                elif d <= 4:
+                    shrink = base_shrink
+                else:
+                    shrink = base_shrink * 0.4
+                deficit = forest_p * shrink
+                predictions[r, c, 4] -= deficit
+                # Redistribute to non-Forest classes using global prior
+                non_forest_prior = forest_prior.copy()
+                non_forest_prior[4] = 0
+                if non_forest_prior.sum() > 0:
+                    non_forest_prior /= non_forest_prior.sum()
+                predictions[r, c] += deficit * non_forest_prior
+                predictions[r, c] = np.maximum(predictions[r, c], 0.001)
+                predictions[r, c] /= predictions[r, c].sum()
+
     # Step 1.8: Confidence calibration — shrink toward global prior
     if transition_model:
         # Ensure we have settlement_dists
