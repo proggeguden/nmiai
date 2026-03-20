@@ -3,45 +3,70 @@
 PLANNER_PROMPT = """You are a planning module for a Tripletex accounting agent.
 
 Given a user task (possibly in Norwegian, English, Spanish, Portuguese, Nynorsk, German, or French),
-produce a JSON array of execution steps. Each step calls exactly one tool.
+produce a JSON array of execution steps. Each step calls the call_api tool with exact API parameters.
 
 ## Today's date: {today}
 
-## Available tools:
+## Available tools
+- **call_api**(method, path, query_params, body): Call any Tripletex REST API endpoint.
+  - method: GET, POST, PUT, DELETE
+  - path: API path with IDs substituted (e.g. /customer/123, not /customer/{{id}})
+  - query_params: dict of query parameters (for GET searches, action endpoints)
+  - body: request body as dict in **camelCase** matching Tripletex API exactly
+- **lookup_endpoint**(query): Search API docs for endpoints not listed below. Use sparingly.
+
+## API Reference (common endpoints)
 {tool_summaries}
 
-## Norwegian vocabulary hints
-- "ansatt" / "tilsett" = employee
-- "kunde" = customer
-- "faktura" = invoice
-- "reiseregning" = travel expense
-- "prosjekt" = project
-- "avdeling" = department
-- "produkt" / "vare" = product
-- "kontoadministrator" / "administrator" = admin → userType="EXTENDED"
-- "fornavn" = firstName, "etternavn" = lastName, "e-post" = email
+## Vocabulary (multi-language)
+- "ansatt"/"tilsett"/employee/"empleado"/"Mitarbeiter"/"employé"/"empregado" = employee
+- "kunde"/"client"/"Kunde"/"cliente" = customer
+- "leverandør"/"proveedor"/"Lieferant"/"fournisseur"/"fornecedor" = supplier
+- "faktura"/"invoice"/"factura"/"Rechnung"/"facture"/"fatura" = invoice
+- "reiseregning"/"travel expense"/"gasto de viaje"/"Reisekostenabrechnung" = travel expense
+- "prosjekt"/"project"/"proyecto"/"Projekt"/"projet"/"projeto" = project
+- "avdeling"/"department"/"departamento"/"Abteilung"/"département" = department
+- "produkt"/"vare"/"product"/"producto"/"Produkt"/"produit"/"produto" = product
+- "betaling"/"payment"/"pago"/"Zahlung"/"paiement"/"pagamento" = payment
+- "kontoadministrator"/"administrator" = admin → userType="EXTENDED"
+- "fornavn"/"firstName"/"nombre", "etternavn"/"lastName"/"apellido"
 - "forfallsdato" = due date, "fakturadato" = invoice date
-- "ordrelinje" = order line
-- "bestilling" / "ordre" = order
+- "ordrelinje"/"order line"/"línea de pedido" = order line
+- "bestilling"/"ordre"/"order"/"pedido"/"Bestellung" = order
+- "bilag"/"voucher"/"Beleg" = voucher
+- "konto"/"account"/"cuenta"/"Konto"/"compte" = ledger account
+
+## Workflow recipes
+1. **Create customer + invoice**: create customer → create order (with orderLines) → create invoice (or use PUT /order/{{id}}/:invoice)
+2. **Register payment**: search customer → search invoices (by date) → GET /invoice/paymentType for payment types → PUT /invoice/{{id}}/:payment
+3. **Send invoice**: create invoice → PUT /invoice/{{id}}/:send with sendType=EMAIL
+4. **Create & send invoice efficiently**: create order → PUT /order/{{id}}/:invoice with sendToCustomer=true
+5. **Create project**: find/create employee (manager) → create project with projectManager:{{id}}
+6. **Travel expense**: find/create employee → create travel expense with travelDetails nested object
+7. **Voucher**: find ledger accounts → create voucher with postings array (debit=positive, credit=negative, must sum to 0)
+8. **Register supplier**: POST /supplier with name, organizationNumber, email
+9. **Update entity**: GET first to get current version → PUT with version field
+10. **Delete entity**: search to find ID → DELETE /entity/{{id}}
 
 ## Rules
-1. Minimize the number of steps. Every API call counts against efficiency score.
-2. After a POST, the response contains the created object with its ID — do NOT follow up with a GET.
-3. Use $step_N.value.id to reference the ID from step N's response (e.g., $step_1.value.id).
-4. For invoices: create customer (if needed) → create order (with order lines) → create invoice.
-5. For travel expenses: find/create employee → create travel expense with travel_details_* fields.
-6. For projects: find/create employee (for manager) → create project with project_manager_id.
-7. When searching, use the most specific filter available (name, email, etc.).
-8. For DELETE tasks: search first to find the ID, then delete.
-9. For UPDATE tasks: GET first to get current version, then update with version.
-10. When creating multiple entities of the same type, use the bulk tool (e.g. create_employees_bulk)
-    with a JSON array instead of multiple individual create calls. This saves API calls.
+1. **Minimize API calls.** Every call counts against the efficiency score. Every 4xx error costs even more.
+2. After POST, the response contains the created object — do NOT follow up with a GET.
+3. Use $step_N.value.id to reference IDs from previous steps. For search results: $step_N.values[0].id
+4. Bodies must use **camelCase** field names matching the Tripletex API exactly.
+5. Reference fields use nested {{id: N}} format: e.g. customer: {{id: 123}}, department: {{id: $step_1.value.id}}
+6. When creating multiple entities of the same type, use bulk /list endpoints (POST body = array).
+7. For dates, use YYYY-MM-DD format.
+8. Do NOT send priceIncludingVatCurrency — it conflicts with priceExcludingVatCurrency.
+9. For invoices: the company must have a bank account. If this fails, it's a system limitation.
+10. For PUT action endpoints (/:payment, /:send, /:invoice), parameters go in query_params, not body.
+11. When searching, use the most specific filter available (name, email, organizationNumber, etc.).
+12. Use fields parameter in GET requests to limit response size: query_params: {{"fields": "id,name"}}
 
 ## Output format
 Return ONLY a JSON array of steps, no other text:
 [
-  {{"step_number": 1, "tool_name": "search_employees", "args": {{"firstName": "Ola", "fields": "id,firstName,lastName"}}, "description": "Find employee Ola"}},
-  {{"step_number": 2, "tool_name": "create_travel_expense", "args": {{"employee_id": "$step_1.value.id", "title": "Reise", "travel_details_departure_date": "2026-03-15"}}, "description": "Create travel expense"}}
+  {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "GET", "path": "/customer", "query_params": {{"name": "Solberg", "fields": "id,name"}}}}, "description": "Find customer"}},
+  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "POST", "path": "/order", "body": {{"customer": {{"id": "$step_1.values[0].id"}}, "orderDate": "2026-03-20", "deliveryDate": "2026-03-20", "orderLines": [{{"description": "Konsulenttime", "count": 2, "unitPriceExcludingVatCurrency": 1500.0}}]}}}}, "description": "Create order"}}
 ]
 
 ## Task:
@@ -60,23 +85,25 @@ If the response contains a "value" object, use that directly.
 
 Return ONLY the extracted value (e.g., just the number 123), no explanation."""
 
-FIX_ARGS_PROMPT = """A Tripletex API call failed. Fix the tool arguments to avoid the error.
+FIX_ARGS_PROMPT = """A Tripletex API call failed. Fix the call_api arguments to avoid the error.
 
-Tool: {tool_name}
-Original arguments (JSON):
-{tool_args}
+Endpoint: {method} {path}
+Original query_params: {query_params}
+Original body: {body}
 
 API error response:
 {error_response}
 
-Tool description: {tool_description}
-Tool parameters: {tool_params}
+Endpoint schema:
+{endpoint_schema}
 
 Rules:
-- Return ONLY a valid JSON object with the corrected arguments. No explanation.
-- Keep all arguments that were correct. Only fix what the error message indicates.
-- If a required field is missing, add it with a reasonable default.
+- Return ONLY a valid JSON object with the corrected arguments: {{"method": "...", "path": "...", "query_params": {{...}}, "body": {{...}}}}
+- Keep everything that was correct. Only fix what the error indicates.
+- If a required field is missing, add it with a reasonable value.
 - If a field has an invalid value, fix the value.
-- If a field shouldn't be sent at all, remove it.
+- If a field shouldn't be sent, remove it.
+- Body fields must be camelCase matching the Tripletex API.
+- Reference fields use {{id: N}} format.
 - Date format: YYYY-MM-DD
 """

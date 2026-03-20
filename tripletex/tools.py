@@ -1,4 +1,4 @@
-"""Tripletex API tools — credentials, request helpers, and swagger-generated typed tools."""
+"""Tripletex API tools — credentials, request helpers, and tool loading."""
 
 import os
 import time
@@ -6,7 +6,6 @@ import time
 import requests
 
 from logger import get_logger
-from swagger_tools import generate_tools, get_tool_summaries
 
 log = get_logger("tripletex.api")
 
@@ -55,9 +54,9 @@ def _make_request(method: str, endpoint: str, params: dict = None, body: dict = 
         if method == "GET":
             resp = requests.get(url, auth=_auth(), params=params or {})
         elif method == "POST":
-            resp = requests.post(url, auth=_auth(), json=body)
+            resp = requests.post(url, auth=_auth(), json=body, params=params or {})
         elif method == "PUT":
-            resp = requests.put(url, auth=_auth(), json=body)
+            resp = requests.put(url, auth=_auth(), json=body, params=params or {})
         elif method == "DELETE":
             resp = requests.delete(url, auth=_auth())
         else:
@@ -95,14 +94,25 @@ def _make_request(method: str, endpoint: str, params: dict = None, body: dict = 
 
 
 def load_tools(swagger_path: str = None):
-    """Load typed tools from swagger.json.
+    """Load tools — generic (default) or legacy typed tools.
 
     Returns:
         Tuple of (tools_list, tool_summaries_str)
     """
-    if swagger_path is None:
-        swagger_path = os.path.join(os.path.dirname(__file__), "swagger.json")
+    use_generic = os.environ.get("USE_GENERIC_TOOLS", "true").lower() != "false"
 
-    tools = generate_tools(swagger_path, _make_request)
-    summaries = get_tool_summaries(tools)
-    return tools, summaries
+    if use_generic:
+        from generic_tools import build_generic_tools, get_tier1_catalog
+        tools = build_generic_tools(_make_request)
+        summaries = get_tier1_catalog()
+        log.info(f"Loaded {len(tools)} generic tools (call_api + lookup_endpoint)")
+        return tools, summaries
+    else:
+        # Legacy: typed tools from swagger
+        from swagger_tools import generate_tools, get_tool_summaries
+        if swagger_path is None:
+            swagger_path = os.path.join(os.path.dirname(__file__), "swagger.json")
+        tools = generate_tools(swagger_path, _make_request)
+        summaries = get_tool_summaries(tools)
+        log.info(f"Loaded {len(tools)} legacy typed tools from swagger.json")
+        return tools, summaries
