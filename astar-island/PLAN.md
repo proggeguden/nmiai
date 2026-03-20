@@ -26,31 +26,47 @@
 - Current spatial model would have scored ~0.08 weighted_KL (much better)
 - Top teams score 60-80+ (weighted_score ~110+ on leaderboard)
 
+## Critical Insight: Hidden Parameters Are New Every Round
+
+Tested Bayesian priors from historical rounds — they DON'T help and sometimes hurt.
+Each round has unique hidden params (winter severity, expansion rate, etc.) that
+create wildly different transition rates (settlements survive 2–44% depending on round).
+
+**Historical rounds are useful for understanding STRUCTURE (which spatial features
+matter) but NOT for predicting specific transition rates.** The rates must be
+learned fresh each round from the 50 observation queries.
+
+### Data budget analysis
+- 50 queries, 9 tiles for full coverage → ~5.5 observations per cell
+- Per-cell estimates are noisy (SE ~0.15–0.22 for main classes with N=5)
+- BUT: pooling across cells with same bucket gives 100–500 samples → reliable estimates
+- The spatial model works well with noisy data because of this pooling
+
 ## Phase 4: Remaining Improvements (NEXT)
 
-### 4a. Per-cell prediction within buckets (HIGH)
-The spatial model gives the same probability to ALL settlements with forest adjacency.
-But GT shows individual settlement cells vary: one has 44% survival, another 20%.
-- Use MORE spatial features to create finer buckets (e.g., adj_forest count: 0, 1, 2, 3+)
-- Count adj_forest as integer not binary for settlements
-- Add settlement distance features (dist to nearest other settlement)
-
-### 4b. Smarter query allocation (HIGH)
+### 4a. Smarter query allocation (HIGH)
 50 queries, 9 tiles for full coverage, 41 remaining for repeats.
-- Skip ocean-dominated tiles entirely (they're static, use initial grid)
-- Focus on settlement-heavy tiles for more observations
-- Settlement positions are known from initial_states — target viewports accordingly
+- Skip ocean-dominated tiles entirely (static, use initial grid)
+- Identify which tiles have settlements from initial_states
+- Focus repeats on settlement-heavy tiles for more samples
+- This gives ~10+ observations per dynamic cell instead of ~5
+
+### 4b. Finer spatial features (HIGH)
+The spatial model uses binary features. Finer features can help:
+- adj_forest count: 0, 1, 2, 3+ (not just 0 vs 1+) — more food = more survival
+- Number of settlements within radius 3 (not just adjacent)
+- BUT: keep bucket sizes >50 observations or noise dominates
 
 ### 4c. Use settlement stats from observations (MEDIUM)
-Simulate endpoint returns population, food, wealth, defense for each settlement.
-- Average these across observations to identify strong vs weak settlements
-- Strong settlements (high food, high defense) more likely to survive
-- Only available for seed 0 (observed) but transition rates transfer to all seeds
+Simulate endpoint returns population, food, wealth, defense.
+- Could group settlements by stats (high food vs low food)
+- Only available for seed 0 but transition rates transfer
+- Risk: stats vary across observations (stochastic), may not help much
 
-### 4d. Cross-round learning (MEDIUM)
-- Round 3: 2% settlement survival, Round 1/2/4/5: 22-44% survival
-- Learn to detect "regime" from first few observations
-- Build priors from historical rounds for each regime type
+### 4d. Cross-round regime detection (LOW — tested, minimal benefit)
+- Historical priors don't improve predictions (-0.4% to +0.7% change)
+- Each round is too unique for priors to help
+- Focus efforts on better observation strategy instead
 
 ## Phase 5: Deploy to Cloud Run (when predictions are good)
 - [ ] Deploy Dockerfile to Cloud Run
