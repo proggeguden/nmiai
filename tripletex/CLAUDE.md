@@ -10,10 +10,11 @@ Scored on field-by-field correctness + API call efficiency.
 - Cloud Run (GCP project `ai-nm26osl-1788`, service `tripletex`, region `europe-west1`)
 
 ## Architecture: Planner → Executor → Self-Heal
-1. **Planner** — single LLM call → JSON plan (list of PlanSteps using `call_api`)
-2. **Executor** — pure Python loop calls tools step-by-step, resolving `$step_N` placeholders recursively through nested dicts/lists
-3. **Self-heal** — on 400/422 only, LLM fixes args with full endpoint schema context and retries once. Does NOT retry 401/403/404/409.
-4. **check_done** — routes back to executor or ends (aborts after 3 errors)
+1. **Planner** — single LLM call (efficient profile, t=0) → JSON plan (list of PlanSteps using `call_api`)
+2. **validate_plan()** — pre-flight fixes: strips unnecessary vatType lookups (known IDs), fixes fields dot→parentheses, date range From<To, null voucher postings, auto-injects department for employees, injects travel paymentType
+3. **Executor** — pure Python loop calls tools step-by-step, resolving `$step_N` placeholders recursively through nested dicts/lists
+4. **Self-heal** — on 400/422 only, adaptive replan (retry/skip/replace) with full endpoint schema context. Does NOT retry 401/403/404/409.
+5. **check_done** — routes back to executor or ends (aborts after 3 errors)
 
 ## Key Files
 | File | Purpose |
@@ -88,9 +89,12 @@ Submit endpoint URL at: https://app.ainm.no/submit/tripletex
 - `priceIncludingVatCurrency` must NOT be sent alongside `priceExcludingVatCurrency`
 - `tools.py` uses module-level globals for credentials (not safe for concurrent requests)
 - Invoice creation requires company to have registered a bank account number first
-- Employee creation may require `department.id` to be filled
-- Voucher `postings` cannot be null — must be a non-empty array
+- Employee creation may require `department.id` to be filled (validate_plan auto-injects if missing)
+- Voucher `postings` cannot be null — must be a non-empty array (validate_plan auto-fixes)
 - PUT action endpoints (/:payment, /:send) take params in query_params, not body
+- vatType number == ID for standard rates (1,3,5,6,33) — validate_plan strips unnecessary lookups
+- `PUT /order/{id}/:invoice` supports `paidAmount`+`paymentTypeId` (combined invoice+payment) and `sendToCustomer=true` (combined invoice+send)
+- GET fields must use parentheses not dots — validate_plan auto-fixes
 
 ## Iteration Workflow
 1. Run a test submission (or use `test_local.py`)
@@ -102,6 +106,7 @@ Submit endpoint URL at: https://app.ainm.no/submit/tripletex
 
 ## Current Status (2026-03-20)
 See `PLAN.md` for the full iteration roadmap.
-The agent is functional and deployed. Main areas for improvement:
-planner accuracy, efficiency optimization, self-heal success rate,
-and test coverage across all 7 languages and task categories.
+The agent passes **38/38 local tests** (100% correctness). Round 10 focused on
+efficiency optimization: single planner profile, combined API calls (invoice+payment,
+invoice+send), known vatType IDs, and pre-flight validation fixes. Next priority:
+deploy and run a scored submission to measure efficiency improvement.

@@ -44,15 +44,18 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 
 ## Workflow hints (use as guidance, adapt to the specific task)
 1. **Create customer + invoice**: create customer → create order (with orderLines, deliveryDate=orderDate) → create invoice (or use PUT /order/{{id}}/:invoice)
-2. **Register payment on "existing" invoice**: create customer (with org number, name) → create order (with orderLines matching the described invoice amount, set deliveryDate=orderDate) → PUT /order/{{id}}/:invoice to create invoice → GET /invoice (by customer ID) to get invoice ID and amount → GET /invoice/paymentType → PUT /invoice/{{id}}/:payment
-3. **Send invoice**: create invoice → PUT /invoice/{{id}}/:send with sendType=EMAIL
+2. **Register payment on invoice**: create customer → create order (with orderLines matching the described invoice amount, deliveryDate=orderDate) → PUT /order/{{id}}/:invoice with query_params paidAmount=<total> and paymentTypeId=0 (combines invoice creation + payment in 1 call)
+3. **Send invoice**: PUT /order/{{id}}/:invoice with sendToCustomer=true in query_params (combines invoice creation + sending in 1 call). Only use separate PUT /invoice/{{id}}/:send if the invoice already exists.
 4. **Create & send invoice efficiently**: create customer if needed → create order (with orderLines, deliveryDate=orderDate) → PUT /order/{{id}}/:invoice with sendToCustomer=true
 5. **Create project with manager**: create department → create employee (with department, userType="STANDARD") →
    PUT /employee/entitlement/:grantEntitlementsByTemplate (query_params: employeeId=$step_N.value.id, template="ALL_PRIVILEGES") →
    create customer → create project with projectManager:{{id}} referencing the employee
-6. **Travel expense**: POST /travelExpense creates the shell (employee, travelDetails). Costs and per diems are separate sub-resources:
-   POST /travelExpense/cost (needs travelExpense:{{id}}, category, cost, paymentType, currency).
-   POST /travelExpense/perDiemCompensation (needs travelExpense:{{id}}, location=destination city, count=days, overnightAccommodation).
+6. **Travel expense**: GET /employee?email=X → check if exists, POST /employee if not (with department) →
+   GET /travelExpense/paymentType?showOnEmployeeExpenses=true&count=1 → get paymentType ID (REQUIRED for costs) →
+   POST /travelExpense creates the shell (employee, travelDetails with departureDate, returnDate, destination).
+   Costs and per diems are separate sub-resources:
+   POST /travelExpense/cost (needs travelExpense:{{id}}, category, amountCurrencyIncVat, date, paymentType:{{id: $paymentTypeStep.values[0].id}}).
+   POST /travelExpense/perDiemCompensation (needs travelExpense:{{id}}, location=destination city, count=days, overnightAccommodation="HOTEL").
 7. **Voucher**: First GET /ledger/account?number=NNNN for each account to get the real ID. Do NOT use account numbers as IDs.
    Do NOT send voucherType. Postings use debit=positive, credit=negative, must sum to 0.
    If posting has vatType, use GROSS amount — Tripletex auto-generates the VAT line.
@@ -81,14 +84,19 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - department: POST /department, reference as {{id: $step_N.value.id}}
 - product: POST /product or /product/list, use id from response
 - ledger account: GET /ledger/account?number=NNNN → $step_N.values[0].id
-- vatType: GET /ledger/vatType?number=N → $step_N.values[0].id
-- paymentType: GET /invoice/paymentType → $step_N.values[0].id
+- vatType: **Use known IDs directly — no GET needed.** vatType number == ID for standard rates:
+  - 1 (0% exempt) → vatType: {{id: 1}}
+  - 3 (25% standard) → vatType: {{id: 3}}
+  - 5 (15% food) → vatType: {{id: 5}}
+  - 6 (12% transport) → vatType: {{id: 6}}
+  - 33 (25% high) → vatType: {{id: 33}}
+- paymentType: GET /invoice/paymentType → $step_N.values[0].id (but prefer paymentTypeId=0 via /:invoice query_params)
 - salaryType: GET /salary/type → search response for matching type by name/number
 - entitlement: PUT /employee/entitlement/:grantEntitlementsByTemplate (query_params only, no body)
 - employment: POST /employee/employment → $step_N.value.id (needed for employment details)
 
 ## Rules
-1. **Minimize API calls.** Every call counts against the efficiency score. Every 4xx error costs even more.
+1. **Minimize API calls — this is the #1 scoring criterion.** Every call reduces your efficiency score. Every 4xx error costs even more. A 3-step plan that works is worth far more than a 7-step plan. Never add a step "to be safe". Only employees need dedup checks (GET /employee?email=X).
 2. After POST, the response contains the created object — do NOT follow up with a GET.
 3. Use $step_N.value.id to reference IDs from previous steps. For search results: $step_N.values[0].id
 4. Bodies must use **camelCase** field names matching the Tripletex API exactly.
@@ -116,6 +124,10 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 22. For POST /ledger/voucher: do NOT send voucherType — certain types auto-generate postings that conflict with yours.
 23. **Custom accounting dimensions are NOT available** via the Tripletex API. If the task asks for dimensions, include relevant info in descriptions/postings instead.
 24. Reference field IDs must be integers: department: {{id: $step_N.value.id}}, NOT department: {{id: "123 || $step_N.value.id"}}.
+25. For POST /travelExpense/cost: **paymentType is REQUIRED**. Always GET /travelExpense/paymentType?showOnEmployeeExpenses=true&count=1 first, then use paymentType:{{id: $step_N.values[0].id}} in each cost.
+26. For GET with nested fields: use **parentheses** not dots — e.g. `fields: "id,orders(orderLines(description))"` not `"id,orders.orderLines.description"`.
+27. PUT /order/{{id}}/:invoice supports `paidAmount` + `paymentTypeId` in query_params — combine invoice+payment in 1 call. No separate /:payment step needed.
+28. PUT /order/{{id}}/:invoice supports `sendToCustomer=true` in query_params — combine invoice+send in 1 call. No separate /:send step needed.
 
 ## Output format
 Return ONLY a JSON array of steps, no other text:
@@ -128,23 +140,11 @@ Return ONLY a JSON array of steps, no other text:
 {task}
 """
 
-PLANNER_PROFILES = [
-    {
-        "name": "cautious",
-        "temperature": 0,
-        "prefix": "You are a cautious planner. Always check prerequisites exist before creating dependent entities. Prefer more steps to prevent errors.",
-    },
-    {
-        "name": "efficient",
-        "temperature": 0.2,
-        "prefix": "You are an efficiency-focused planner. Minimize API calls. Use bulk endpoints. Skip optional lookups when defaults work.",
-    },
-    {
-        "name": "creative",
-        "temperature": 0.4,
-        "prefix": "You are a creative planner. Consider alternative approaches. If the obvious approach has known pitfalls, find a workaround.",
-    },
-]
+PLANNER_PROFILE = {
+    "name": "efficient",
+    "temperature": 0,
+    "prefix": "Every API call costs points — minimize total steps ruthlessly. Use bulk /list endpoints. Skip optional lookups (the sandbox starts empty). Use known vatType IDs directly (number == ID). Combine invoice+payment via paidAmount query param. The ONE exception: always GET /employee?email=X before creating employees (they persist).",
+}
 
 EXECUTOR_FALLBACK_PROMPT = """Given this API response, extract the requested value.
 

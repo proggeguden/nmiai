@@ -1,6 +1,5 @@
 """LangGraph agent with planner/executor architecture for Tripletex."""
 
-import concurrent.futures
 import json
 import os
 import re
@@ -12,7 +11,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 
 from logger import get_logger
-from prompts import FIX_ARGS_PROMPT, PLANNER_PROMPT, PLANNER_PROFILES, REPLAN_PROMPT
+from prompts import FIX_ARGS_PROMPT, PLANNER_PROMPT, PLANNER_PROFILE, REPLAN_PROMPT
 from state import AgentState
 from tools import load_tools
 
@@ -33,6 +32,7 @@ def validate_plan(plan: list[dict]) -> list[dict]:
     - Removes conflicting fields
     - Strips product "number" field from POST /product/list
     - Strips inline costs/perDiems from POST /travelExpense
+    - Prepends GET /travelExpense/paymentType when plan has travel costs without paymentType
     - Validates enum values
     """
     try:
@@ -52,6 +52,20 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             needs_bank_account = True
             break
 
+    # Check if plan has travel expense costs but no paymentType lookup
+    has_travel_cost = False
+    has_payment_type_lookup = False
+    for step in plan:
+        if step.get("tool_name") != "call_api":
+            continue
+        args = step.get("args", {})
+        path = args.get("path", "")
+        method = args.get("method", "")
+        if method == "POST" and "/travelExpense/cost" in path:
+            has_travel_cost = True
+        if method == "GET" and "/travelExpense/paymentType" in path:
+            has_payment_type_lookup = True
+
     if needs_bank_account:
         # Prepend: ensure_bank_account meta-step that the executor handles specially.
         # This avoids wasting an API call if the bank account already exists.
@@ -70,6 +84,120 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         plan = [bank_step] + plan
         log.info("Validation: prepended ensure_bank_account step for invoicing")
 
+    # Inject GET /travelExpense/paymentType before first travel cost if missing
+    if has_travel_cost and not has_payment_type_lookup:
+        # Find the first travel cost step
+        first_cost_idx = None
+        for i, step in enumerate(plan):
+            if step.get("tool_name") != "call_api":
+                continue
+            args = step.get("args", {})
+            if args.get("method") == "POST" and "/travelExpense/cost" in args.get("path", ""):
+                first_cost_idx = i
+                break
+
+        if first_cost_idx is not None:
+            # Insert a GET paymentType step right before the first cost step
+            pt_step_number = plan[first_cost_idx]["step_number"]
+            pt_step = {
+                "step_number": pt_step_number,
+                "tool_name": "call_api",
+                "args": {
+                    "method": "GET",
+                    "path": "/travelExpense/paymentType",
+                    "query_params": {"showOnEmployeeExpenses": True, "count": 1, "fields": "id"},
+                },
+                "description": "Get travel expense payment type (required for costs)",
+            }
+
+            # Renumber steps from first_cost_idx onward
+            for step in plan[first_cost_idx:]:
+                step["step_number"] += 1
+                _shift_step_refs(step, offset=1)
+
+            plan.insert(first_cost_idx, pt_step)
+
+            # Inject paymentType reference into all travel cost bodies
+            pt_ref = f"$step_{pt_step_number}.values[0].id"
+            for step in plan[first_cost_idx + 1:]:
+                if step.get("tool_name") != "call_api":
+                    continue
+                args = step.get("args", {})
+                if args.get("method") == "POST" and "/travelExpense/cost" in args.get("path", ""):
+                    body = args.get("body", {})
+                    if isinstance(body, dict) and "paymentType" not in body:
+                        body["paymentType"] = {"id": pt_ref}
+
+            log.info("Validation: injected GET /travelExpense/paymentType step and paymentType refs for travel costs")
+
+    # ── A3: Strip unnecessary GET /ledger/vatType lookups for known IDs ──
+    KNOWN_VAT_IDS = {"1": 1, "3": 3, "5": 5, "6": 6, "33": 33}
+    vat_steps_to_remove = []  # indices to remove
+    for i, step in enumerate(plan):
+        if step.get("tool_name") != "call_api":
+            continue
+        args = step.get("args", {})
+        if args.get("method") == "GET" and "/ledger/vatType" in args.get("path", ""):
+            qp = args.get("query_params", {})
+            vat_num = str(qp.get("number", ""))
+            if vat_num in KNOWN_VAT_IDS:
+                known_id = KNOWN_VAT_IDS[vat_num]
+                step_num = step["step_number"]
+                ref_pattern = f"$step_{step_num}.values[0].id"
+                # Replace all references in subsequent steps
+                _replace_ref_in_plan(plan, ref_pattern, known_id)
+                vat_steps_to_remove.append(i)
+                log.info(f"Validation: stripped GET /ledger/vatType?number={vat_num}, using known ID {known_id}")
+
+    # Remove vatType lookup steps (reverse order to preserve indices)
+    for idx in reversed(vat_steps_to_remove):
+        plan.pop(idx)
+
+    # ── B4: Auto-inject department for POST /employee ──
+    has_employee_post = False
+    employee_post_idx = None
+    has_department_in_plan = False
+    for i, step in enumerate(plan):
+        if step.get("tool_name") != "call_api":
+            continue
+        args = step.get("args", {})
+        method = args.get("method", "")
+        path = args.get("path", "")
+        body = args.get("body", {})
+        if method == "POST" and path == "/employee" and isinstance(body, dict):
+            has_employee_post = True
+            employee_post_idx = i
+            if "department" in body:
+                has_department_in_plan = True
+        if method == "POST" and path == "/department":
+            has_department_in_plan = True
+
+    if has_employee_post and not has_department_in_plan and employee_post_idx is not None:
+        # Prepend GET /department?count=1 before the employee POST
+        dept_step_number = plan[employee_post_idx]["step_number"]
+        dept_step = {
+            "step_number": dept_step_number,
+            "tool_name": "call_api",
+            "args": {
+                "method": "GET",
+                "path": "/department",
+                "query_params": {"count": 1, "fields": "id"},
+            },
+            "description": "Get department for employee (required)",
+        }
+        # Renumber from employee_post_idx onward
+        for step in plan[employee_post_idx:]:
+            step["step_number"] += 1
+            _shift_step_refs(step, offset=1)
+        plan.insert(employee_post_idx, dept_step)
+
+        # Inject department ref into employee body
+        emp_step = plan[employee_post_idx + 1]
+        emp_body = emp_step.get("args", {}).get("body", {})
+        if isinstance(emp_body, dict) and "department" not in emp_body:
+            emp_body["department"] = {"id": f"$step_{dept_step_number}.values[0].id"}
+        log.info("Validation: injected GET /department step and department ref for POST /employee")
+
     for step in plan:
         if step.get("tool_name") != "call_api":
             continue
@@ -77,6 +205,33 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         method = args.get("method", "")
         path = args.get("path", "")
         body = args.get("body", {})
+        query_params = args.get("query_params", {})
+
+        # ── B1: Fix fields filter dot→parentheses ──
+        if method == "GET" and isinstance(query_params, dict):
+            fields_val = query_params.get("fields", "")
+            if isinstance(fields_val, str) and "." in fields_val:
+                # Convert e.g. "orders.orderLines.description" → "orders(orderLines(description))"
+                fixed = _fix_fields_dots(fields_val)
+                if fixed != fields_val:
+                    query_params["fields"] = fixed
+                    log.info(f"Validation: fixed fields filter dots→parentheses: {fields_val} → {fixed}")
+
+        # ── B2: Fix date range From < To ──
+        if method == "GET" and isinstance(query_params, dict):
+            _fix_date_range(query_params, "invoiceDateFrom", "invoiceDateTo")
+            _fix_date_range(query_params, "dateFrom", "dateTo")
+            _fix_date_range(query_params, "startDateFrom", "startDateTo")
+
+        # ── B5: Strip projectManager $step ref from POST /project ──
+        if method == "POST" and path == "/project" and isinstance(body, dict):
+            pm = body.get("projectManager")
+            if isinstance(pm, dict):
+                pm_id = pm.get("id")
+                if isinstance(pm_id, str) and "$step_" in pm_id:
+                    # Keep it — the planner intended to use a created employee
+                    # But log for monitoring
+                    log.info(f"Validation: POST /project has projectManager ref {pm_id}")
 
         # Quick fix: POST /project — add startDate if missing
         if method == "POST" and path == "/project" and isinstance(body, dict):
@@ -84,11 +239,15 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 body["startDate"] = date.today().isoformat()
                 log.info("Validation: added missing startDate to POST /project")
 
-        # Quick fix: POST /ledger/voucher — remove voucherType and add row numbers to postings
+        # Quick fix: POST /ledger/voucher — remove voucherType, fix null postings, add row numbers
         if method == "POST" and path == "/ledger/voucher" and isinstance(body, dict):
             if "voucherType" in body:
                 del body["voucherType"]
                 log.info("Validation: stripped voucherType from POST /ledger/voucher")
+            # B3: Fix null postings
+            if body.get("postings") is None:
+                body["postings"] = []
+                log.info("Validation: converted null postings to empty array in POST /ledger/voucher")
             # Add explicit row numbers starting from 1 (row 0 is reserved for system-generated VAT lines)
             postings = body.get("postings", [])
             if isinstance(postings, list):
@@ -255,6 +414,69 @@ def _shift_step_refs(obj, offset: int):
             else:
                 _shift_step_refs(item, offset)
 
+def _fix_fields_dots(fields: str) -> str:
+    """Convert dot-notation fields to parentheses: orders.orderLines.desc → orders(orderLines(desc))"""
+    parts = fields.split(",")
+    fixed_parts = []
+    for part in parts:
+        part = part.strip()
+        if "." in part:
+            segments = part.split(".")
+            # Build from inside out: a.b.c → a(b(c))
+            result = segments[-1]
+            for seg in reversed(segments[:-1]):
+                result = f"{seg}({result})"
+            fixed_parts.append(result)
+        else:
+            fixed_parts.append(part)
+    return ",".join(fixed_parts)
+
+
+def _fix_date_range(query_params: dict, from_key: str, to_key: str):
+    """Bump the To date by 1 day if From >= To (prevents 422)."""
+    from_val = query_params.get(from_key)
+    to_val = query_params.get(to_key)
+    if from_val and to_val and isinstance(from_val, str) and isinstance(to_val, str):
+        try:
+            from datetime import timedelta
+            from_date = date.fromisoformat(from_val)
+            to_date = date.fromisoformat(to_val)
+            if from_date >= to_date:
+                new_to = (from_date + timedelta(days=1)).isoformat()
+                query_params[to_key] = new_to
+                log.info(f"Validation: bumped {to_key} from {to_val} to {new_to} (must be > {from_key})")
+        except ValueError:
+            pass
+
+
+def _replace_ref_in_plan(plan: list[dict], ref_pattern: str, replacement: int):
+    """Replace all occurrences of a $step_N reference string with a literal value in the plan."""
+    for step in plan:
+        _replace_ref_in_obj(step.get("args", {}), ref_pattern, replacement)
+
+
+def _replace_ref_in_obj(obj, ref_pattern: str, replacement: int):
+    """Recursively replace ref_pattern with replacement in nested dicts/lists."""
+    if isinstance(obj, dict):
+        for k, v in list(obj.items()):
+            if isinstance(v, str) and ref_pattern in v:
+                if v == ref_pattern:
+                    obj[k] = replacement
+                else:
+                    obj[k] = v.replace(ref_pattern, str(replacement))
+            else:
+                _replace_ref_in_obj(v, ref_pattern, replacement)
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            if isinstance(item, str) and ref_pattern in item:
+                if item == ref_pattern:
+                    obj[i] = replacement
+                else:
+                    obj[i] = item.replace(ref_pattern, str(replacement))
+            else:
+                _replace_ref_in_obj(item, ref_pattern, replacement)
+
+
 # Status codes worth retrying with LLM fix (body/param errors)
 RETRYABLE_STATUS_CODES = {400, 422}
 
@@ -293,76 +515,75 @@ def _extract_text(content) -> str:
 
 
 def _score_plan(plan: list[dict], prompt: str) -> float:
-    """Score a plan for quality. Higher is better."""
+    """Score a plan for quality. Higher is better. Heavily penalizes extra steps."""
     score = 100.0
     if not plan:
         return 0.0
 
-    # Penalty: too many steps
-    if len(plan) > 10:
-        score -= (len(plan) - 10) * 2
+    # Per-step cost: every step beyond 1 costs 3 points
+    n = len(plan)
+    score -= (n - 1) * 3.0
+
     # Penalty: too few steps for complex tasks
-    if len(plan) < 2 and len(prompt) > 100:
+    if n < 2 and len(prompt) > 100:
         score -= 20
 
-    # Bonus: employee dedup check before POST /employee
-    has_emp_post = any(
-        s.get("args", {}).get("method") == "POST"
-        and "/employee" in s.get("args", {}).get("path", "")
-        for s in plan if s.get("tool_name") == "call_api"
-    )
-    has_emp_get = any(
-        s.get("args", {}).get("method") == "GET"
-        and s.get("args", {}).get("path") == "/employee"
-        for s in plan if s.get("tool_name") == "call_api"
-    )
-    if has_emp_post and has_emp_get:
-        score += 10
-    if has_emp_post and not has_emp_get:
-        score -= 10
-
-    # Penalty: product "number" field (will cause duplicate error)
     for step in plan:
         if step.get("tool_name") != "call_api":
             continue
         args = step.get("args", {})
+        method = args.get("method", "")
+        path = args.get("path", "")
         body = args.get("body", {})
-        if args.get("path") in ("/product", "/product/list"):
+        qp = args.get("query_params", {})
+
+        # Bonus: combo endpoints
+        if "/:invoice" in path and method == "PUT":
+            if qp.get("paidAmount") or qp.get("paymentTypeId") is not None:
+                score += 5  # combined invoice+payment
+            if qp.get("sendToCustomer"):
+                score += 5  # combined invoice+send
+
+        # Bonus: bulk /list endpoints
+        if path.endswith("/list") and method == "POST":
+            score += 3
+
+        # Penalty: unnecessary vatType lookup for known IDs
+        if method == "GET" and "/ledger/vatType" in path:
+            vat_num = str(qp.get("number", ""))
+            if vat_num in ("1", "3", "5", "6", "33"):
+                score -= 5  # known ID, no lookup needed
+
+        # Penalty: unnecessary paymentType lookup
+        if method == "GET" and "/invoice/paymentType" in path:
+            score -= 5
+
+        # Bonus: employee dedup check
+        if method == "GET" and path == "/employee":
+            score += 10
+        if method == "POST" and "/employee" in path:
+            # Check if there's a GET /employee in the plan
+            has_emp_get = any(
+                s.get("args", {}).get("method") == "GET"
+                and s.get("args", {}).get("path") == "/employee"
+                for s in plan if s.get("tool_name") == "call_api"
+            )
+            if not has_emp_get:
+                score -= 10
+
+        # Penalty: product "number" field
+        if path in ("/product", "/product/list"):
             items = body if isinstance(body, list) else [body]
             if any("number" in item for item in items if isinstance(item, dict)):
                 score -= 15
 
-    # Penalty: travel expense with inline costs
-    for step in plan:
-        if step.get("tool_name") != "call_api":
-            continue
-        args = step.get("args", {})
-        body = args.get("body", {})
-        if isinstance(body, dict) and args.get("path") == "/travelExpense":
+        # Penalty: travel expense with inline costs
+        if isinstance(body, dict) and path == "/travelExpense":
             if "costs" in body or "perDiemCompensations" in body:
                 score -= 20
 
     return score
 
-
-def _score_and_select_plan(
-    plans: list[tuple[str, list[dict]]], prompt: str
-) -> tuple[str, list[dict]]:
-    """Score all candidate plans and return the best one."""
-    if not plans:
-        return "fallback", []
-
-    best_name, best_plan = plans[0]
-    best_score = _score_plan(best_plan, prompt)
-
-    for name, plan in plans[1:]:
-        s = _score_plan(plan, prompt)
-        log.info(f"Plan '{name}' scored {s:.1f} ({len(plan)} steps)")
-        if s > best_score:
-            best_name, best_plan, best_score = name, plan, s
-
-    log.info(f"Plan '{best_name}' selected with score {best_score:.1f}")
-    return best_name, best_plan
 
 
 def build_agent():
@@ -378,7 +599,7 @@ def build_agent():
         temperature=0,
     )
 
-    # --- Node: planner (multi-agent) ---
+    # --- Node: planner (single efficient profile) ---
     def planner(state: AgentState) -> dict:
         prompt_text = PLANNER_PROMPT.format(
             today=date.today().isoformat(),
@@ -386,41 +607,25 @@ def build_agent():
             task=state["original_prompt"],
         )
 
-        log.info("Multi-agent planner invoked", prompt_length=len(prompt_text), profiles=len(PLANNER_PROFILES))
+        full_prompt = PLANNER_PROFILE["prefix"] + "\n\n" + prompt_text
+        log.info("Planner invoked", prompt_length=len(full_prompt))
 
-        plans = []
-
-        def run_planner(profile):
-            full_prompt = profile["prefix"] + "\n\n" + prompt_text
-            profile_llm = ChatGoogleGenerativeAI(
-                model=default_model,
-                google_api_key=os.environ["GOOGLE_API_KEY"],
-                temperature=profile["temperature"],
-            )
-            response = profile_llm.invoke([HumanMessage(content=full_prompt)])
+        try:
+            response = llm.invoke([HumanMessage(content=full_prompt)])
             raw = _extract_text(response.content)
-            return profile["name"], _parse_plan_json(raw), raw
+            best = _parse_plan_json(raw)
+            log.info(f"Planner returned {len(best)} steps", output=raw[:1000])
+        except Exception as e:
+            log.warning(f"Planner failed: {e}")
+            best = []
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-            futures = [pool.submit(run_planner, p) for p in PLANNER_PROFILES]
-            for f in concurrent.futures.as_completed(futures):
-                try:
-                    name, plan, raw = f.result()
-                    log.info(f"Planner '{name}' returned {len(plan)} steps", output=raw[:1000])
-                    if plan:
-                        plans.append((name, plan))
-                except Exception as e:
-                    log.warning(f"Planner failed: {e}")
-
-        # Score and pick best plan
-        best_name, best = _score_and_select_plan(plans, state["original_prompt"])
+        score = _score_plan(best, state["original_prompt"])
         best = validate_plan(best)
 
         log.info(
             f">>>PLAN_START<<<\n{json.dumps(best, indent=2)}\n>>>PLAN_END<<<",
             steps=len(best),
-            winner=best_name,
-            candidates=len(plans),
+            score=score,
         )
 
         return {
@@ -430,7 +635,7 @@ def build_agent():
             "completed_steps": [],
             "error_count": state.get("error_count", 0),
             "replan_count": 0,
-            "messages": [AIMessage(content=f"Plan ({best_name}): {json.dumps(best)}")],
+            "messages": [AIMessage(content=f"Plan (efficient): {json.dumps(best)}")],
         }
 
     # --- Node: executor ---
