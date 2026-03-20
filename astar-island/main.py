@@ -183,14 +183,25 @@ def observe_seed(round_id, seed_index, height, width, max_queries,
     vp_w, vp_h = 15, 15
 
     # Compute tile positions for full coverage
-    positions = []
-    y = 0
-    while y < height:
-        x = 0
-        while x < width:
-            positions.append((x, y))
-            x += vp_w
-        y += vp_h
+    # Use overlapping positions so the last tile uses full viewport capacity.
+    # E.g., for a 40-wide grid with 15-wide viewports: [0, 15, 25] not [0, 15, 30].
+    # Position 25 covers cells 25-39 (full 15), while 30 would only cover 30-39 (10).
+    # Overlap cells (25-29) get double-observed for free.
+    def _tile_starts(grid_size, vp_size):
+        starts = []
+        pos = 0
+        while pos < grid_size:
+            starts.append(pos)
+            pos += vp_size
+        # Pull last position back so viewport doesn't extend past grid edge
+        if starts and starts[-1] + vp_size > grid_size:
+            starts[-1] = max(grid_size - vp_size, 0)
+        # Deduplicate (in case grid_size <= vp_size)
+        return list(dict.fromkeys(starts))
+
+    x_starts = _tile_starts(width, vp_w)
+    y_starts = _tile_starts(height, vp_h)
+    positions = [(x, y) for y in y_starts for x in x_starts]
 
     # Score tiles by dynamic cell count if we have the initial grid
     if initial_grid:
