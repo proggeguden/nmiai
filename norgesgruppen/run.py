@@ -1,10 +1,8 @@
-"""Two-stage inference with kNN ensemble.
+"""Two-stage inference with optional WBF ensemble.
 
-Stage 1: YOLOv8l single-class detection (high recall) with Soft-NMS
-Stage 2: EfficientNet-B2 classification + kNN re-ranking with TTA
-    - Classifier outputs logits + embeddings in one forward pass
-    - kNN finds nearest training crops by cosine similarity
-    - Final: 0.6 * classifier_softmax + 0.4 * knn_vote
+Pipeline A (two-stage): YOLOv8l single-class detect → EfficientNet-B2 classify (+ TTA)
+Pipeline B (multi-class): YOLOv8m multi-class detect (356 classes)
+WBF ensemble: fuse Pipeline A + Pipeline B predictions using Weighted Boxes Fusion
 
 Score = detection_confidence × classification_confidence^SCORE_CLS_POWER
 """
@@ -22,12 +20,21 @@ MODEL_DIR = Path(__file__).parent
 DETECTOR_PATH = MODEL_DIR / "detector.onnx"
 CLASSIFIER_PATH = MODEL_DIR / "classifier.onnx"
 EMBEDDINGS_PATH = MODEL_DIR / "embeddings.npy"
+MULTICLASS_PATH = MODEL_DIR / "multiclass_detector.onnx"
 
 # Detector settings
 DET_IMGSZ = 1280
 DET_CONF = 0.10
 DET_IOU = 0.5
 DET_MAX_DET = 500
+NUM_CLASSES = 356
+
+# WBF ensemble settings
+USE_WBF = True            # fuse two-stage + multi-class predictions
+WBF_TWO_STAGE_WEIGHT = 0.6
+WBF_MULTICLASS_WEIGHT = 0.4
+WBF_IOU_THRESH = 0.5
+WBF_SKIP_BOX_THRESH = 0.01
 
 # Classifier settings
 CLS_IMGSZ = 260
@@ -335,6 +342,126 @@ def preprocess_crops_tta(img, boxes, imgsz):
     return np.array(crops, dtype=np.float32), n_augs_per_box
 
 
+def postprocess_multiclass(output, scale, pad_w, pad_h, img_w, img_h,
+                           conf_thresh, iou_thresh, max_det, num_classes=356):
+    """Postprocess multi-class YOLO output → boxes, scores, class_ids.
+
+    Multi-class output shape: (1, 4+num_classes, num_anchors).
+    """
+    pred = output[0]
+    if pred.ndim == 3:
+        pred = pred[0]
+    if pred.shape[0] < pred.shape[1]:
+        pred = pred.T  # (num_anchors, 4+num_classes)
+
+    # Split bbox and class scores
+    bbox = pred[:, :4]  # cx, cy, w, h
+    class_scores = pred[:, 4:]  # (num_anchors, num_classes)
+
+    # Get best class per anchor
+    class_ids = np.argmax(class_scores, axis=1)
+    scores = class_scores[np.arange(len(class_ids)), class_ids]
+
+    mask = scores > conf_thresh
+    bbox = bbox[mask]
+    scores = scores[mask]
+    class_ids = class_ids[mask]
+
+    if len(bbox) == 0:
+        return np.array([]).reshape(0, 4), np.array([]), np.array([], dtype=int)
+
+    cx, cy, w, h = bbox[:, 0], bbox[:, 1], bbox[:, 2], bbox[:, 3]
+    x1 = (cx - w / 2 - pad_w) / scale
+    y1 = (cy - h / 2 - pad_h) / scale
+    x2 = (cx + w / 2 - pad_w) / scale
+    y2 = (cy + h / 2 - pad_h) / scale
+
+    x1 = np.clip(x1, 0, img_w)
+    y1 = np.clip(y1, 0, img_h)
+    x2 = np.clip(x2, 0, img_w)
+    y2 = np.clip(y2, 0, img_h)
+
+    boxes = np.stack([x1, y1, x2, y2], axis=1)
+
+    # Per-class NMS
+    keep_all = []
+    for cls in np.unique(class_ids):
+        cls_mask = class_ids == cls
+        cls_boxes = boxes[cls_mask]
+        cls_scores = scores[cls_mask]
+        cls_indices = np.where(cls_mask)[0]
+        keep = nms(cls_boxes, cls_scores, iou_thresh)
+        keep_all.extend(cls_indices[keep].tolist())
+
+    keep_all = np.array(keep_all, dtype=int)
+    if len(keep_all) > max_det:
+        top = np.argsort(scores[keep_all])[::-1][:max_det]
+        keep_all = keep_all[top]
+
+    return boxes[keep_all], scores[keep_all], class_ids[keep_all]
+
+
+def wbf_fuse(boxes_list, scores_list, labels_list, weights, img_w, img_h,
+             iou_thresh=0.5, skip_box_thresh=0.01):
+    """Simple Weighted Boxes Fusion for 2 models.
+
+    Normalizes boxes to [0,1], fuses overlapping boxes from different models,
+    and returns the fused results.
+    """
+    # Normalize boxes to [0, 1]
+    all_boxes = []
+    all_scores = []
+    all_labels = []
+
+    for i, (boxes, scores, labels) in enumerate(zip(boxes_list, scores_list, labels_list)):
+        if len(boxes) == 0:
+            all_boxes.append(np.array([]).reshape(0, 4))
+            all_scores.append(np.array([]))
+            all_labels.append(np.array([], dtype=int))
+            continue
+        norm_boxes = boxes.copy()
+        norm_boxes[:, [0, 2]] /= img_w
+        norm_boxes[:, [1, 3]] /= img_h
+        norm_boxes = np.clip(norm_boxes, 0, 1)
+        all_boxes.append(norm_boxes)
+        all_scores.append(scores * weights[i])
+        all_labels.append(labels)
+
+    # Simple fusion: take union of all boxes, merge overlapping ones
+    if all(len(b) == 0 for b in all_boxes):
+        return np.array([]).reshape(0, 4), np.array([]), np.array([], dtype=int)
+
+    # Concatenate all predictions
+    fused_boxes = np.concatenate([b for b in all_boxes if len(b) > 0], axis=0)
+    fused_scores = np.concatenate([s for s in all_scores if len(s) > 0], axis=0)
+    fused_labels = np.concatenate([l for l in all_labels if len(l) > 0], axis=0)
+
+    # Filter low scores
+    mask = fused_scores > skip_box_thresh
+    fused_boxes = fused_boxes[mask]
+    fused_scores = fused_scores[mask]
+    fused_labels = fused_labels[mask]
+
+    # Per-class NMS on fused set
+    keep_all = []
+    for cls in np.unique(fused_labels):
+        cls_mask = fused_labels == cls
+        cls_boxes = fused_boxes[cls_mask]
+        cls_scores = fused_scores[cls_mask]
+        cls_indices = np.where(cls_mask)[0]
+        keep = nms(cls_boxes, cls_scores, iou_thresh)
+        keep_all.extend(cls_indices[keep].tolist())
+
+    keep_all = np.array(keep_all, dtype=int)
+
+    # Denormalize boxes
+    result_boxes = fused_boxes[keep_all].copy()
+    result_boxes[:, [0, 2]] *= img_w
+    result_boxes[:, [1, 3]] *= img_h
+
+    return result_boxes, fused_scores[keep_all], fused_labels[keep_all]
+
+
 def softmax(x, axis=-1):
     e = np.exp(x - np.max(x, axis=axis, keepdims=True))
     return e / e.sum(axis=axis, keepdims=True)
@@ -352,6 +479,12 @@ def main():
     det_input_name = det_session.get_inputs()[0].name
     cls_input_name = cls_session.get_inputs()[0].name
 
+    # Multi-class detector (optional)
+    use_wbf = USE_WBF and MULTICLASS_PATH.exists()
+    if use_wbf:
+        mc_session = create_session(MULTICLASS_PATH)
+        mc_input_name = mc_session.get_inputs()[0].name
+
     # Check if classifier has dual output (logits + features)
     cls_outputs = cls_session.get_outputs()
     has_features = len(cls_outputs) >= 2
@@ -362,7 +495,7 @@ def main():
         ref_labels, ref_embeddings = load_embeddings(EMBEDDINGS_PATH)
         num_classes = int(ref_labels.max()) + 1
     else:
-        num_classes = 356
+        num_classes = NUM_CLASSES
 
     images_dir = Path(args.input)
     image_files = sorted(images_dir.glob("*.jpg"))
@@ -435,19 +568,50 @@ def main():
         else:
             final_probs = cls_probs
 
-        # Build predictions
+        # Build two-stage predictions (boxes are xyxy)
+        ts_boxes_xyxy = boxes
+        ts_scores = []
+        ts_labels = []
         for j in range(len(boxes)):
-            x1, y1, x2, y2 = boxes[j]
             cls_id = int(np.argmax(final_probs[j]))
             cls_conf = float(final_probs[j, cls_id])
             det_conf = float(det_scores[j])
-
-            # Score formula with configurable classifier power
             final_score = det_conf * (cls_conf ** SCORE_CLS_POWER)
+            ts_scores.append(final_score)
+            ts_labels.append(cls_id)
+        ts_scores = np.array(ts_scores)
+        ts_labels = np.array(ts_labels, dtype=int)
+
+        # WBF: fuse with multi-class detector
+        if use_wbf:
+            mc_output = mc_session.run(None, {mc_input_name: det_input})
+            mc_boxes, mc_scores, mc_labels = postprocess_multiclass(
+                mc_output, scale, pad_w, pad_h, w_img, h_img,
+                DET_CONF, DET_IOU, DET_MAX_DET, NUM_CLASSES
+            )
+
+            fused_boxes, fused_scores, fused_labels = wbf_fuse(
+                [ts_boxes_xyxy, mc_boxes],
+                [ts_scores, mc_scores],
+                [ts_labels, mc_labels],
+                weights=[WBF_TWO_STAGE_WEIGHT, WBF_MULTICLASS_WEIGHT],
+                img_w=w_img, img_h=h_img,
+                iou_thresh=WBF_IOU_THRESH,
+                skip_box_thresh=WBF_SKIP_BOX_THRESH,
+            )
+        else:
+            fused_boxes = ts_boxes_xyxy
+            fused_scores = ts_scores
+            fused_labels = ts_labels
+
+        # Build output predictions
+        for j in range(len(fused_boxes)):
+            x1, y1, x2, y2 = fused_boxes[j]
+            final_score = float(fused_scores[j])
 
             predictions.append({
                 "image_id": image_id,
-                "category_id": cls_id,
+                "category_id": int(fused_labels[j]),
                 "bbox": [
                     round(float(x1), 2),
                     round(float(y1), 2),

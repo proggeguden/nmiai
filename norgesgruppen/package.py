@@ -1,4 +1,4 @@
-"""Package two-stage submission: run.py + detector.onnx + classifier.onnx + embeddings.npy."""
+"""Package submission: run.py + detector.onnx + classifier.onnx + multiclass_detector.onnx."""
 
 import zipfile
 from pathlib import Path
@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 DETECTOR = ROOT / "detector.onnx"
 CLASSIFIER = ROOT / "classifier.onnx"
+MULTICLASS = ROOT / "multiclass_detector.onnx"
 EMBEDDINGS = ROOT / "embeddings.npy"
 
 
@@ -20,24 +21,28 @@ def main():
         zf.write(ROOT / "run.py", "run.py")
         zf.write(DETECTOR, "detector.onnx")
         zf.write(CLASSIFIER, "classifier.onnx")
-        if EMBEDDINGS.exists():
+        if MULTICLASS.exists():
+            zf.write(MULTICLASS, "multiclass_detector.onnx")
+        elif EMBEDDINGS.exists():
             zf.write(EMBEDDINGS, "embeddings.npy")
 
     size_mb = output.stat().st_size / (1024 * 1024)
     print(f"Created {output} ({size_mb:.1f} MB)")
 
-    det_mb = DETECTOR.stat().st_size / (1024 * 1024)
-    cls_mb = CLASSIFIER.stat().st_size / (1024 * 1024)
-    emb_mb = EMBEDDINGS.stat().st_size / (1024 * 1024) if EMBEDDINGS.exists() else 0
-    total_weight_mb = det_mb + cls_mb + emb_mb
-    weight_count = 2 + (1 if EMBEDDINGS.exists() else 0)
+    files = [("detector.onnx", DETECTOR), ("classifier.onnx", CLASSIFIER)]
+    if MULTICLASS.exists():
+        files.append(("multiclass_detector.onnx", MULTICLASS))
+    elif EMBEDDINGS.exists():
+        files.append(("embeddings.npy", EMBEDDINGS))
 
-    print(f"  detector.onnx:   {det_mb:.1f} MB")
-    print(f"  classifier.onnx: {cls_mb:.1f} MB")
-    if EMBEDDINGS.exists():
-        print(f"  embeddings.npy:  {emb_mb:.1f} MB")
-    print(f"  total weights:   {total_weight_mb:.1f} MB {'OK' if total_weight_mb < 420 else 'OVER LIMIT!'}")
-    print(f"  weight files:    {weight_count}/3 {'OK' if weight_count <= 3 else 'OVER LIMIT!'}")
+    total = 0
+    for name, path in files:
+        mb = path.stat().st_size / (1024 * 1024)
+        total += mb
+        print(f"  {name}: {mb:.1f} MB")
+
+    print(f"  total weights:   {total:.1f} MB {'OK' if total < 420 else 'OVER LIMIT!'}")
+    print(f"  weight files:    {len(files)}/3 {'OK' if len(files) <= 3 else 'OVER LIMIT!'}")
 
     if size_mb > 420:
         print("WARNING: submission.zip exceeds 420MB limit!")
