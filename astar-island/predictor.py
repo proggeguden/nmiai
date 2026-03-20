@@ -385,7 +385,7 @@ def learn_spatial_transition_model(initial_grids, observations):
             else:
                 spatial_model[bucket] = bucket_prob
 
-    return global_model, spatial_model
+    return global_model, spatial_model, spatial_obs
 
 
 # ---------------------------------------------------------------------------
@@ -838,7 +838,7 @@ def _apply_forward_calibration(predictions, initial_grid, settlement_dists, rate
 def build_prediction(height, width, initial_grid, observations,
                      transition_model=None, spatial_model=None,
                      survival_rate=None, forward_rates=None,
-                     settlement_stats=None):
+                     settlement_stats=None, spatial_obs=None):
     """Build a H×W×6 probability tensor.
 
     Uses spatial_model (per-bucket) when available, falls back to
@@ -984,11 +984,17 @@ def build_prediction(height, width, initial_grid, observations,
             np.divide(cell_counts, cell_totals, out=cell_probs,
                       where=(cell_totals > 0))
 
-            # Adaptive k per terrain type
+            # Adaptive k per terrain type, scaled by spatial model confidence
             k_grid = np.full((height, width), K_DEFAULT)
             for r in range(height):
                 for c in range(width):
-                    k_grid[r, c] = K_PER_CODE.get(initial_grid[r][c], K_DEFAULT)
+                    base_k = K_PER_CODE.get(initial_grid[r][c], K_DEFAULT)
+                    # Scale k up when spatial model has many observations (trust model more)
+                    if spatial_obs and fmap and fmap[r][c] in spatial_obs:
+                        bucket_n = spatial_obs[fmap[r][c]]
+                        confidence_scale = 1.0 + 0.5 * min(bucket_n / 100.0, 3.0)
+                        base_k *= confidence_scale
+                    k_grid[r, c] = base_k
 
             alpha = cell_obs_count / (cell_obs_count + k_grid)
             alpha = alpha[..., np.newaxis]

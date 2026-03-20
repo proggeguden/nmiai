@@ -123,7 +123,7 @@ def run_pipeline(round_id):
 
     # 3. Learn spatial transition model from all observations
     initial_grids = [s["grid"] for s in initial_states]
-    global_model, spatial_model = learn_spatial_transition_model(
+    global_model, spatial_model, spatial_obs = learn_spatial_transition_model(
         initial_grids, all_observations
     )
 
@@ -164,7 +164,8 @@ def run_pipeline(round_id):
                                 transition_model=global_model,
                                 spatial_model=spatial_model,
                                 survival_rate=survival_rate,
-                                settlement_stats=settlement_stats)
+                                settlement_stats=settlement_stats,
+                                spatial_obs=spatial_obs)
         pred_list = predictions_to_list(pred)
         validate_predictions(pred_list, height, width)
 

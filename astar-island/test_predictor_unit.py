@@ -350,7 +350,7 @@ class TestLearnSpatialTransitionModel:
         initial_grids = [[[11, 11, 11], [11, 11, 11], [11, 11, 11]]]
         # Need ≥3 observations per bucket for it to appear
         obs = [self._make_obs(0, 0, 0, [[0, 0, 0], [0, 0, 0], [0, 0, 0]])] * 5
-        global_model, spatial_model = learn_spatial_transition_model(initial_grids, obs)
+        global_model, spatial_model, _ = learn_spatial_transition_model(initial_grids, obs)
         assert isinstance(global_model, dict)
         assert isinstance(spatial_model, dict)
         # Global model keys are terrain codes (ints)
@@ -370,7 +370,7 @@ class TestLearnSpatialTransitionModel:
         initial_grids = [grid]
         # Create observations: all cells become Empty (code 0)
         obs = [self._make_obs(0, 0, 0, [[0]*5]*5)] * 4
-        global_model, spatial_model = learn_spatial_transition_model(initial_grids, obs)
+        global_model, spatial_model, _ = learn_spatial_transition_model(initial_grids, obs)
         # With 4 observations of 25 cells each, buckets should have plenty of obs
         # Check that spatial model has entries
         assert len(spatial_model) > 0

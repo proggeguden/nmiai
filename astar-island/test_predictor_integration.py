@@ -252,8 +252,8 @@ class TestRelativeOrdering:
         mild_obs = _mild_observations(grid, survival_fraction=0.8)
         harsh_obs = _harsh_observations(grid)
 
-        _, mild_spatial = learn_spatial_transition_model([grid], mild_obs)
-        _, harsh_spatial = learn_spatial_transition_model([grid], harsh_obs)
+        _, mild_spatial, _ = learn_spatial_transition_model([grid], mild_obs)
+        _, harsh_spatial, _ = learn_spatial_transition_model([grid], harsh_obs)
 
         mild_pred = build_prediction(H, W, grid, mild_obs, spatial_model=mild_spatial)
         harsh_pred = build_prediction(H, W, grid, harsh_obs, spatial_model=harsh_spatial)
@@ -275,7 +275,7 @@ class TestRelativeOrdering:
         grid = _build_mild_scenario()
         H, W = len(grid), len(grid[0])
         obs = _mild_observations(grid)
-        gm, sm = learn_spatial_transition_model([grid], obs)
+        gm, sm, _ = learn_spatial_transition_model([grid], obs)
         pred = build_prediction(H, W, grid, obs, transition_model=gm, spatial_model=sm)
 
         from predictor import _precompute_settlement_distances
@@ -299,7 +299,7 @@ class TestRelativeOrdering:
         grid = _build_coastal_dense()
         H, W = len(grid), len(grid[0])
         obs = _mild_observations(grid)
-        gm, sm = learn_spatial_transition_model([grid], obs)
+        gm, sm, _ = learn_spatial_transition_model([grid], obs)
         pred = build_prediction(H, W, grid, obs, transition_model=gm, spatial_model=sm)
 
         from predictor import _precompute_settlement_distances
@@ -324,7 +324,7 @@ class TestRelativeOrdering:
         grid = _build_coastal_dense()
         H, W = len(grid), len(grid[0])
         obs = _mild_observations(grid)
-        gm, sm = learn_spatial_transition_model([grid], obs)
+        gm, sm, _ = learn_spatial_transition_model([grid], obs)
 
         # Create GT where settlements survive
         gt = np.zeros((H, W, NUM_CLASSES))
@@ -353,7 +353,7 @@ class TestEdgeCases:
         grid = _build_mild_scenario()
         H, W = len(grid), len(grid[0])
         obs = _mild_observations(grid)
-        gm, sm = learn_spatial_transition_model([grid], obs)
+        gm, sm, _ = learn_spatial_transition_model([grid], obs)
         # Build prediction with model but NO observations
         pred = build_prediction(H, W, grid, [], transition_model=gm, spatial_model=sm)
         # Should not be uniform — model should apply
@@ -403,7 +403,7 @@ class TestRegressionBaseline:
         grid = _build_mild_scenario()
         H, W = len(grid), len(grid[0])
         obs = _mild_observations(grid)
-        gm, sm = learn_spatial_transition_model([grid], obs)
+        gm, sm, _ = learn_spatial_transition_model([grid], obs)
         pred = build_prediction(H, W, grid, obs, transition_model=gm, spatial_model=sm)
 
         # GT: same as mild observations (deterministic for known cells)

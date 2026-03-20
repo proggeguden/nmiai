@@ -179,7 +179,7 @@ def backtest_round_enhanced(round_id, verbose=True):
         if total > 0:
             global_model[code] = probs / total
 
-    BUCKET_SMOOTH_K = 5.0
+    BUCKET_SMOOTH_K_PER_CODE = {11: 3.0, 4: 4.0, 0: 4.0, 1: 8.0, 2: 10.0, 3: 6.0}
     spatial_model = {}
     for bucket, probs in spatial_probs.items():
         n = spatial_obs[bucket]
@@ -190,7 +190,8 @@ def backtest_round_enhanced(round_id, verbose=True):
             bucket_prob = probs / total
             terrain_code = bucket[0]
             if terrain_code in global_model:
-                weight = n / (n + BUCKET_SMOOTH_K)
+                k = BUCKET_SMOOTH_K_PER_CODE.get(terrain_code, 5.0)
+                weight = n / (n + k)
                 spatial_model[bucket] = weight * bucket_prob + (1 - weight) * global_model[terrain_code]
             else:
                 spatial_model[bucket] = bucket_prob
@@ -210,7 +211,7 @@ def backtest_round_enhanced(round_id, verbose=True):
             init_grid = initial_states[seed_idx]["grid"]
             pred = build_prediction(height, width, init_grid, [],
                                     transition_model=gm, spatial_model=sm,
-                                    forward_rates=fr)
+                                    forward_rates=fr, spatial_obs=spatial_obs)
             wkl, _ = score_predictions(pred, gt)
             kl_scores.append(float(wkl))
         model_variants[model_name] = float(np.mean(kl_scores))
@@ -224,7 +225,8 @@ def backtest_round_enhanced(round_id, verbose=True):
         init_grid = initial_states[seed_idx]["grid"]
         pred = build_prediction(height, width, init_grid, [],
                                 transition_model=global_model,
-                                spatial_model=spatial_model)
+                                spatial_model=spatial_model,
+                                spatial_obs=spatial_obs)
         wkl, _ = score_predictions(pred, gt)
         per_seed_kl.append(float(wkl))
 

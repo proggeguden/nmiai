@@ -330,7 +330,7 @@ def test_pipeline(round_id, submit=False):
                 print(f"    ({x},{y}) error: {e}")
                 break
 
-        global_model, spatial_model = learn_spatial_transition_model(
+        global_model, spatial_model, spatial_obs = learn_spatial_transition_model(
             [initial_states[0]["grid"]], observations
         )
         print(f"\n  Models: {len(global_model)} codes, {len(spatial_model)} spatial buckets")
