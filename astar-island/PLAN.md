@@ -13,53 +13,46 @@
 - [x] Backtested on rounds 1–4: ~0.05–0.14 weighted KL (8x better than naive)
 - [x] test_local.py: --backtest, --my-rounds, --leaderboard modes
 
-## Phase 3: Spatial Feature Model (HIGH PRIORITY — next)
+## Phase 3: Spatial Feature Model (DONE)
+- [x] Spatial bucketing: P(class | terrain_code, spatial_features)
+- [x] Features: adj_forest, adj_settlement, near_settlement, is_coastal
+- [x] 16 buckets with fallback to global model if <10 observations
+- [x] Backtested improvement: 13-48% reduction in weighted KL across all rounds
 
-The simulation has 5 phases per year over 50 years. Our predictions should model
-the spatial factors that drive outcomes:
+## Round 5 Post-Mortem
+- Score: 13.1/100, rank 130/144 (submitted before model was ready)
+- Our submitted predictions were naive: 95% Settlement for settlement cells
+- GT shows settlements only survive ~34%, become Empty ~43%, Forest ~20%
+- Current spatial model would have scored ~0.08 weighted_KL (much better)
+- Top teams score 60-80+ (weighted_score ~110+ on leaderboard)
 
-### 3a. Adjacent-terrain features
-A cell's fate depends heavily on its neighbors, not just its own initial type:
-- **Forest adjacency** → more food for settlements → higher survival probability
-- **Ocean adjacency** → port potential (settlements on coast become ports)
-- **Settlement density** → more conflict (raids), but also more trade between ports
-- **Mountain adjacency** → impassable, limits expansion directions
-- Instead of P(class | terrain_code), model P(class | terrain_code, neighbor_features)
+## Phase 4: Remaining Improvements (NEXT)
 
-### 3b. Settlement proximity features
-- Distance to nearest settlement → expansion targets (new settlements on nearby land)
-- Number of settlements in radius → conflict intensity
-- Settlement cluster vs isolated → different survival dynamics
-- Faction (owner_id) distribution → war likelihood
+### 4a. Per-cell prediction within buckets (HIGH)
+The spatial model gives the same probability to ALL settlements with forest adjacency.
+But GT shows individual settlement cells vary: one has 44% survival, another 20%.
+- Use MORE spatial features to create finer buckets (e.g., adj_forest count: 0, 1, 2, 3+)
+- Count adj_forest as integer not binary for settlements
+- Add settlement distance features (dist to nearest other settlement)
 
-### 3c. Settlement stat features (from observations)
-The simulate endpoint returns full settlement stats: population, food, wealth, defense.
-- High food → likely to survive winter, expand
-- Low food → desperate raiding, collapse risk
-- High wealth → trade activity
-- Has longship → extended raid/trade range
-- These are observable for cells within our viewport queries
+### 4b. Smarter query allocation (HIGH)
+50 queries, 9 tiles for full coverage, 41 remaining for repeats.
+- Skip ocean-dominated tiles entirely (they're static, use initial grid)
+- Focus on settlement-heavy tiles for more observations
+- Settlement positions are known from initial_states — target viewports accordingly
 
-### 3d. Implementation approach
-- Compute feature vectors per cell: [initial_code, n_forest_adj, n_ocean_adj, n_settlement_adj, n_mountain_adj, dist_nearest_settlement, ...]
-- Bucket cells by feature vector → learn transition probabilities per bucket
-- Backtest to verify improvement over global per-code model
+### 4c. Use settlement stats from observations (MEDIUM)
+Simulate endpoint returns population, food, wealth, defense for each settlement.
+- Average these across observations to identify strong vs weak settlements
+- Strong settlements (high food, high defense) more likely to survive
+- Only available for seed 0 (observed) but transition rates transfer to all seeds
 
-## Phase 4: Smarter Query Strategy (MEDIUM)
-- [ ] After first 9 tiles (full coverage), identify dynamic zones
-- [ ] Focus remaining 41 queries on high-entropy areas (near settlements)
-- [ ] Skip ocean-dominated tiles (static, zero scoring impact)
-- [ ] Consider observing 2 seeds (25 each) for more diverse terrain samples
-- [ ] Use settlement positions from initial_states to plan viewport placement
+### 4d. Cross-round learning (MEDIUM)
+- Round 3: 2% settlement survival, Round 1/2/4/5: 22-44% survival
+- Learn to detect "regime" from first few observations
+- Build priors from historical rounds for each regime type
 
-## Phase 5: Cross-Round Learning (MEDIUM)
-- [ ] Hidden parameters vary per round: winter severity, expansion rate, conflict intensity, trade range
-- [ ] Backtest reveals: Round 3 had ~2% settlement survival vs Round 1–2 at ~40%
-  - Likely controlled by winter severity or food scarcity parameters
-- [ ] Build priors from historical rounds for faster convergence
-- [ ] Detect round "regime" from first few observations and pick best prior
-
-## Phase 6: Deploy to Cloud Run (when predictions are good)
+## Phase 5: Deploy to Cloud Run (when predictions are good)
 - [ ] Deploy Dockerfile to Cloud Run
 - [ ] Register endpoint at app.ainm.no
 - [ ] Automated round handling via /solve endpoint
