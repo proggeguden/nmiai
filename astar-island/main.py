@@ -19,7 +19,8 @@ load_dotenv()
 import api_client
 from predictor import (
     build_prediction, predictions_to_list, validate_predictions,
-    learn_spatial_transition_model, estimate_survival_rate,
+    learn_spatial_transition_model, estimate_survival_rate, estimate_all_rates,
+    extract_settlement_stats, estimate_expansion_rate,
 )
 
 app = FastAPI()
@@ -120,15 +121,37 @@ def run_pipeline(round_id):
         seed_observations[seed_idx] = obs
         all_observations.extend(obs)
 
+    # Safety: abort if no observations collected (queries exhausted / rate limited)
+    if len(all_observations) == 0:
+        raise ValueError(
+            "No observations collected — queries likely exhausted. "
+            "Aborting to avoid overwriting previous submission with uninformed predictions."
+        )
+
     # 3. Learn spatial transition model from all observations
     initial_grids = [s["grid"] for s in initial_states]
-    global_model, spatial_model = learn_spatial_transition_model(
+    global_model, spatial_model, spatial_obs = learn_spatial_transition_model(
         initial_grids, all_observations
     )
 
-    # Estimate winter severity from observed settlement survival
+    # Estimate winter severity and all forward model rates
     survival_rate = estimate_survival_rate(initial_grids, all_observations)
+    forward_rates = estimate_all_rates(initial_grids, all_observations)
+    expansion_rate = estimate_expansion_rate(initial_grids, all_observations)
     print(f"Estimated survival rate: {survival_rate}")
+    print(f"Estimated expansion rate: {expansion_rate}")
+    print(f"Forward model rates: {forward_rates}")
+
+    # Extract settlement stats from observations
+    settlement_stats = extract_settlement_stats(all_observations)
+    if settlement_stats:
+        print(f"Settlement stats: avg_food={settlement_stats['avg_food']:.1f}, "
+              f"median_food={settlement_stats['median_food']:.1f}, "
+              f"avg_pop={settlement_stats['avg_population']:.1f}, "
+              f"positions={settlement_stats['unique_positions']}, "
+              f"obs={settlement_stats['total_observations']}")
+    else:
+        print("Settlement stats: insufficient data")
 
     from predictor import CLASS_NAMES
     print(f"\nLearned: {len(global_model)} terrain codes, {len(spatial_model)} spatial buckets")
@@ -149,7 +172,10 @@ def run_pipeline(round_id):
         pred = build_prediction(height, width, initial_grid, seed_obs,
                                 transition_model=global_model,
                                 spatial_model=spatial_model,
-                                survival_rate=survival_rate)
+                                survival_rate=survival_rate,
+                                settlement_stats=settlement_stats,
+                                spatial_obs=spatial_obs,
+                                expansion_rate=expansion_rate)
         pred_list = predictions_to_list(pred)
         validate_predictions(pred_list, height, width)
 
@@ -249,9 +275,51 @@ def observe_seed(round_id, seed_index, height, width, max_queries,
             print(f"  Query error at ({x},{y}): {e}")
             break
 
-    # Phase 2: Repeat queries on high-value tiles (settlement-heavy areas)
+    # Phase 2: Repeat queries targeting under-observed bucket coverage
     remaining = max_queries - len(observations)
-    if repeat_tiles:
+    if remaining > 0 and initial_grid:
+        from predictor import compute_feature_map
+        fmap, _, _ = compute_feature_map(initial_grid)
+
+        # Count bucket observations from Phase 1
+        bucket_obs_count = {}
+        for obs in observations:
+            vp = obs.get("viewport", {})
+            grid = obs.get("grid", [])
+            vp_x, vp_y = vp.get("x", 0), vp.get("y", 0)
+            for dr in range(len(grid)):
+                for dc in range(len(grid[0]) if grid else 0):
+                    r, c = vp_y + dr, vp_x + dc
+                    if 0 <= r < height and 0 <= c < width:
+                        bk = fmap[r][c]
+                        bucket_obs_count[bk] = bucket_obs_count.get(bk, 0) + 1
+
+        # Score tiles by sum of 1/(1+obs_count) for cells — tiles with rare buckets score higher
+        tile_bucket_scores = []
+        for tx, ty in positions:
+            score = 0.0
+            for r in range(ty, min(ty + vp_h, height)):
+                for c in range(tx, min(tx + vp_w, width)):
+                    if initial_grid[r][c] not in STATIC_CODES:
+                        bk = fmap[r][c]
+                        score += 1.0 / (1.0 + bucket_obs_count.get(bk, 0))
+            if score > 0:
+                tile_bucket_scores.append((score, (tx, ty)))
+
+        tile_bucket_scores.sort(reverse=True)
+        for i in range(remaining):
+            if not tile_bucket_scores:
+                break
+            _, (x, y) = tile_bucket_scores[i % len(tile_bucket_scores)]
+            try:
+                result = api_client.query_seed(round_id, seed_index,
+                                               viewport_x=x, viewport_y=y,
+                                               viewport_w=vp_w, viewport_h=vp_h)
+                observations.append(result)
+            except Exception as e:
+                print(f"  Query error repeat ({x},{y}): {e}")
+                break
+    elif remaining > 0 and repeat_tiles:
         for i in range(remaining):
             _, (x, y) = repeat_tiles[i % len(repeat_tiles)]
             try:

@@ -30,16 +30,16 @@
 - [x] ~30 spatial buckets (up from 14)
 
 ### Backtest Results (5-seed spatial, weighted KL — lower is better)
-| Round | Phase 3 (R6) | Phase 3.5 (R7) | Phase 4 (R8) | Notes |
-|-------|-------------|---------------|-------------|-------|
-| 1     | 0.0671      | 0.0664        | 0.0632      | |
-| 2     | 0.0500      | 0.0495        | 0.0468      | |
-| 3     | 0.0747      | 0.0666        | 0.0690      | Harsh winter |
-| 4     | 0.0396      | 0.0392        | 0.0384      | Best round |
-| 5     | 0.0715      | 0.0706        | 0.0718      | |
-| 6     | 0.0643      | 0.0641        | 0.0615      | |
-| 7     | —           | 0.1506        | 0.1468      | Very harsh winter |
-| **Avg** | **0.0612** | **0.0594**  | **0.0568** (R1-6) | |
+| Round | Phase 3 (R6) | Phase 3.5 (R7) | Phase 4 (R8) | Phase 4f+g (cluster+stats) | Notes |
+|-------|-------------|---------------|-------------|---------------------------|-------|
+| 1     | 0.0671      | 0.0664        | 0.0632      | 0.0620                    | |
+| 2     | 0.0500      | 0.0495        | 0.0468      | 0.0456                    | |
+| 3     | 0.0747      | 0.0666        | 0.0690      | 0.0690                    | Harsh winter |
+| 4     | 0.0396      | 0.0392        | 0.0384      | 0.0380                    | Best round |
+| 5     | 0.0715      | 0.0706        | 0.0718      | 0.0700                    | |
+| 6     | 0.0643      | 0.0641        | 0.0615      | 0.0608                    | |
+| 7     | —           | 0.1506        | 0.1468      | 0.1416                    | Very harsh winter |
+| **Avg** | **0.0612** | **0.0594**  | **0.0568** (R1-6) | **0.0576** (R1-6)   | |
 
 ### Key Insights
 - **Hidden params are unique per round** — historical priors don't help, must learn fresh
@@ -51,12 +51,13 @@
 - **Bayesian smoothing helps more than hard min-obs threshold** — prevents overfitting sparse buckets
 
 ### Scoring Context
-- Our round 5 score: 13.1/100 (naive predictor, submitted before model was ready)
-- Round 6 score: **78.5** (rank 28/186) — first real submission with spatial model
-- Round 7 score: **60.36** (rank 83/199) — 18-point drop, very harsh winter round (7% survival)
-- Round 8: submitted with Phase 4 improvements (score pending)
-- Top teams: ~115-119 weighted score → ~80-87+ raw per round
-- Gap to close: ~5-10 raw points per round
+- Round 5: 13.1 (rank 130/144) — naive predictor
+- Round 6: **78.5** (rank 28/186) — first spatial model
+- Round 7: **60.4** (rank 83/199) — harsh winter, high expansion
+- Round 8: **82.4** (rank 55/214) — best raw score, weighted=121.8
+- Round 9: submitted (score pending)
+- Leaderboard: **#55** with weighted=121.8. Top teams: ~140 weighted (~90 raw).
+- Gap to close: ~8 raw points. Weight system means R10+ at 82.4 → ~134 weighted (~rank 15).
 
 ---
 
@@ -109,34 +110,33 @@ Reduced from ~30 to ~20 buckets:
 - Ruin: dropped `has_adj_forest`
 - Plains, Empty, Forest: unchanged
 
-### 4f. Settlement cluster features (MEDIUM IMPACT — NOT YET DONE)
-Count settlements within Manhattan distance 5 in initial grid. Discretize: isolated (0-1),
-small (2-3), dense (4+). Dense clusters survive more (trade) but also collapse more (raids).
+### 4f. Settlement cluster density ✅ (committed)
+Binary `is_clustered` (≥2 settlements within Manhattan d≤5) added to Settlement and Plains
+bucket keys. Tested 3 variants: both (best), settlement-only, none.
+- R7 improved 0.1468→0.1416 (biggest gain — clustered vs isolated settlements behave differently in harsh winters)
+- R1-6 avg 0.0568→0.0576 (slight regression — more buckets = less data per bucket)
+- R1-7 avg improved overall due to R7 gain
 
-Use as feature in plains/forest/settlement bucket keys.
+### 4g. Settlement stats extraction ✅ (committed, pending live validation)
+`extract_settlement_stats()` parses food/population/wealth from simulate query responses.
+- Level 1: avg_food modulates winter calibration scale (±20%, clamped)
+- Level 2 (per-cell food z-score) and Level 3 (expansion signal) not yet implemented
+- Schema discovery blocked by rate limit — wired but safe no-op until live data confirms fields
+- Cannot backtest (GT has no settlement stats)
 
-### 4g. Settlement stats from query responses (MEDIUM IMPACT — NOT YET DONE)
-The simulate endpoint returns settlement stats (food, population, defense, wealth)
-that we currently **completely ignore**. The observation dict has a `settlements` key.
+### 4h. Forward model ✅ (implemented but DISABLED in production)
+Rate estimation functions: expansion, port_formation, forest_reclamation, ruin.
+Physics-based forward probabilities with context-dependent blending weights.
 
-**Use**: Average food level of observed settlements → signal for settlement survival.
-Settlements with avg food < threshold → predict collapse. Could help per-cell blending
-for settlement cells specifically.
+**Result: consistently hurts in backtesting.** Even at very low weights (3-10%), the
+parametric formulas can't match the data-driven bucket model. Reasons:
+- Bucket model already captures actual transition dynamics from observations
+- Physics formulas use simplified exponential/linear approximations
+- The bucket model has access to the same spatial features the forward model uses
+- Forward model adds noise rather than correcting errors
 
-### 4h. Lightweight forward model (HIGH EFFORT, TRANSFORMATIVE — NOT YET DONE)
-Not a full simulator — just calibrate 3-4 key rates from observations:
-1. **Settlement survival rate** (from 4c above)
-2. **Expansion rate**: how many new settlements formed / initial settlements
-3. **Port formation rate**: new ports / coastal settlements
-4. **Forest reclamation rate**: forest cells gained / ruin+empty cells near forest
-
-Then for each cell, compute:
-- P(Settlement) = f(initial_code, distance, survival_rate, expansion_rate)
-- P(Port) = f(is_coastal, distance, port_formation_rate)
-- P(Forest) = f(adj_forest, distance, reclamation_rate)
-- P(Empty) = 1 - sum(above) - P(Ruin) - P(Mountain)
-
-This would be a parametric model calibrated per-round instead of a nonparametric bucket model.
+**Kept for future use** — rate estimation functions may be useful for settlement stats
+integration or as diagnostic tools.
 
 ### 4i. Deploy to Cloud Run (DO WHEN MODEL IS GOOD)
 - [ ] Deploy Dockerfile to Cloud Run
@@ -152,12 +152,44 @@ All 4 priority items implemented and submitted:
 - Backtest: R1-6 avg 0.0568 (was 0.0594), R7 0.1468 (was 0.1506)
 
 ### Priority for Round 9+ (remaining items)
-| # | Change | Expected gain | Effort |
-|---|--------|---------------|--------|
-| 1 | **Settlement cluster features** (4f) | ~1-2 pts | 30 min |
-| 2 | **Parse settlement stats** (4g) | ~1 pt | 30 min |
-| 3 | **Lightweight forward model** (4h) | ~3-5 pts (transformative) | 4 hr |
-| 4 | **Deploy to Cloud Run** (4i) | Automation | 1 hr |
+| # | Change | Status | Notes |
+|---|--------|--------|-------|
+| 1 | **Settlement cluster features** (4f) | ✅ Done | +3.5% on R7, slight regression R1-6 |
+| 2 | **Parse settlement stats** (4g) | ✅ Wired, needs live validation | Food modulation of winter calibration |
+| 3 | **Lightweight forward model** (4h) | ❌ Disabled | Consistently hurts in backtest |
+| 4 | **Deploy to Cloud Run** (4i) | Not started | Automation |
+
+### Overnight iteration findings (2026-03-20)
+
+**Attempted and failed:**
+- **Stronger forest entropy injection** ❌: Increased shrink max 0.15→0.22, multipliers up. R2 regressed +24.9% (0.0321→0.0400). The blunt shrink over-corrects on moderate rounds where forest retention is legitimately high. Needs per-round conditioning, not global strength.
+- **Forest smoothing K reduction (4→2)** ➖: Zero effect in backtest. With 5 seeds of GT, each bucket has hundreds of obs so K barely matters. Only relevant in production with 50 queries.
+
+**Current error profile (avg KL 0.0497):**
+- Plains: ~60% of loss, wkl=0.048 avg — biggest target but hard to improve without regressing
+- Forest: ~33% of loss, wkl=0.061 avg — worst cells are Forest near settlements (pred 89% vs GT 73%)
+- R7 is the outlier (KL 0.124) — harsh winter. R3 also tough (KL 0.056, near-total collapse)
+- Sp+Forward consistently worse than pure Spatial
+
+**Attempted and improved:**
+- **Widen expansion modulation d≤6→d≤8** ✅: Gradual decay d=5-8 instead of d=5-6. Overall KL 0.0497→0.0491 (-1.2%). R7 improved 0.1243→0.1218, R5 0.0542→0.0526. No regressions.
+- **Distance-based temperature scaling** ✅: Replaced Step 1.8 prior-blending with temperature scaling (d≤2: T=1.10 spread, d=3-4: T=1.03, d≥5: T=0.92 sharpen). Overall KL 0.0491→0.0457 (-6.9%). R3 -19%, R7 -11%, R5 -10.6%. Key insight: model had bidirectional calibration failure — over-confident near settlements, under-confident far away. Temperature scaling fixes both directions simultaneously.
+
+**Attempted and failed/neutral (2026-03-20 evening):**
+- **Per-terrain temperature** ➖: Forest d≤2 T=1.04, d≥5 T=0.95, Plains unchanged. Overall neutral (0.0457→0.0457). R2 improved slightly but R3/R8 regressed. Not worth the complexity.
+- **Expansion-modulated forest injection** ❌: Boost forest entropy injection proportional to expansion_rate. R2 regressed +29.6% because expansion_rate measures settlement growth into Plains, NOT forest clearing. High expansion ≠ high forest clearing.
+- **Spatial smoothing (MRF-style)** ❌: 8-connected neighbor averaging (alpha=0.08) near settlements. R4 regressed +10.4% — blurs predictions across terrain boundaries, adding noise to already-accurate moderate rounds.
+- **Temperature parameter tuning (1.12/1.05/0.94)** ➖: More spreading near, less sharpening far. Overall neutral (0.0457→0.0457). R7 improved 1.3% but R2/R4/R8 worsened. The (1.10/1.03/0.92) values appear to be a local optimum.
+
+**Key lesson**: The temperature scaling parameters are already well-tuned. Post-model adjustments have diminishing returns. The remaining error is dominated by within-bucket variance (irreducible without better features).
+
+**Promising directions not yet tried:**
+- Plains bucket refinement: split by distance + cluster density interaction
+- Ruin-to-forest transition: currently under-predicted, especially near forests in harsh winters
+- Adjacent settlement COUNT for Plains (not just binary is_clustered): 2+ adjacent settlements = much higher expansion
+- Better port prediction for coastal settlements (R7 worst cell: Settlement→Port under-predicted)
+- Ensemble approach: run predictions with multiple parameter sets and average
+- Non-linear feature interactions: multiplicative features in bucket key (e.g., coastal AND clustered AND near_forest)
 
 ---
 
@@ -182,9 +214,42 @@ Key dynamics:
 
 ### Workflow for each improvement:
 1. Make the code change in a worktree
-2. Run `python3 test_local.py --backtest all` — compare all 4 model variants
-3. Keep only if 5seed-Spatial improves on avg without regressing any round >5%
-4. Commit and merge
+2. Run fast gate: `pytest test_predictor_unit.py test_predictor_integration.py -x --tb=short`
+3. Run backtest gate: `python3 test_backtest.py --output results.json --baseline baseline.json`
+4. Keep only if no regression detected (exit code 0)
+5. If improved: `cp results.json baseline.json` to update baseline
+6. Commit and merge
+
+### Overnight self-improvement loop
+The test suite is designed for automated iteration. The loop:
+```bash
+while true; do
+  # 1. Apply next hypothesis (parameter tune, feature experiment)
+  # 2. Fast offline gate (< 1s, no API):
+  pytest test_predictor_unit.py test_predictor_integration.py -x --tb=short
+  #    → FAIL? Revert, try next hypothesis
+  # 3. Backtest regression gate (~30s, requires API):
+  python3 test_backtest.py --output results.json --baseline baseline.json --threshold 0.10
+  #    → EXIT 1 (regression)? Revert, try next hypothesis
+  # 4. If improved: cp results.json baseline.json
+  # 5. If active round: python3 test_local.py --submit
+  # 6. Log results, continue
+done
+```
+
+**Backtest JSON output** (written by `--output`) contains everything needed to guide the loop:
+- `overall.avg_weighted_kl` — single number to compare
+- `per_round[].per_terrain_kl` — which terrain types improved/regressed (Plains is 55% of loss)
+- `per_round[].worst_cells` — top 10 worst cells with bucket_key, GT vs pred distributions
+- `per_round[].model_variants` — spatial vs spatial+forward comparison
+- `regression` — populated when `--baseline` is used, null if no regression
+
+**Exit codes**: 0 = pass, 1 = regression detected, 2 = error
+
+**Generating initial baseline**:
+```bash
+python3 test_backtest.py --output baseline.json
+```
 
 ### When a new round starts:
 ```bash
@@ -196,8 +261,8 @@ python3 test_local.py --submit               # full pipeline: 50 queries + submi
 ### After a round completes:
 ```bash
 python3 test_local.py --my-rounds            # check our score and rank
-python3 test_local.py --backtest ROUND_ID    # compare our model vs ground truth
-python3 test_local.py --backtest all         # backtest all completed rounds
+python3 test_backtest.py --round ROUND_ID --output results.json  # detailed analysis
+python3 test_backtest.py --output baseline.json                  # regenerate baseline with new round
 python3 test_local.py --leaderboard          # check standings
 ```
 

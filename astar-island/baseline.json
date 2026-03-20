@@ -1,0 +1,1272 @@
+{
+  "timestamp": "2026-03-20T20:08:55.353859+00:00",
+  "git_commit": "799f33b",
+  "overall": {
+    "avg_weighted_kl": 0.04567127953872429,
+    "avg_weighted_kl_r1_r6": 0.03923181095171847,
+    "rounds_tested": 8,
+    "model_variants": {
+      "5seed-Spatial": 0.04567127953872429,
+      "5seed-Sp+Forward": 0.04896969030899324
+    }
+  },
+  "per_round": [
+    {
+      "round_id": "c5cdf100-a876-4fb7-b5d8-757162c97989",
+      "round_number": 8,
+      "avg_weighted_kl": 0.021721566826064156,
+      "per_seed": [
+        0.021160164630543047,
+        0.023715869588216792,
+        0.020677607907396197,
+        0.020617220044509308,
+        0.022436971959655435
+      ],
+      "forward_rates": {
+        "survival": 0.06756578947368416,
+        "expansion": 0.024484102564102755,
+        "port_formation": 0.006600741656365832,
+        "forest_reclamation": 0.04544457142857094,
+        "ruin": 0.01046052631578945
+      },
+      "per_terrain_kl": {
+        "Ocean": {
+          "weighted_kl": 0.0,
+          "cell_count": 1065,
+          "share_of_loss": 0.0
+        },
+        "Plains": {
+          "weighted_kl": 0.01992952544560876,
+          "cell_count": 4875,
+          "share_of_loss": 0.5658121233596864
+        },
+        "Forest": {
+          "weighted_kl": 0.025041984658623773,
+          "cell_count": 1693,
+          "share_of_loss": 0.33558768454866933
+        },
+        "Settlement": {
+          "weighted_kl": 0.022774596684331065,
+          "cell_count": 218,
+          "share_of_loss": 0.09250936541306054
+        },
+        "Port": {
+          "weighted_kl": 0.031779124175234215,
+          "cell_count": 10,
+          "share_of_loss": 0.006090826678583787
+        },
+        "Mountain": {
+          "weighted_kl": 0.0,
+          "cell_count": 139,
+          "share_of_loss": 0.0
+        }
+      },
+      "worst_cells": [
+        {
+          "r": 28,
+          "c": 15,
+          "kl": 0.12211983451646527,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 2, 0, False, False)",
+          "gt_top": "Forest=0.795",
+          "pred_top": "Forest=0.933"
+        },
+        {
+          "r": 12,
+          "c": 31,
+          "kl": 0.11386373876288544,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 1, 0, False, False)",
+          "gt_top": "Forest=0.735",
+          "pred_top": "Forest=0.892"
+        },
+        {
+          "r": 26,
+          "c": 22,
+          "kl": 0.09839016019625646,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 2, 0, False, False)",
+          "gt_top": "Forest=0.825",
+          "pred_top": "Forest=0.933"
+        },
+        {
+          "r": 17,
+          "c": 34,
+          "kl": 0.09706110285625287,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 1, 0, True, False)",
+          "gt_top": "Forest=0.800",
+          "pred_top": "Forest=0.875"
+        },
+        {
+          "r": 14,
+          "c": 35,
+          "kl": 0.09400167170843597,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, True, 1, True)",
+          "gt_top": "Empty=0.885",
+          "pred_top": "Empty=0.852"
+        },
+        {
+          "r": 4,
+          "c": 32,
+          "kl": 0.09345470971780934,
+          "seed": 0,
+          "init_code": 1,
+          "bucket_key": "(1, True, False, True, True)",
+          "gt_top": "Empty=0.680",
+          "pred_top": "Empty=0.571"
+        },
+        {
+          "r": 6,
+          "c": 17,
+          "kl": 0.09171755197048034,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 1, True, 1, True)",
+          "gt_top": "Empty=0.850",
+          "pred_top": "Empty=0.899"
+        },
+        {
+          "r": 25,
+          "c": 13,
+          "kl": 0.08815600951236482,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 1, 0, False, False)",
+          "gt_top": "Forest=0.750",
+          "pred_top": "Forest=0.879"
+        },
+        {
+          "r": 1,
+          "c": 26,
+          "kl": 0.08773131826850436,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, True, 0, False)",
+          "gt_top": "Empty=0.980",
+          "pred_top": "Empty=0.881"
+        },
+        {
+          "r": 16,
+          "c": 33,
+          "kl": 0.08301604776069817,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, True, False)",
+          "gt_top": "Forest=0.825",
+          "pred_top": "Forest=0.829"
+        }
+      ],
+      "model_variants": {
+        "5seed-Spatial": 0.021721566826064156,
+        "5seed-Sp+Forward": 0.024780787939418784
+      }
+    },
+    {
+      "round_id": "36e581f1-73f8-453f-ab98-cbe3052b701b",
+      "round_number": 7,
+      "avg_weighted_kl": 0.10825780377341934,
+      "per_seed": [
+        0.1134999426086097,
+        0.11056591729581497,
+        0.10803956174031355,
+        0.1084435221855369,
+        0.10074007503682154
+      ],
+      "forward_rates": {
+        "survival": 0.42291512915129154,
+        "expansion": 0.13797206362153241,
+        "port_formation": 0.05633793969849252,
+        "forest_reclamation": 0.02996041619543085,
+        "ruin": 0.033800738007380066
+      },
+      "per_terrain_kl": {
+        "Ocean": {
+          "weighted_kl": 0.0,
+          "cell_count": 1030,
+          "share_of_loss": 0.0
+        },
+        "Plains": {
+          "weighted_kl": 0.10076040082557713,
+          "cell_count": 4904,
+          "share_of_loss": 0.5967530581737793
+        },
+        "Forest": {
+          "weighted_kl": 0.13564223450046184,
+          "cell_count": 1653,
+          "share_of_loss": 0.33304687647246045
+        },
+        "Settlement": {
+          "weighted_kl": 0.0817448197249867,
+          "cell_count": 256,
+          "share_of_loss": 0.06681127015253761
+        },
+        "Mountain": {
+          "weighted_kl": 0.0,
+          "cell_count": 142,
+          "share_of_loss": 0.0
+        },
+        "Port": {
+          "weighted_kl": 0.05460521347176901,
+          "cell_count": 15,
+          "share_of_loss": 0.0033887952012227377
+        }
+      },
+      "worst_cells": [
+        {
+          "r": 1,
+          "c": 4,
+          "kl": 0.5785997149660662,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 1, True, 1, True)",
+          "gt_top": "Empty=0.460",
+          "pred_top": "Empty=0.887"
+        },
+        {
+          "r": 12,
+          "c": 12,
+          "kl": 0.5243937618978269,
+          "seed": 0,
+          "init_code": 1,
+          "bucket_key": "(1, True, False, True, False)",
+          "gt_top": "Port=0.395",
+          "pred_top": "Settlement=0.388"
+        },
+        {
+          "r": 22,
+          "c": 5,
+          "kl": 0.5205427546292488,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, True, 1, True)",
+          "gt_top": "Settlement=0.580",
+          "pred_top": "Empty=0.620"
+        },
+        {
+          "r": 26,
+          "c": 32,
+          "kl": 0.48916524373142595,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, True, False)",
+          "gt_top": "Settlement=0.645",
+          "pred_top": "Forest=0.406"
+        },
+        {
+          "r": 25,
+          "c": 31,
+          "kl": 0.48317865978904,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, True, False)",
+          "gt_top": "Settlement=0.605",
+          "pred_top": "Forest=0.406"
+        },
+        {
+          "r": 36,
+          "c": 12,
+          "kl": 0.4831402998813047,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 1, 0, False, False)",
+          "gt_top": "Settlement=0.555",
+          "pred_top": "Forest=0.801"
+        },
+        {
+          "r": 32,
+          "c": 7,
+          "kl": 0.47873336738260547,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, False, False)",
+          "gt_top": "Forest=0.905",
+          "pred_top": "Forest=0.449"
+        },
+        {
+          "r": 14,
+          "c": 4,
+          "kl": 0.47496468570631534,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, True, True)",
+          "gt_top": "Settlement=0.615",
+          "pred_top": "Forest=0.623"
+        },
+        {
+          "r": 12,
+          "c": 14,
+          "kl": 0.45494025163989066,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 0, True, False)",
+          "gt_top": "Settlement=0.505",
+          "pred_top": "Forest=0.651"
+        },
+        {
+          "r": 31,
+          "c": 10,
+          "kl": 0.45267486454872763,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, False, 1, True)",
+          "gt_top": "Settlement=0.645",
+          "pred_top": "Empty=0.715"
+        }
+      ],
+      "model_variants": {
+        "5seed-Spatial": 0.10825780377341934,
+        "5seed-Sp+Forward": 0.11195080050949908
+      }
+    },
+    {
+      "round_id": "ae78003a-4efe-425a-881a-d16a39bca0ad",
+      "round_number": 6,
+      "avg_weighted_kl": 0.04189349140163917,
+      "per_seed": [
+        0.04059689805872082,
+        0.04303487631748083,
+        0.04789787525646077,
+        0.04006385086323218,
+        0.037873956512301236
+      ],
+      "forward_rates": {
+        "survival": 0.41500000000000004,
+        "expansion": 0.24592432654739935,
+        "port_formation": 0.12459802538787026,
+        "forest_reclamation": 0.06878606853020763,
+        "ruin": 0.04194560669456064
+      },
+      "per_terrain_kl": {
+        "Ocean": {
+          "weighted_kl": 0.0,
+          "cell_count": 992,
+          "share_of_loss": 0.0
+        },
+        "Forest": {
+          "weighted_kl": 0.048618448723118414,
+          "cell_count": 1732,
+          "share_of_loss": 0.32314004544430464
+        },
+        "Plains": {
+          "weighted_kl": 0.03944091312532202,
+          "cell_count": 4863,
+          "share_of_loss": 0.6402740271124923
+        },
+        "Settlement": {
+          "weighted_kl": 0.03635921473960827,
+          "cell_count": 234,
+          "share_of_loss": 0.03567104848692079
+        },
+        "Mountain": {
+          "weighted_kl": 0.0,
+          "cell_count": 174,
+          "share_of_loss": 0.0
+        },
+        "Port": {
+          "weighted_kl": 0.030939815764491552,
+          "cell_count": 5,
+          "share_of_loss": 0.0009148789562824295
+        }
+      },
+      "worst_cells": [
+        {
+          "r": 11,
+          "c": 36,
+          "kl": 0.4397118237691258,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, True, 2, True)",
+          "gt_top": "Settlement=0.585",
+          "pred_top": "Empty=0.549"
+        },
+        {
+          "r": 13,
+          "c": 36,
+          "kl": 0.2842294721204336,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 1, 0, False, False)",
+          "gt_top": "Settlement=0.570",
+          "pred_top": "Forest=0.539"
+        },
+        {
+          "r": 13,
+          "c": 37,
+          "kl": 0.26634331314741094,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 1, 0, False, True)",
+          "gt_top": "Settlement=0.585",
+          "pred_top": "Forest=0.512"
+        },
+        {
+          "r": 13,
+          "c": 35,
+          "kl": 0.26559934252300754,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 2, True, 1, True)",
+          "gt_top": "Empty=0.485",
+          "pred_top": "Empty=0.667"
+        },
+        {
+          "r": 1,
+          "c": 7,
+          "kl": 0.2556270694335953,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 2, 0, True, True)",
+          "gt_top": "Forest=0.810",
+          "pred_top": "Forest=0.576"
+        },
+        {
+          "r": 37,
+          "c": 34,
+          "kl": 0.24569481988969422,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 1, False, 1, True)",
+          "gt_top": "Settlement=0.590",
+          "pred_top": "Empty=0.613"
+        },
+        {
+          "r": 12,
+          "c": 37,
+          "kl": 0.24232445733286395,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 0, False, True)",
+          "gt_top": "Settlement=0.570",
+          "pred_top": "Forest=0.495"
+        },
+        {
+          "r": 1,
+          "c": 35,
+          "kl": 0.2401713808563918,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 2, 0, True, False)",
+          "gt_top": "Forest=0.980",
+          "pred_top": "Forest=0.733"
+        },
+        {
+          "r": 6,
+          "c": 6,
+          "kl": 0.23803589324512736,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 1, False, 2, True)",
+          "gt_top": "Settlement=0.580",
+          "pred_top": "Empty=0.612"
+        },
+        {
+          "r": 20,
+          "c": 37,
+          "kl": 0.23187489767340905,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 2, 0, False, False)",
+          "gt_top": "Forest=0.945",
+          "pred_top": "Forest=0.670"
+        }
+      ],
+      "model_variants": {
+        "5seed-Spatial": 0.04189349140163917,
+        "5seed-Sp+Forward": 0.042885652551982685
+      }
+    },
+    {
+      "round_id": "fd3c92ff-3178-4dc9-8d9b-acf389b3982b",
+      "round_number": 5,
+      "avg_weighted_kl": 0.046971156813238144,
+      "per_seed": [
+        0.04670186110052616,
+        0.05059993833955859,
+        0.04868527321444449,
+        0.04571730853809909,
+        0.04315140287356241
+      ],
+      "forward_rates": {
+        "survival": 0.3304583333333332,
+        "expansion": 0.12053892215568768,
+        "port_formation": 0.057904953145916975,
+        "forest_reclamation": 0.04182781919850859,
+        "ruin": 0.02685416666666663
+      },
+      "per_terrain_kl": {
+        "Ocean": {
+          "weighted_kl": 0.0,
+          "cell_count": 1023,
+          "share_of_loss": 0.0
+        },
+        "Plains": {
+          "weighted_kl": 0.044063311534224485,
+          "cell_count": 4843,
+          "share_of_loss": 0.6088149989811215
+        },
+        "Forest": {
+          "weighted_kl": 0.05436373853136437,
+          "cell_count": 1727,
+          "share_of_loss": 0.3260399006865991
+        },
+        "Settlement": {
+          "weighted_kl": 0.044478651624039967,
+          "cell_count": 232,
+          "share_of_loss": 0.06331095587232358
+        },
+        "Mountain": {
+          "weighted_kl": 0.0,
+          "cell_count": 167,
+          "share_of_loss": 0.0
+        },
+        "Port": {
+          "weighted_kl": 0.019087937793702003,
+          "cell_count": 8,
+          "share_of_loss": 0.0018341444599558221
+        }
+      },
+      "worst_cells": [
+        {
+          "r": 37,
+          "c": 18,
+          "kl": 0.32110257471567544,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 1, True, 1, False)",
+          "gt_top": "Empty=0.625",
+          "pred_top": "Empty=0.803"
+        },
+        {
+          "r": 9,
+          "c": 9,
+          "kl": 0.31407902361901535,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, True, 2, True)",
+          "gt_top": "Empty=0.490",
+          "pred_top": "Empty=0.684"
+        },
+        {
+          "r": 13,
+          "c": 34,
+          "kl": 0.2690479659474432,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 0, False, False)",
+          "gt_top": "Forest=0.940",
+          "pred_top": "Forest=0.629"
+        },
+        {
+          "r": 14,
+          "c": 20,
+          "kl": 0.24563958489886392,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 1, 0, False, False)",
+          "gt_top": "Forest=0.990",
+          "pred_top": "Forest=0.752"
+        },
+        {
+          "r": 36,
+          "c": 14,
+          "kl": 0.23104664678435188,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, True, 0, False)",
+          "gt_top": "Empty=0.575",
+          "pred_top": "Empty=0.663"
+        },
+        {
+          "r": 15,
+          "c": 20,
+          "kl": 0.22387193697981447,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, False, 1, False)",
+          "gt_top": "Empty=0.925",
+          "pred_top": "Empty=0.645"
+        },
+        {
+          "r": 7,
+          "c": 9,
+          "kl": 0.22346493481003404,
+          "seed": 0,
+          "init_code": 1,
+          "bucket_key": "(1, True, False, True, True)",
+          "gt_top": "Empty=0.380",
+          "pred_top": "Empty=0.414"
+        },
+        {
+          "r": 10,
+          "c": 8,
+          "kl": 0.21518287042250636,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, True, False)",
+          "gt_top": "Forest=0.725",
+          "pred_top": "Forest=0.539"
+        },
+        {
+          "r": 4,
+          "c": 11,
+          "kl": 0.20729779488741298,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, False, False)",
+          "gt_top": "Forest=0.850",
+          "pred_top": "Forest=0.555"
+        },
+        {
+          "r": 36,
+          "c": 18,
+          "kl": 0.20635752685540285,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 0, False, False)",
+          "gt_top": "Settlement=0.440",
+          "pred_top": "Forest=0.629"
+        }
+      ],
+      "model_variants": {
+        "5seed-Spatial": 0.046971156813238144,
+        "5seed-Sp+Forward": 0.04815649758246081
+      }
+    },
+    {
+      "round_id": "8e839974-b13b-407b-a5e7-fc749d877195",
+      "round_number": 4,
+      "avg_weighted_kl": 0.02388926522497811,
+      "per_seed": [
+        0.025968292322041675,
+        0.021368434529558434,
+        0.024114742798949155,
+        0.02546693665998548,
+        0.022527919814355812
+      ],
+      "forward_rates": {
+        "survival": 0.23479079497907954,
+        "expansion": 0.09017600499895845,
+        "port_formation": 0.03899244332493706,
+        "forest_reclamation": 0.048141938447404345,
+        "ruin": 0.02115062761506273
+      },
+      "per_terrain_kl": {
+        "Ocean": {
+          "weighted_kl": 0.0,
+          "cell_count": 1064,
+          "share_of_loss": 0.0
+        },
+        "Plains": {
+          "weighted_kl": 0.022273816530294505,
+          "cell_count": 4801,
+          "share_of_loss": 0.6066087666219333
+        },
+        "Forest": {
+          "weighted_kl": 0.027335538931751956,
+          "cell_count": 1718,
+          "share_of_loss": 0.3193960216907768
+        },
+        "Settlement": {
+          "weighted_kl": 0.024386024582213027,
+          "cell_count": 225,
+          "share_of_loss": 0.06736019719989134
+        },
+        "Port": {
+          "weighted_kl": 0.034563466667996444,
+          "cell_count": 14,
+          "share_of_loss": 0.0066350144873986465
+        },
+        "Mountain": {
+          "weighted_kl": 0.0,
+          "cell_count": 178,
+          "share_of_loss": 0.0
+        }
+      },
+      "worst_cells": [
+        {
+          "r": 9,
+          "c": 12,
+          "kl": 0.15412872558442464,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, False, 1, True)",
+          "gt_top": "Empty=0.965",
+          "pred_top": "Empty=0.780"
+        },
+        {
+          "r": 32,
+          "c": 31,
+          "kl": 0.14791158214889955,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, True, 0, False)",
+          "gt_top": "Empty=0.780",
+          "pred_top": "Empty=0.788"
+        },
+        {
+          "r": 35,
+          "c": 9,
+          "kl": 0.1458509161807736,
+          "seed": 0,
+          "init_code": 1,
+          "bucket_key": "(1, True, False, True, False)",
+          "gt_top": "Empty=0.515",
+          "pred_top": "Empty=0.443"
+        },
+        {
+          "r": 17,
+          "c": 15,
+          "kl": 0.12368136657988787,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, True, 0, True)",
+          "gt_top": "Empty=0.795",
+          "pred_top": "Empty=0.797"
+        },
+        {
+          "r": 25,
+          "c": 27,
+          "kl": 0.11478021455626629,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, False, 1, True)",
+          "gt_top": "Empty=0.950",
+          "pred_top": "Empty=0.781"
+        },
+        {
+          "r": 17,
+          "c": 14,
+          "kl": 0.11419251877342022,
+          "seed": 0,
+          "init_code": 1,
+          "bucket_key": "(1, False, False, True, True)",
+          "gt_top": "Empty=0.535",
+          "pred_top": "Empty=0.443"
+        },
+        {
+          "r": 36,
+          "c": 8,
+          "kl": 0.11364272454142134,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, True, 1, False)",
+          "gt_top": "Empty=0.810",
+          "pred_top": "Empty=0.809"
+        },
+        {
+          "r": 11,
+          "c": 18,
+          "kl": 0.110043881846817,
+          "seed": 0,
+          "init_code": 1,
+          "bucket_key": "(1, True, False, True, True)",
+          "gt_top": "Empty=0.475",
+          "pred_top": "Empty=0.475"
+        },
+        {
+          "r": 18,
+          "c": 34,
+          "kl": 0.10717150357747239,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, False, False)",
+          "gt_top": "Forest=0.865",
+          "pred_top": "Forest=0.706"
+        },
+        {
+          "r": 22,
+          "c": 15,
+          "kl": 0.10689293945578793,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, False, 1, True)",
+          "gt_top": "Empty=0.940",
+          "pred_top": "Empty=0.777"
+        }
+      ],
+      "model_variants": {
+        "5seed-Spatial": 0.02388926522497811,
+        "5seed-Sp+Forward": 0.024231806682652946
+      }
+    },
+    {
+      "round_id": "f1dac9a9-5cf1-49a9-8f17-d6cb5d5ba5cb",
+      "round_number": 3,
+      "avg_weighted_kl": 0.04515573112596274,
+      "per_seed": [
+        0.050735025561060076,
+        0.04153703210856929,
+        0.04538486385713109,
+        0.038390839516630436,
+        0.04973089458642278
+      ],
+      "forward_rates": {
+        "survival": 0.01837209302325579,
+        "expansion": 0.0021380020597322378,
+        "port_formation": 0.000218508997429306,
+        "forest_reclamation": 0.022516496018202513,
+        "ruin": 0.0038139534883720955
+      },
+      "per_terrain_kl": {
+        "Ocean": {
+          "weighted_kl": 0.0,
+          "cell_count": 1087,
+          "share_of_loss": 0.0
+        },
+        "Plains": {
+          "weighted_kl": 0.04557693101852124,
+          "cell_count": 4855,
+          "share_of_loss": 0.45561933538412386
+        },
+        "Forest": {
+          "weighted_kl": 0.06820573904471403,
+          "cell_count": 1691,
+          "share_of_loss": 0.41033708150938136
+        },
+        "Settlement": {
+          "weighted_kl": 0.020546649227414244,
+          "cell_count": 207,
+          "share_of_loss": 0.12216556421881605
+        },
+        "Mountain": {
+          "weighted_kl": 0.0,
+          "cell_count": 152,
+          "share_of_loss": 0.0
+        },
+        "Port": {
+          "weighted_kl": 0.04325003166304756,
+          "cell_count": 8,
+          "share_of_loss": 0.011878018887678716
+        }
+      },
+      "worst_cells": [
+        {
+          "r": 15,
+          "c": 5,
+          "kl": 0.21924698885361946,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, False, False)",
+          "gt_top": "Forest=0.620",
+          "pred_top": "Forest=0.859"
+        },
+        {
+          "r": 5,
+          "c": 36,
+          "kl": 0.1970585806504076,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, True, False)",
+          "gt_top": "Forest=0.675",
+          "pred_top": "Forest=0.809"
+        },
+        {
+          "r": 3,
+          "c": 36,
+          "kl": 0.18778273058205064,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, True, 1, False)",
+          "gt_top": "Empty=0.830",
+          "pred_top": "Empty=0.897"
+        },
+        {
+          "r": 12,
+          "c": 31,
+          "kl": 0.18378461637486282,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, True, 1, True)",
+          "gt_top": "Empty=0.840",
+          "pred_top": "Empty=0.889"
+        },
+        {
+          "r": 14,
+          "c": 31,
+          "kl": 0.17484281247230588,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, True, 2, True)",
+          "gt_top": "Empty=0.815",
+          "pred_top": "Empty=0.879"
+        },
+        {
+          "r": 1,
+          "c": 14,
+          "kl": 0.16596772682588903,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, True, False)",
+          "gt_top": "Forest=0.995",
+          "pred_top": "Forest=0.829"
+        },
+        {
+          "r": 23,
+          "c": 16,
+          "kl": 0.15166682319802152,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, False, False)",
+          "gt_top": "Forest=1.000",
+          "pred_top": "Forest=0.859"
+        },
+        {
+          "r": 14,
+          "c": 27,
+          "kl": 0.15166682319802152,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, False, False)",
+          "gt_top": "Forest=1.000",
+          "pred_top": "Forest=0.859"
+        },
+        {
+          "r": 12,
+          "c": 28,
+          "kl": 0.15166682319802152,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, False, False)",
+          "gt_top": "Forest=1.000",
+          "pred_top": "Forest=0.859"
+        },
+        {
+          "r": 23,
+          "c": 35,
+          "kl": 0.1506551812240741,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, False, False)",
+          "gt_top": "Forest=0.670",
+          "pred_top": "Forest=0.859"
+        }
+      ],
+      "model_variants": {
+        "5seed-Spatial": 0.04515573112596274,
+        "5seed-Sp+Forward": 0.06346288225581101
+      }
+    },
+    {
+      "round_id": "76909e29-f664-4b2f-b16b-61b7507277e9",
+      "round_number": 2,
+      "avg_weighted_kl": 0.034502521003340135,
+      "per_seed": [
+        0.03230052942254459,
+        0.03373689918266,
+        0.03633474150944712,
+        0.038290611050029885,
+        0.03184982385201905
+      ],
+      "forward_rates": {
+        "survival": 0.41466666666666685,
+        "expansion": 0.18988438133874314,
+        "port_formation": 0.0917172330097087,
+        "forest_reclamation": 0.05427790432801814,
+        "ruin": 0.034104166666666644
+      },
+      "per_terrain_kl": {
+        "Ocean": {
+          "weighted_kl": 0.0,
+          "cell_count": 1077,
+          "share_of_loss": 0.0
+        },
+        "Plains": {
+          "weighted_kl": 0.02819984922706943,
+          "cell_count": 4930,
+          "share_of_loss": 0.5634350030041185
+        },
+        "Forest": {
+          "weighted_kl": 0.05001432268425965,
+          "cell_count": 1615,
+          "share_of_loss": 0.37970582400046626
+        },
+        "Mountain": {
+          "weighted_kl": 0.0,
+          "cell_count": 138,
+          "share_of_loss": 0.0
+        },
+        "Settlement": {
+          "weighted_kl": 0.03856682355986843,
+          "cell_count": 229,
+          "share_of_loss": 0.05264534281586277
+        },
+        "Port": {
+          "weighted_kl": 0.04035285851822,
+          "cell_count": 11,
+          "share_of_loss": 0.004213830179552338
+        }
+      },
+      "worst_cells": [
+        {
+          "r": 2,
+          "c": 36,
+          "kl": 0.19517375443855028,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 2, 0, True, False)",
+          "gt_top": "Forest=0.985",
+          "pred_top": "Forest=0.780"
+        },
+        {
+          "r": 13,
+          "c": 4,
+          "kl": 0.17966528735217363,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 2, True, 1, False)",
+          "gt_top": "Empty=0.705",
+          "pred_top": "Empty=0.818"
+        },
+        {
+          "r": 35,
+          "c": 27,
+          "kl": 0.17193113170096816,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 1, False, 2, False)",
+          "gt_top": "Settlement=0.485",
+          "pred_top": "Empty=0.705"
+        },
+        {
+          "r": 13,
+          "c": 14,
+          "kl": 0.16823584631459815,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, False, False)",
+          "gt_top": "Forest=0.770",
+          "pred_top": "Forest=0.492"
+        },
+        {
+          "r": 37,
+          "c": 24,
+          "kl": 0.1655876614340034,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, False, 1, False)",
+          "gt_top": "Settlement=0.510",
+          "pred_top": "Empty=0.672"
+        },
+        {
+          "r": 34,
+          "c": 22,
+          "kl": 0.16104039261972244,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 2, False, 2, False)",
+          "gt_top": "Empty=0.545",
+          "pred_top": "Empty=0.786"
+        },
+        {
+          "r": 11,
+          "c": 4,
+          "kl": 0.15932926294628627,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 1, True, 1, False)",
+          "gt_top": "Empty=0.695",
+          "pred_top": "Empty=0.703"
+        },
+        {
+          "r": 37,
+          "c": 13,
+          "kl": 0.1592709303643361,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 1, 0, True, False)",
+          "gt_top": "Forest=0.695",
+          "pred_top": "Forest=0.586"
+        },
+        {
+          "r": 29,
+          "c": 24,
+          "kl": 0.15095978101003127,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 0, False, False)",
+          "gt_top": "Forest=0.760",
+          "pred_top": "Forest=0.502"
+        },
+        {
+          "r": 37,
+          "c": 4,
+          "kl": 0.14767414813031526,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 2, 0, False, False)",
+          "gt_top": "Forest=0.935",
+          "pred_top": "Forest=0.726"
+        }
+      ],
+      "model_variants": {
+        "5seed-Spatial": 0.034502521003340135,
+        "5seed-Sp+Forward": 0.033536355227019074
+      }
+    },
+    {
+      "round_id": "71451d74-be9f-471f-aacd-a41f3b68a9cd",
+      "round_number": 1,
+      "avg_weighted_kl": 0.042978700141152494,
+      "per_seed": [
+        0.04403201940812207,
+        0.042628414828997256,
+        0.04730956282791099,
+        0.03616560762436332,
+        0.04475789601636881
+      ],
+      "forward_rates": {
+        "survival": 0.4185336538461538,
+        "expansion": 0.1557496927488734,
+        "port_formation": 0.09211590296495956,
+        "forest_reclamation": 0.03969192149703312,
+        "ruin": 0.0307932692307692
+      },
+      "per_terrain_kl": {
+        "Ocean": {
+          "weighted_kl": 0.0,
+          "cell_count": 1016,
+          "share_of_loss": 0.0
+        },
+        "Plains": {
+          "weighted_kl": 0.03862290879291616,
+          "cell_count": 4882,
+          "share_of_loss": 0.6072800805317009
+        },
+        "Forest": {
+          "weighted_kl": 0.0532431467498796,
+          "cell_count": 1723,
+          "share_of_loss": 0.3372151799736155
+        },
+        "Settlement": {
+          "weighted_kl": 0.04585476304185983,
+          "cell_count": 201,
+          "share_of_loss": 0.05383531327870633
+        },
+        "Mountain": {
+          "weighted_kl": 0.0,
+          "cell_count": 171,
+          "share_of_loss": 0.0
+        },
+        "Port": {
+          "weighted_kl": 0.033552469347359344,
+          "cell_count": 7,
+          "share_of_loss": 0.0016694262159772828
+        }
+      },
+      "worst_cells": [
+        {
+          "r": 23,
+          "c": 1,
+          "kl": 0.2803547632859932,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 2, 0, True, True)",
+          "gt_top": "Forest=1.000",
+          "pred_top": "Forest=0.756"
+        },
+        {
+          "r": 36,
+          "c": 11,
+          "kl": 0.23207878621255015,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, True, 1, True)",
+          "gt_top": "Empty=0.570",
+          "pred_top": "Empty=0.655"
+        },
+        {
+          "r": 11,
+          "c": 4,
+          "kl": 0.22402137416639978,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, False, 1, False)",
+          "gt_top": "Settlement=0.560",
+          "pred_top": "Empty=0.690"
+        },
+        {
+          "r": 35,
+          "c": 12,
+          "kl": 0.21804114841304192,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, True, 0, True)",
+          "gt_top": "Empty=0.530",
+          "pred_top": "Empty=0.665"
+        },
+        {
+          "r": 12,
+          "c": 2,
+          "kl": 0.2161477559582166,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 1, 0, False, False)",
+          "gt_top": "Settlement=0.525",
+          "pred_top": "Forest=0.631"
+        },
+        {
+          "r": 37,
+          "c": 10,
+          "kl": 0.21512687080703996,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, True, False)",
+          "gt_top": "Forest=0.635",
+          "pred_top": "Forest=0.540"
+        },
+        {
+          "r": 12,
+          "c": 4,
+          "kl": 0.19716815230784682,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 1, False, 1, False)",
+          "gt_top": "Empty=0.490",
+          "pred_top": "Empty=0.735"
+        },
+        {
+          "r": 31,
+          "c": 24,
+          "kl": 0.19334399123068063,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, False, False)",
+          "gt_top": "Forest=0.790",
+          "pred_top": "Forest=0.560"
+        },
+        {
+          "r": 37,
+          "c": 15,
+          "kl": 0.18874004638987177,
+          "seed": 0,
+          "init_code": 4,
+          "bucket_key": "(4, 0, 1, True, False)",
+          "gt_top": "Forest=0.575",
+          "pred_top": "Forest=0.540"
+        },
+        {
+          "r": 11,
+          "c": 3,
+          "kl": 0.18740895650985265,
+          "seed": 0,
+          "init_code": 11,
+          "bucket_key": "(11, 0, False, 2, False)",
+          "gt_top": "Settlement=0.545",
+          "pred_top": "Empty=0.671"
+        }
+      ],
+      "model_variants": {
+        "5seed-Spatial": 0.042978700141152494,
+        "5seed-Sp+Forward": 0.04275273972310152
+      }
+    }
+  ],
+  "regression": null
+}

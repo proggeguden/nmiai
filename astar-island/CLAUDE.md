@@ -89,10 +89,12 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 
 **Key spatial features (implemented)**:
 - Manhattan distance to nearest settlement: 3-level bucket (≤2, 3-4, 5+) with continuous interpolation
-- Binary forest adjacency for settlements, coastal-only for ports (~20 buckets, down from ~30)
+- Settlement cluster density: binary `is_clustered` for Settlement and Plains bucket keys
+- Binary forest adjacency for settlements, coastal-only for ports (~25-28 buckets)
 - Coastal adjacency for plains and settlements
 - Adjacent forest for plains, empty cells
-- Adjacent settlement for forest, ruin cells
+- 3-level adjacent settlement for forest (0/1/2+), interior flag (adj_forest≥4)
+- Adjacent settlement for ruin cells
 - BFS-precomputed distances for efficiency
 - Bayesian smoothing towards global prior (K=5)
 
@@ -100,20 +102,40 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 - Port probability boost: coastal cells near settlements (d≤3) get minimum 5%/3% Port mass
 - Winter severity calibration: estimate settlement survival rate from observations, scale predictions
 - Continuous distance interpolation: blend between adjacent distance brackets based on raw distance
+- Expansion modulation (Step 1.75): scale Settlement+Port predictions for d≤8 cells, wider clamp [0.3, 3.5]
+- Forest entropy injection (Step 1.85): shrink over-confident Forest predictions when observed retention < 0.85
+- Distance-based temperature scaling (Step 1.8): T=1.10 near settlements (spread), T=0.92 far (sharpen)
 
 **Adaptive smoothing**: Per-cell blending uses terrain-dependent k values:
 - Settlements/ports k=8 (high variance → trust model more)
 - Plains/forest/empty k=3 (predictable → trust observations more)
 
 **Backtest performance** (weighted KL, lower is better):
-- Rounds 1–7 avg: ~0.066 (5-seed spatial model)
-- Best: 0.038 (round 4), Worst: 0.147 (round 7, harsh winter)
-- Rounds 1–6 avg: ~0.058
+- Rounds 1–8 avg: ~0.0457 (5-seed spatial model + temperature scaling)
+- Best: 0.022 (round 8), Worst: 0.108 (round 7, harsh winter)
+- Rounds 1–6 avg: ~0.039
+
+**Settlement cluster density** (Phase 4f):
+- Binary `is_clustered` (≥2 settlements within Manhattan d≤5) added to Settlement and Plains bucket keys
+- Helps most on harsh winter rounds (R7: 0.147→0.142)
+
+**Settlement stats extraction** (Phase 4g):
+- Parses food/population/wealth from simulate query responses
+- Modulates winter calibration scale based on avg food (±20%)
+- Schema discovery pending (rate-limited), wired but no-op until confirmed
+
+**Forward model** (Phase 4h):
+- Rate estimation functions implemented (expansion, port_formation, forest_reclamation, ruin)
+- Physics-based forward probabilities computed but NOT applied in production
+- Backtesting showed consistent regression — bucket model is more accurate
+- Code kept for potential future use with better rate formulas
 
 **Known issues**:
-- Plains cells are largest error source (~55% of KL loss)
-- Settlement stats from query responses are completely unused
-- No settlement cluster features yet
+- Plains cells are largest error source (~60% of KL loss)
+- R7 is 2.5x worse than any other round (KL 0.108) despite similar forward rates to R1
+- Within-bucket variance is the dominant remaining error source
+- Forward model doesn't improve on data-driven bucket model
+- Post-model adjustments have diminishing returns — need better features for next step change
 
 See `PLAN.md` for error analysis, improvement roadmap, and round-by-round changelog.
 
@@ -138,12 +160,15 @@ See `PLAN.md` for error analysis, improvement roadmap, and round-by-round change
 - Cloud Run (GCP) for deployment
 
 ## Key Files
-| File             | Purpose                                    |
-|------------------|--------------------------------------------|
-| `main.py`        | FastAPI app with /solve endpoint           |
-| `api_client.py`  | API client for astar-island endpoints      |
-| `predictor.py`   | Prediction logic (observations → tensor)   |
-| `test_local.py`  | Local testing against real API             |
+| File                          | Purpose                                         |
+|-------------------------------|--------------------------------------------------|
+| `main.py`                     | FastAPI app with /solve endpoint                |
+| `api_client.py`               | API client for astar-island endpoints           |
+| `predictor.py`                | Prediction logic (observations → tensor)        |
+| `test_local.py`               | Local testing against real API                  |
+| `test_predictor_unit.py`      | 39 unit tests, synthetic data, no network (<1s) |
+| `test_predictor_integration.py` | 27 integration tests, synthetic data, no network (<1s) |
+| `test_backtest.py`            | Enhanced backtest: JSON output, per-terrain KL, regression detection |
 
 ## Running Locally
 ```bash
@@ -156,9 +181,88 @@ python3 test_local.py --my-rounds        # check scores
 python3 -m uvicorn main:app --port 8080  # run server
 ```
 
+## Testing
+
+### Offline tests (no API needed, < 1s total)
+```bash
+pytest test_predictor_unit.py test_predictor_integration.py -v
+```
+- Unit tests cover every public function in predictor.py with synthetic grids
+- Integration tests verify end-to-end pipeline properties (sum-to-1, floor, shape, ordering)
+- Safe to run on every code change — deterministic and fast
+
+### Backtest with regression detection (requires API, ~30s)
+```bash
+python3 test_backtest.py --output results.json                      # generate baseline
+python3 test_backtest.py --output results.json --baseline baseline.json  # compare
+```
+- Outputs machine-readable JSON with per-round, per-terrain, and per-cell diagnostics
+- `--baseline baseline.json` compares against saved results, fails (exit 1) on regression
+- `--threshold 0.10` controls per-round regression sensitivity (default 10% relative)
+- Exit codes: 0 = pass, 1 = regression, 2 = error
+
+### Overnight self-improvement loop sequence
+```bash
+# 1. Make model change
+# 2. Fast gate (< 1s):
+pytest test_predictor_unit.py test_predictor_integration.py -x --tb=short
+# 3. Backtest gate (~30s):
+python3 test_backtest.py --output results.json --baseline baseline.json --threshold 0.10
+# 4. If improved: cp results.json baseline.json
+# 5. If active round: python3 test_local.py --submit
+```
+Key: step 2 catches broken logic instantly; step 3 catches regressions against real GT.
+The JSON output includes `per_terrain_kl` (which terrain types improved/regressed),
+`worst_cells` (top 10 worst-predicted cells with bucket keys), and `model_variants`
+(comparison of spatial vs spatial+forward). Parse these to guide the next hypothesis.
+
 ## Scoring
 - Entropy-weighted KL divergence
 - Only dynamic cells (those that change between sim runs) count
 - Higher entropy cells count more
 - Score is normalized: 1.0 = perfect, 0.0 = worst
 - Critical: probability floor of 0.01, or KL divergence → infinity
+
+## Weight System & Leaderboard
+```
+round_weight = 1.05 ^ round_number
+leaderboard_score = max(round_score × round_weight) across all rounds
+```
+
+| Round | Weight | If score=82 | If score=85 | If score=90 |
+|-------|--------|-------------|-------------|-------------|
+| 8     | 1.478  | 121.2       | 125.6       | 133.0       |
+| 10    | 1.629  | 133.6       | 138.4       | 146.6       |
+| 12    | 1.796  | 147.3       | 152.6       | 161.6       |
+| 13    | 1.886  | 154.7       | 160.3       | 169.7       |
+
+**Key insight**: Later rounds are worth exponentially more. Even maintaining the same raw score on a later round dramatically improves leaderboard position.
+
+## Overnight Autonomous Workflow
+
+Three custom skills for autonomous overnight operation:
+
+- `/astar-submit` — Check for active round, submit if not already submitted
+- `/astar-analyze` — Analyze scores, backtest, identify improvement opportunities
+- `/astar-improve` — Make one targeted predictor.py change, test, commit if improved
+
+### Loop setup
+```bash
+# In separate terminal: prevent Mac sleep
+caffeinate -dims
+
+# Auto-submit every 10 minutes
+/loop 10m /astar-submit
+
+# Between rounds (~2.5h gap): iterate on model
+/astar-analyze
+/astar-improve  # repeat multiple times
+```
+
+### Self-improvement cycle (~2 min each)
+1. Read baseline.json → identify dominant error pattern
+2. Make ONE change to predictor.py
+3. Fast gate: `pytest test_predictor_unit.py test_predictor_integration.py -x` (<1s)
+4. Backtest gate: `python3 test_backtest.py --output results_improve.json --baseline baseline.json` (~30s)
+5. If improved: `cp results_improve.json baseline.json && git commit`
+6. If regressed: `git checkout -- predictor.py` and try different approach

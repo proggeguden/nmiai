@@ -32,7 +32,7 @@ TERRAIN_TO_CLASS = {
 STATIC_CODES = {10, 5}  # Ocean → always Empty, Mountain → always Mountain
 
 # Probability floor to avoid KL divergence → infinity
-PROB_FLOOR = 0.01
+PROB_FLOOR = 0.003
 
 # Adaptive smoothing: k controls how much we trust the bucket model vs per-cell observations
 # High k → trust bucket model more; Low k → trust empirical observations more
@@ -97,7 +97,33 @@ def _precompute_settlement_distances(initial_grid):
     return dist
 
 
-def compute_bucket_key(initial_grid, r, c, settlement_dists=None):
+def _precompute_cluster_density(initial_grid):
+    """Count settlements within Manhattan distance 5 of each cell.
+
+    Returns H×W list of lists: True if ≥2 settlements within d≤5, else False.
+    """
+    H = len(initial_grid)
+    W = len(initial_grid[0])
+    settlements = []
+    for r in range(H):
+        for c in range(W):
+            if initial_grid[r][c] in (1, 2):
+                settlements.append((r, c))
+
+    cluster = [[False] * W for _ in range(H)]
+    for r in range(H):
+        for c in range(W):
+            count = 0
+            for sr, sc in settlements:
+                if abs(r - sr) + abs(c - sc) <= 5:
+                    count += 1
+                    if count >= 2:
+                        cluster[r][c] = True
+                        break
+    return cluster
+
+
+def compute_bucket_key(initial_grid, r, c, settlement_dists=None, cluster_density=None):
     """Compute spatial bucket key for a cell based on its neighbors.
 
     Features are computed from the initial grid (fully visible, no queries needed).
@@ -151,16 +177,21 @@ def compute_bucket_key(initial_grid, r, c, settlement_dists=None):
     has_adj_forest = adj_forest > 0
     has_adj_settlement = adj_settlement > 0
 
-    if code == 1:    # Settlement — binary forest (was graduated adj_forest_level)
-        return (1, has_adj_forest, has_adj_settlement, is_coastal)
+    is_clustered = cluster_density[r][c] if cluster_density else False
+
+    if code == 1:    # Settlement — binary forest + cluster density
+        return (1, has_adj_forest, has_adj_settlement, is_coastal, is_clustered)
     elif code == 2:  # Port — simplified to coastal only
         return (2, is_coastal)
-    elif code == 11: # Plains
-        return (11, dist_bucket, is_coastal, has_adj_forest)
+    elif code == 11: # Plains — 3-level forest adjacency + cluster density
+        forest_level = 0 if adj_forest == 0 else (1 if adj_forest <= 2 else 2)
+        return (11, dist_bucket, is_coastal, forest_level, is_clustered)
     elif code == 0:  # Empty
         return (0, dist_bucket, has_adj_forest)
-    elif code == 4:  # Forest
-        return (4, dist_bucket, has_adj_settlement)
+    elif code == 4:  # Forest — 3-level settlement adjacency + interior flag
+        adj_sett_level = 0 if adj_settlement == 0 else (1 if adj_settlement == 1 else 2)
+        is_interior = adj_forest >= 4  # surrounded by 4+ forest neighbors = stable interior
+        return (4, dist_bucket, adj_sett_level, is_coastal, is_interior)
     elif code == 3:  # Ruin — dropped has_adj_forest
         return (3, dist_bucket, has_adj_settlement)
     else:
@@ -170,21 +201,26 @@ def compute_bucket_key(initial_grid, r, c, settlement_dists=None):
 def compute_feature_map(initial_grid):
     """Compute spatial bucket keys for all cells in the grid.
 
-    Returns (fmap, settlement_dists):
+    Returns (fmap, settlement_dists, cluster_density):
         fmap: list of lists of bucket key tuples (H×W)
         settlement_dists: H×W grid of Manhattan distances to nearest settlement
+        cluster_density: H×W grid of booleans (True if ≥2 settlements within d≤5)
     """
     H = len(initial_grid)
     W = len(initial_grid[0])
     settlement_dists = _precompute_settlement_distances(initial_grid)
-    fmap = [[compute_bucket_key(initial_grid, r, c, settlement_dists) for c in range(W)]
+    cluster_density = _precompute_cluster_density(initial_grid)
+    fmap = [[compute_bucket_key(initial_grid, r, c, settlement_dists, cluster_density) for c in range(W)]
             for r in range(H)]
-    return fmap, settlement_dists
+    return fmap, settlement_dists, cluster_density
 
 
 # Distance bracket midpoints for interpolation
 # Bucket 0=[0,2] → mid 1.0, bucket 1=[3,4] → mid 3.5, bucket 2=[5+] → mid 7.0
 DIST_MIDPOINTS = [1.0, 3.5, 7.0]
+
+# Forest level midpoints: level 0=0 neighbors, level 1=1-2 neighbors (mid 1.5), level 2=3+ (mid 4.0)
+FOREST_LEVEL_MIDPOINTS = [0.0, 1.5, 4.0]
 
 
 def _interpolate_dist(d, key, dist_idx, spatial_model):
@@ -213,6 +249,33 @@ def _interpolate_dist(d, key, dist_idx, spatial_model):
     t = abs(d - current_mid) / abs(neighbor_mid - current_mid)
     t = min(t, 1.0)
     return (1 - t) * spatial_model[key] + t * spatial_model[neighbor_key]
+
+
+def _interpolate_forest(adj_forest_count, probs, key, forest_idx, spatial_model):
+    """Interpolate between adjacent forest level brackets for Plains cells.
+
+    Similar to _interpolate_dist but operates on the forest_level dimension.
+    `probs` is the base probability vector (possibly already distance-interpolated).
+    """
+    current_level = key[forest_idx]
+    current_mid = FOREST_LEVEL_MIDPOINTS[current_level]
+
+    if adj_forest_count < current_mid and current_level > 0:
+        neighbor_level = current_level - 1
+    elif adj_forest_count > current_mid and current_level < 2:
+        neighbor_level = current_level + 1
+    else:
+        return probs  # at edge, no interpolation
+
+    neighbor_key = key[:forest_idx] + (neighbor_level,) + key[forest_idx + 1:]
+
+    if neighbor_key not in spatial_model:
+        return probs
+
+    neighbor_mid = FOREST_LEVEL_MIDPOINTS[neighbor_level]
+    t = abs(adj_forest_count - current_mid) / abs(neighbor_mid - current_mid)
+    t = min(t, 0.5)  # cap blending at 50% to avoid over-smoothing
+    return (1 - t) * probs + t * spatial_model[neighbor_key]
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +342,7 @@ def learn_spatial_transition_model(initial_grids, observations):
     for obs in observations:
         seed_idx = obs.get("seed_index", 0)
         if seed_idx not in feature_maps and seed_idx < len(initial_grids):
-            feature_maps[seed_idx], _ = compute_feature_map(initial_grids[seed_idx])
+            feature_maps[seed_idx], _, _ = compute_feature_map(initial_grids[seed_idx])
 
     for obs in observations:
         seed_idx = obs.get("seed_index", 0)
@@ -327,8 +390,16 @@ def learn_spatial_transition_model(initial_grids, observations):
             global_model[code] = probs
 
     # Normalize spatial model with Bayesian smoothing towards global prior
-    # Instead of hard threshold, blend bucket evidence with global model
-    BUCKET_SMOOTH_K = 5.0  # pseudo-count for global prior
+    # Per-terrain K: more data → less smoothing, sparse terrain → more smoothing
+    BUCKET_SMOOTH_K_PER_CODE = {
+        11: 3.0,   # Plains: abundant data
+        4:  4.0,   # Forest
+        0:  4.0,   # Empty
+        1:  8.0,   # Settlement: sparse
+        2: 10.0,   # Port: very sparse
+        3:  6.0,   # Ruin
+    }
+    BUCKET_SMOOTH_K_DEFAULT = 5.0
     spatial_model = {}
     for bucket, counts in spatial_counts.items():
         n = spatial_obs[bucket]
@@ -341,12 +412,13 @@ def learn_spatial_transition_model(initial_grids, observations):
             terrain_code = bucket[0]
             if terrain_code in global_model:
                 global_prior = global_model[terrain_code]
-                weight = n / (n + BUCKET_SMOOTH_K)
+                k = BUCKET_SMOOTH_K_PER_CODE.get(terrain_code, BUCKET_SMOOTH_K_DEFAULT)
+                weight = n / (n + k)
                 spatial_model[bucket] = weight * bucket_prob + (1 - weight) * global_prior
             else:
                 spatial_model[bucket] = bucket_prob
 
-    return global_model, spatial_model
+    return global_model, spatial_model, spatial_obs
 
 
 # ---------------------------------------------------------------------------
@@ -383,19 +455,431 @@ def estimate_survival_rate(initial_grids, observations):
     return alive_count / observed_count
 
 
+def estimate_expansion_rate(initial_grids, observations):
+    """Estimate rate of new settlement formation from observations.
+
+    Counts cells that were Empty/Plains/Forest initially but became Settlement.
+    Returns new_settlements / initial_settlement_count, or None if insufficient data.
+    """
+    new_settlements = 0
+    initial_settlement_count = 0
+    observed_non_settlement = 0
+
+    for obs in observations:
+        seed_idx = obs.get("seed_index", 0)
+        if seed_idx >= len(initial_grids):
+            continue
+        init_grid = initial_grids[seed_idx]
+        vp = obs["viewport"]
+        grid = obs["grid"]
+        vp_x, vp_y = vp["x"], vp["y"]
+        for dr in range(len(grid)):
+            for dc in range(len(grid[0]) if grid else 0):
+                r, c = vp_y + dr, vp_x + dc
+                if 0 <= r < len(init_grid) and 0 <= c < len(init_grid[0]):
+                    init_code = init_grid[r][c]
+                    final_cls = terrain_code_to_class(grid[dr][dc])
+                    if init_code in (0, 11, 4):  # was empty/plains/forest
+                        observed_non_settlement += 1
+                        if final_cls == 1:  # became settlement
+                            new_settlements += 1
+
+    # Count initial settlements (once per seed observed)
+    seen_seeds = set()
+    for obs in observations:
+        seed_idx = obs.get("seed_index", 0)
+        if seed_idx < len(initial_grids) and seed_idx not in seen_seeds:
+            seen_seeds.add(seed_idx)
+            for row in initial_grids[seed_idx]:
+                for code in row:
+                    if code in (1, 2):
+                        initial_settlement_count += 1
+
+    if initial_settlement_count < 10 or observed_non_settlement < 30:
+        return None
+    # Rate = new settlements per observation / initial settlements per seed
+    obs_count = len(observations) if observations else 1
+    rate = new_settlements / obs_count
+    # Normalize by initial settlements per seed
+    seeds_observed = max(len(seen_seeds), 1)
+    avg_initial = initial_settlement_count / seeds_observed
+    if avg_initial > 0:
+        rate = rate / avg_initial
+    return max(0.0, min(rate, 0.5))
+
+
+def estimate_port_formation_rate(initial_grids, observations):
+    """Estimate rate at which coastal non-port cells become ports.
+
+    Returns port_formations / coastal_non_port_observed, or None.
+    """
+    port_formed = 0
+    coastal_non_port = 0
+
+    for obs in observations:
+        seed_idx = obs.get("seed_index", 0)
+        if seed_idx >= len(initial_grids):
+            continue
+        init_grid = initial_grids[seed_idx]
+        H, W = len(init_grid), len(init_grid[0])
+        vp = obs["viewport"]
+        grid = obs["grid"]
+        vp_x, vp_y = vp["x"], vp["y"]
+        for dr in range(len(grid)):
+            for dc in range(len(grid[0]) if grid else 0):
+                r, c = vp_y + dr, vp_x + dc
+                if 0 <= r < H and 0 <= c < W:
+                    init_code = init_grid[r][c]
+                    if init_code == 2:  # already a port
+                        continue
+                    # Check if coastal
+                    is_coastal = False
+                    for nr, nc in ((r-1,c),(r+1,c),(r,c-1),(r,c+1)):
+                        if 0 <= nr < H and 0 <= nc < W and init_grid[nr][nc] == 10:
+                            is_coastal = True
+                            break
+                    if is_coastal and init_code not in STATIC_CODES:
+                        coastal_non_port += 1
+                        if terrain_code_to_class(grid[dr][dc]) == 2:
+                            port_formed += 1
+
+    if coastal_non_port < 30:
+        return None
+    return max(0.0, min(port_formed / coastal_non_port, 0.15))
+
+
+def estimate_forest_reclamation_rate(initial_grids, observations):
+    """Estimate rate at which non-forest cells near forest become forest.
+
+    Returns forest_reclaimed / non_forest_near_forest_observed, or None.
+    """
+    reclaimed = 0
+    eligible = 0
+
+    for obs in observations:
+        seed_idx = obs.get("seed_index", 0)
+        if seed_idx >= len(initial_grids):
+            continue
+        init_grid = initial_grids[seed_idx]
+        H, W = len(init_grid), len(init_grid[0])
+        vp = obs["viewport"]
+        grid = obs["grid"]
+        vp_x, vp_y = vp["x"], vp["y"]
+        for dr in range(len(grid)):
+            for dc in range(len(grid[0]) if grid else 0):
+                r, c = vp_y + dr, vp_x + dc
+                if 0 <= r < H and 0 <= c < W:
+                    init_code = init_grid[r][c]
+                    if init_code in STATIC_CODES or init_code == 4:
+                        continue
+                    # Check if near forest
+                    adj_forest = 0
+                    for ar in range(max(0, r-1), min(H, r+2)):
+                        for ac in range(max(0, c-1), min(W, c+2)):
+                            if (ar, ac) != (r, c) and init_grid[ar][ac] == 4:
+                                adj_forest += 1
+                    if adj_forest > 0:
+                        eligible += 1
+                        if terrain_code_to_class(grid[dr][dc]) == 4:
+                            reclaimed += 1
+
+    if eligible < 30:
+        return None
+    return max(0.0, min(reclaimed / eligible, 0.40))
+
+
+def estimate_ruin_rate(initial_grids, observations):
+    """Estimate rate at which initial settlements become ruins.
+
+    Returns ruined / initial_settlements_observed, or None.
+    """
+    ruined = 0
+    observed = 0
+
+    for obs in observations:
+        seed_idx = obs.get("seed_index", 0)
+        if seed_idx >= len(initial_grids):
+            continue
+        init_grid = initial_grids[seed_idx]
+        vp = obs["viewport"]
+        grid = obs["grid"]
+        vp_x, vp_y = vp["x"], vp["y"]
+        for dr in range(len(grid)):
+            for dc in range(len(grid[0]) if grid else 0):
+                r, c = vp_y + dr, vp_x + dc
+                if 0 <= r < len(init_grid) and 0 <= c < len(init_grid[0]):
+                    if init_grid[r][c] in (1, 2):
+                        observed += 1
+                        if terrain_code_to_class(grid[dr][dc]) == 3:
+                            ruined += 1
+
+    if observed < 30:
+        return None
+    return max(0.0, min(ruined / observed, 0.95))
+
+
+def estimate_all_rates(initial_grids, observations):
+    """Estimate all forward model rates from observations.
+
+    Returns dict with all rates, or None values for insufficient data.
+    """
+    return {
+        "survival": estimate_survival_rate(initial_grids, observations),
+        "expansion": estimate_expansion_rate(initial_grids, observations),
+        "port_formation": estimate_port_formation_rate(initial_grids, observations),
+        "forest_reclamation": estimate_forest_reclamation_rate(initial_grids, observations),
+        "ruin": estimate_ruin_rate(initial_grids, observations),
+    }
+
+
+def extract_settlement_stats(observations):
+    """Extract settlement statistics from query responses.
+
+    Parses the 'settlements' list that comes back from simulate queries.
+    Returns dict with avg_food, median_food, etc. or None if no data.
+    """
+    all_food = []
+    all_population = []
+    all_wealth = []
+    settlement_positions = set()
+
+    for obs in observations:
+        settlements = obs.get("settlements", [])
+        for s in settlements:
+            food = s.get("food")
+            pop = s.get("population")
+            wealth = s.get("wealth")
+            pos = s.get("position")
+            if food is not None:
+                all_food.append(food)
+            if pop is not None:
+                all_population.append(pop)
+            if wealth is not None:
+                all_wealth.append(wealth)
+            if pos is not None:
+                # Track unique positions (x,y) to detect expansion
+                if isinstance(pos, dict):
+                    settlement_positions.add((pos.get("x", 0), pos.get("y", 0)))
+                elif isinstance(pos, (list, tuple)) and len(pos) >= 2:
+                    settlement_positions.add((pos[0], pos[1]))
+
+    if len(all_food) < 10:
+        return None
+
+    all_food.sort()
+    all_population.sort()
+    stats = {
+        "avg_food": sum(all_food) / len(all_food),
+        "median_food": all_food[len(all_food) // 2],
+        "avg_population": sum(all_population) / len(all_population) if all_population else 0,
+        "avg_wealth": sum(all_wealth) / len(all_wealth) if all_wealth else 0,
+        "unique_positions": len(settlement_positions),
+        "total_observations": len(all_food),
+    }
+    return stats
+
+
+import math
+
+
+def _compute_forward_probs(initial_grid, r, c, settlement_dists, rates):
+    """Compute forward model probability vector for a single cell.
+
+    Uses physics-inspired rates + spatial context to predict terrain outcome.
+    Returns np.array(NUM_CLASSES) or None if forward model doesn't apply.
+    """
+    code = initial_grid[r][c]
+    if code in STATIC_CODES:
+        return None
+
+    H = len(initial_grid)
+    W = len(initial_grid[0])
+    d = settlement_dists[r][c] if settlement_dists else 999
+
+    # Count adjacencies
+    adj_forest = 0
+    adj_settlement = 0
+    adj_ocean = 0
+    for dr_ in range(-1, 2):
+        for dc_ in range(-1, 2):
+            if dr_ == 0 and dc_ == 0:
+                continue
+            nr, nc = r + dr_, c + dc_
+            if 0 <= nr < H and 0 <= nc < W:
+                n = initial_grid[nr][nc]
+                if n == 4:
+                    adj_forest += 1
+                elif n in (1, 2):
+                    adj_settlement += 1
+                elif n == 10:
+                    adj_ocean += 1
+
+    is_coastal = adj_ocean > 0
+    probs = np.zeros(NUM_CLASSES, dtype=np.float64)
+
+    expansion_rate = rates.get("expansion") or 0.1
+    port_rate = rates.get("port_formation") or 0.02
+    reclamation_rate = rates.get("forest_reclamation") or 0.15
+    survival_rate = rates.get("survival") or 0.5
+    ruin_rate = rates.get("ruin") or 0.3
+
+    if code in (1, 2):
+        # Initial settlement/port cell
+        p_survive = survival_rate * (1.0 + 0.1 * min(adj_forest, 3) + 0.05 * min(adj_settlement, 2))
+        p_survive = min(p_survive, 0.99)
+        p_ruin = ruin_rate * max(0.3, 1.0 - 0.15 * adj_forest - 0.1 * adj_settlement)
+        p_ruin = min(p_ruin, 0.95)
+
+        # Normalize survival vs ruin
+        total_sr = p_survive + p_ruin
+        if total_sr > 0:
+            p_survive = p_survive / total_sr
+            p_ruin = p_ruin / total_sr
+
+        if code == 2:  # Port
+            probs[2] = p_survive * 0.85  # stays port
+            probs[1] = p_survive * 0.15  # becomes settlement
+        else:  # Settlement
+            probs[1] = p_survive * (0.7 if not is_coastal else 0.5)
+            probs[2] = p_survive * (0.3 if is_coastal else 0.05) if is_coastal else p_survive * 0.02
+            probs[1] += p_survive - probs[1] - probs[2]  # remainder
+            probs[1] = max(probs[1], 0)
+
+        probs[3] = p_ruin  # ruin
+        probs[0] = max(0.01, 1.0 - probs.sum())  # empty/plains
+        probs[4] = 0.01  # small forest chance
+
+    elif code in (0, 11):
+        # Empty or Plains — may get settled, stay empty, or become forest
+        p_expand = expansion_rate * math.exp(-0.5 * d) * (1.0 + 0.3 * min(adj_forest, 3))
+        p_expand = min(p_expand, 0.4)
+
+        p_port = 0.0
+        if is_coastal:
+            prox = 1.0 if d <= 2 else (0.5 if d <= 4 else 0.0)
+            p_port = port_rate * prox
+            p_port = min(p_port, 0.15)
+
+        p_forest = 0.0
+        if adj_forest > 0:
+            p_forest = reclamation_rate * min(adj_forest / 3.0, 1.0) * (1.0 + 0.2 * max(0, d - 3))
+            p_forest = min(p_forest, 0.5)
+
+        probs[1] = p_expand
+        probs[2] = p_port
+        probs[4] = p_forest
+        probs[3] = 0.01  # tiny ruin chance
+        probs[0] = max(0.01, 1.0 - probs.sum())
+
+    elif code == 4:
+        # Forest — may be cleared for settlement or stay
+        p_cleared = 0.0
+        if d <= 4:
+            p_cleared = expansion_rate * 0.3 * math.exp(-0.3 * d)
+            p_cleared = min(p_cleared, 0.2)
+
+        probs[4] = max(0.5, 1.0 - p_cleared - 0.02)  # forest stays
+        probs[1] = p_cleared  # becomes settlement
+        probs[0] = max(0.01, 1.0 - probs[4] - probs[1] - 0.01)
+        probs[3] = 0.005
+        probs[2] = 0.005
+
+    elif code == 3:
+        # Ruin — may be reclaimed, become forest, or stay
+        p_reclaim = 0.0
+        if d <= 4:
+            p_reclaim = 0.15 * math.exp(-0.3 * d) * (1.0 + 0.2 * adj_settlement)
+            p_reclaim = min(p_reclaim, 0.3)
+        p_forest = reclamation_rate * min(adj_forest / 3.0, 1.0) * 0.5
+        p_forest = min(p_forest, 0.3)
+
+        probs[3] = max(0.1, 1.0 - p_reclaim - p_forest - 0.05)  # stays ruin
+        probs[1] = p_reclaim
+        probs[4] = p_forest
+        probs[0] = max(0.01, 1.0 - probs.sum())
+
+    else:
+        return None
+
+    # Ensure valid distribution
+    probs = np.maximum(probs, 0.001)
+    probs /= probs.sum()
+    return probs
+
+
+def _apply_forward_calibration(predictions, initial_grid, settlement_dists, rates):
+    """Apply forward model corrections to predictions (step 1.7).
+
+    Blends forward model predictions with bucket model using context-dependent weights.
+    Modifies predictions in-place.
+    """
+    if rates is None:
+        return
+
+    # Check minimum data quality — need at least survival and one other rate
+    available = sum(1 for v in rates.values() if v is not None)
+    if available < 2:
+        return
+
+    # Consistency check: if survival + ruin > 1.1, rates are unreliable
+    sr = rates.get("survival") or 0.5
+    rr = rates.get("ruin") or 0.3
+    if sr + rr > 1.1:
+        # Reduce all weights dramatically
+        weight_scale = 0.15
+    else:
+        weight_scale = 1.0
+
+    H = len(initial_grid)
+    W = len(initial_grid[0])
+
+    for r in range(H):
+        for c in range(W):
+            code = initial_grid[r][c]
+            if code in STATIC_CODES:
+                continue
+
+            forward = _compute_forward_probs(initial_grid, r, c, settlement_dists, rates)
+            if forward is None:
+                continue
+
+            d = settlement_dists[r][c] if settlement_dists else 999
+
+            # Context-dependent blending weight (conservative — bucket model is primary)
+            if code in (0, 11) and d <= 4:  # Plains/empty near settlements
+                w = 0.10
+            elif code == 4 and d <= 3:  # Forest near settlements
+                w = 0.08
+            elif code in (1, 2):  # Settlement/port
+                w = 0.08
+            elif d > 6:  # Far from settlements
+                w = 0.03
+            else:
+                w = 0.05
+
+            w *= weight_scale
+
+            predictions[r, c] = (1 - w) * predictions[r, c] + w * forward
+            predictions[r, c] = np.maximum(predictions[r, c], 0)
+            predictions[r, c] /= predictions[r, c].sum()
+
+
 # ---------------------------------------------------------------------------
 # Prediction building
 # ---------------------------------------------------------------------------
 
 def build_prediction(height, width, initial_grid, observations,
                      transition_model=None, spatial_model=None,
-                     survival_rate=None):
+                     survival_rate=None, forward_rates=None,
+                     settlement_stats=None, spatial_obs=None,
+                     expansion_rate=None):
     """Build a H×W×6 probability tensor.
 
     Uses spatial_model (per-bucket) when available, falls back to
     transition_model (per-code), then to initial-grid class.
     Per-cell observation counts are blended in for directly observed cells.
     Distance interpolation smooths bucket boundaries for distance-dependent codes.
+    Forward model (step 1.7) applies rate-based corrections if forward_rates provided.
     """
     # Codes that use distance as a bucket feature (dist_idx=1 in the key tuple)
     DIST_DEPENDENT_CODES = {0, 3, 4, 11}
@@ -406,7 +890,7 @@ def build_prediction(height, width, initial_grid, observations,
     fmap = None
     settlement_dists = None
     if spatial_model:
-        fmap, settlement_dists = compute_feature_map(initial_grid)
+        fmap, settlement_dists, _ = compute_feature_map(initial_grid)
 
     # Step 1: Apply model to all cells (with distance interpolation)
     for r in range(height):
@@ -427,6 +911,14 @@ def build_prediction(height, width, initial_grid, observations,
                         predictions[r, c] = spatial_model[key]
                 else:
                     predictions[r, c] = spatial_model[key]
+                # Forest-level interpolation for Plains cells (forest_level is at index 3)
+                if code == 11:
+                    adj_f = sum(1 for dr in (-1, 0, 1) for dc in (-1, 0, 1)
+                                if (dr, dc) != (0, 0)
+                                and 0 <= r + dr < height and 0 <= c + dc < width
+                                and initial_grid[r + dr][c + dc] == 4)
+                    predictions[r, c] = _interpolate_forest(
+                        adj_f, predictions[r, c], key, 3, spatial_model)
             elif transition_model and code in transition_model:
                 predictions[r, c] = transition_model[code]
             else:
@@ -450,17 +942,23 @@ def build_prediction(height, width, initial_grid, observations,
                     if predictions[r, c, 2] < min_port:
                         deficit = min_port - predictions[r, c, 2]
                         predictions[r, c, 2] = min_port
-                        # Remove deficit from the dominant non-Port class
-                        dominant = max(
-                            (i for i in range(NUM_CLASSES) if i != 2),
-                            key=lambda i: predictions[r, c, i]
-                        )
-                        predictions[r, c, dominant] -= deficit
-                        predictions[r, c] = np.maximum(predictions[r, c], 0.001)
+                        # Distribute deficit proportionally across non-port classes
+                        non_port_mass = sum(predictions[r, c, i] for i in range(NUM_CLASSES) if i != 2)
+                        if non_port_mass > 0:
+                            for i in range(NUM_CLASSES):
+                                if i != 2:
+                                    predictions[r, c, i] -= deficit * (predictions[r, c, i] / non_port_mass)
+                        predictions[r, c] = np.maximum(predictions[r, c], 0)
                         predictions[r, c] /= predictions[r, c].sum()
 
-    # Step 1.6: Winter severity calibration
+    # Step 1.6: Winter severity calibration (with optional food modulation)
     if survival_rate is not None:
+        # Modulate scale based on settlement food levels if available
+        food_modifier = 1.0
+        FOOD_BASELINE = 50.0  # conservative default, calibrate from live data
+        if settlement_stats and settlement_stats.get("avg_food") is not None:
+            food_modifier = max(0.8, min(settlement_stats["avg_food"] / FOOD_BASELINE, 1.2))
+
         model_survival = 0
         model_count = 0
         for r in range(height):
@@ -472,6 +970,7 @@ def build_prediction(height, width, initial_grid, observations,
             model_rate = model_survival / model_count
             if model_rate > 0.01:
                 scale = survival_rate / model_rate
+                scale *= food_modifier
                 scale = max(0.3, min(scale, 3.0))  # clamp to avoid wild swings
                 for r in range(height):
                     for c in range(width):
@@ -480,6 +979,128 @@ def build_prediction(height, width, initial_grid, observations,
                             predictions[r, c, 2] *= scale  # Port
                             predictions[r, c] = np.maximum(predictions[r, c], 0.001)
                             predictions[r, c] /= predictions[r, c].sum()
+
+                # Harsh winter: boost Ruin and Forest for settlement/port cells
+                if scale < 0.8:
+                    ruin_boost = (1.0 - scale) * 0.3
+                    for r in range(height):
+                        for c in range(width):
+                            if initial_grid[r][c] in (1, 2):
+                                predictions[r, c, 3] *= (1.0 + ruin_boost)
+                                predictions[r, c, 4] *= (1.0 + ruin_boost * 0.3)
+                                predictions[r, c] = np.maximum(predictions[r, c], 0.001)
+                                predictions[r, c] /= predictions[r, c].sum()
+
+    # Step 1.7: Forward model calibration
+    if forward_rates is not None:
+        # Ensure we have settlement_dists even without spatial model
+        if settlement_dists is None:
+            settlement_dists = _precompute_settlement_distances(initial_grid)
+        _apply_forward_calibration(predictions, initial_grid, settlement_dists, forward_rates)
+
+    # Step 1.75: Expansion rate modulation — scale settlement predictions for nearby cells
+    if expansion_rate is not None:
+        if settlement_dists is None:
+            settlement_dists = _precompute_settlement_distances(initial_grid)
+    if expansion_rate is not None and settlement_dists is not None:
+        # Compute model's implicit expansion rate for Plains/Forest cells near settlements
+        model_exp = 0.0
+        exp_count = 0
+        for r in range(height):
+            for c in range(width):
+                code = initial_grid[r][c]
+                if code in (11, 4) and settlement_dists[r][c] <= 8:
+                    model_exp += predictions[r, c, 1]
+                    exp_count += 1
+        if exp_count > 0:
+            model_avg = model_exp / exp_count
+            if model_avg > 0.005:
+                scale = expansion_rate / model_avg
+                scale = max(0.3, min(scale, 3.5))  # wider clamp for extreme rounds
+                if abs(scale - 1.0) > 0.05:  # only adjust if meaningful difference
+                    for r in range(height):
+                        for c in range(width):
+                            code = initial_grid[r][c]
+                            d = settlement_dists[r][c]
+                            if code in (11, 4) and d <= 8:
+                                # Decay effect for d=5-8
+                                effective_scale = 1.0 + (scale - 1.0) * max(0.0, 1.0 - max(0, d - 4) / 5.0)
+                                predictions[r, c, 1] *= effective_scale
+                                # Also scale Port for coastal cells
+                                is_coastal = any(
+                                    0 <= r + dr < height and 0 <= c + dc < width
+                                    and initial_grid[r + dr][c + dc] == 10
+                                    for dr in (-1, 0, 1) for dc in (-1, 0, 1)
+                                    if (dr, dc) != (0, 0)
+                                )
+                                if is_coastal:
+                                    port_scale = 1.0 + (effective_scale - 1.0) * 0.5
+                                    predictions[r, c, 2] *= port_scale
+                                predictions[r, c] = np.maximum(predictions[r, c], 0.001)
+                                predictions[r, c] /= predictions[r, c].sum()
+
+    # Step 1.85: Forest-specific entropy injection
+    # Forest bucket model over-predicts Forest=0.86-0.91 when GT is 0.73-0.80
+    # Shrink Forest mass and redistribute to other classes using global prior
+    if transition_model and transition_model.get(4) is not None:
+        forest_prior = transition_model[4]
+        forest_retention = forest_prior[4]  # P(Forest→Forest) from observations
+        if settlement_dists is None:
+            settlement_dists = _precompute_settlement_distances(initial_grid)
+        # Only shrink when observed forest retention is clearly low
+        # retention > 0.85 = forest mostly stays, don't interfere
+        if forest_retention < 0.85:
+            clearing_signal = max(0.0, 0.85 - forest_retention)  # 0 to ~0.20
+            base_shrink = min(0.15, clearing_signal * 0.6)
+        else:
+            base_shrink = 0.0  # forest mostly stays, skip
+        for r in range(height):
+            for c in range(width):
+                if initial_grid[r][c] != 4:
+                    continue
+                forest_p = predictions[r, c, 4]
+                if forest_p < 0.60:
+                    continue
+                d = settlement_dists[r][c]
+                if d <= 2:
+                    shrink = base_shrink * 1.5
+                elif d <= 4:
+                    shrink = base_shrink
+                else:
+                    shrink = base_shrink * 0.4
+                deficit = forest_p * shrink
+                predictions[r, c, 4] -= deficit
+                # Redistribute to non-Forest classes using global prior
+                non_forest_prior = forest_prior.copy()
+                non_forest_prior[4] = 0
+                if non_forest_prior.sum() > 0:
+                    non_forest_prior /= non_forest_prior.sum()
+                predictions[r, c] += deficit * non_forest_prior
+                predictions[r, c] = np.maximum(predictions[r, c], 0.001)
+                predictions[r, c] /= predictions[r, c].sum()
+
+    # Step 1.8: Distance-based temperature scaling
+    # Near settlements: outcomes are stochastic (expansion/conflict/winter) → T>1 spreads mass
+    # Far from settlements: outcomes are deterministic (cells stay same) → T<1 sharpens
+    # This replaces the prior-blending approach which had a bias toward the global average
+    if settlement_dists is None:
+        settlement_dists = _precompute_settlement_distances(initial_grid)
+    for r in range(height):
+        for c in range(width):
+            code = initial_grid[r][c]
+            if code in STATIC_CODES:
+                continue
+            d = settlement_dists[r][c]
+            if d <= 2:
+                T = 1.10   # spread: near settlements, high uncertainty
+            elif d <= 4:
+                T = 1.03   # slight spread
+            else:
+                T = 0.92   # sharpen: far from settlements, low uncertainty
+            if abs(T - 1.0) > 0.005:
+                inv_T = 1.0 / T
+                scaled = np.power(np.maximum(predictions[r, c], 1e-10), inv_T)
+                predictions[r, c] = scaled / scaled.sum()
 
     # Step 2: Blend per-cell observations (for directly observed cells)
     if observations:
@@ -509,11 +1130,17 @@ def build_prediction(height, width, initial_grid, observations,
             np.divide(cell_counts, cell_totals, out=cell_probs,
                       where=(cell_totals > 0))
 
-            # Adaptive k per terrain type
+            # Adaptive k per terrain type, scaled by spatial model confidence
             k_grid = np.full((height, width), K_DEFAULT)
             for r in range(height):
                 for c in range(width):
-                    k_grid[r, c] = K_PER_CODE.get(initial_grid[r][c], K_DEFAULT)
+                    base_k = K_PER_CODE.get(initial_grid[r][c], K_DEFAULT)
+                    # Scale k up when spatial model has many observations (trust model more)
+                    if spatial_obs and fmap and fmap[r][c] in spatial_obs:
+                        bucket_n = spatial_obs[fmap[r][c]]
+                        confidence_scale = 1.0 + 0.5 * min(bucket_n / 100.0, 3.0)
+                        base_k *= confidence_scale
+                    k_grid[r, c] = base_k
 
             alpha = cell_obs_count / (cell_obs_count + k_grid)
             alpha = alpha[..., np.newaxis]
@@ -540,6 +1167,26 @@ def apply_floor(predictions, floor=PROB_FLOOR):
         if (predictions >= floor - 1e-9).all():
             break
     return predictions
+
+
+def score_predictions(pred, gt):
+    """Compute entropy-weighted KL divergence.
+
+    Args:
+        pred: H×W×6 numpy array of predicted probabilities
+        gt: H×W×6 numpy array of ground truth probabilities
+
+    Returns:
+        (weighted_kl, dynamic_cell_count) tuple
+    """
+    kl = np.sum(gt * np.log((gt + 1e-10) / (pred + 1e-10)), axis=2)
+    entropy = -np.sum(gt * np.log(gt + 1e-10), axis=2)
+    dynamic = entropy > 0.01
+    if dynamic.any():
+        weighted_kl = (kl[dynamic] * entropy[dynamic]).sum() / entropy[dynamic].sum()
+    else:
+        weighted_kl = 0
+    return weighted_kl, dynamic.sum()
 
 
 def predictions_to_list(predictions):
