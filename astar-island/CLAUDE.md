@@ -80,17 +80,23 @@ position, population, food, wealth, defense, tech level, port status, longship o
 - **Rate limit**: max 5 req/sec
 
 ## Prediction Strategy
-**Current approach**: Observe seed 0 with all 50 queries → learn transition model
-P(final_class | initial_terrain_code) → apply to all 5 seeds.
+**Current approach**: Spread 10 queries per seed across all 5 seeds → learn spatial
+transition model P(final_class | terrain_code, distance_bucket, coastal) → apply to all seeds.
 
-**Why this works**: Hidden parameters are shared across all seeds. Learning from
-one seed transfers to all others.
+**Why this works**: Hidden parameters are shared across all seeds. More seeds give
+more diverse terrain layouts → better spatial bucket coverage → better model.
 
-**Key spatial factors to model** (not yet implemented):
-- Adjacency to forest → more food → higher survival
-- Adjacency to ocean/coast → port potential
-- Settlement density → more conflict
-- Distance from other settlements → expansion targets
+**Key spatial features (implemented)**:
+- Manhattan distance to nearest settlement: 3-level bucket (≤2, 3-4, 5+)
+- Coastal adjacency (ocean neighbor) for plains
+- Adjacent forest / adjacent settlement for settlement/port cells
+- BFS-precomputed distances for efficiency
+
+**Backtest performance** (weighted KL, lower is better):
+- Rounds 1–5 avg: ~0.06 (5-seed spatial model)
+- Best: 0.040 (round 4), Worst: 0.075 (round 3, harsh winter)
+
+See `PLAN.md` for improvement roadmap.
 
 ## API
 - **Base URL**: `https://api.ainm.no`
