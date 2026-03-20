@@ -7,7 +7,7 @@ Scored on field-by-field correctness + API call efficiency.
 
 ## Stack
 - Python + FastAPI + LangGraph StateGraph + Gemini (configurable via GEMINI_MODEL env var)
-- Cloud Run (GCP) for deployment
+- Cloud Run (GCP project `ai-nm26osl-1788`, service `tripletex`, region `europe-west1`)
 
 ## Architecture: Planner → Executor → Self-Heal
 1. **Planner** — single LLM call → JSON plan (list of PlanSteps using `call_api`)
@@ -21,15 +21,15 @@ Scored on field-by-field correctness + API call efficiency.
 | `main.py` | FastAPI app, request parsing, credential injection |
 | `agent.py` | StateGraph (planner/executor/check_done), recursive placeholder resolution, smart self-heal |
 | `tools.py` | Credentials, `_make_request`, `load_tools()` with feature flag |
-| `generic_tools.py` | **NEW** — `call_api` + `lookup_endpoint` StructuredTools (replaces typed tools) |
+| `generic_tools.py` | `call_api` + `lookup_endpoint` StructuredTools |
 | `endpoint_catalog.py` | **GENERATED** — Tier 1/2 endpoint catalog + per-endpoint schemas |
 | `build_endpoint_catalog.py` | Build script: swagger.json → endpoint_catalog.py |
-| `swagger_tools.py` | **LEGACY** — 46 typed tools (kept for fallback via USE_GENERIC_TOOLS=false) |
+| `swagger_tools.py` | **LEGACY** — 46 typed tools (fallback via USE_GENERIC_TOOLS=false) |
 | `state.py` | `AgentState` and `PlanStep` TypedDict schemas |
 | `prompts.py` | `PLANNER_PROMPT` (with inline API catalog), `FIX_ARGS_PROMPT` (with endpoint schema) |
 | `swagger.json` | OpenAPI 3.0 spec (3.6MB, used by build script) |
-| `md/` | Documentation — `example_prompts.md`, `api_errors.md` |
-| `test_local.py` | Local test cases |
+| `md/` | `test_prompts.json` (real prompts), `api_errors.md` (known errors) |
+| `test_local.py` | Local test harness — runs real prompts against local server |
 
 ## Tool System (generic_tools.py)
 **Two tools only:**
@@ -50,7 +50,7 @@ python3 build_endpoint_catalog.py --schema Customer  # show one schema
 | Var | Default | Purpose |
 |-----|---------|---------|
 | `GOOGLE_API_KEY` | (required) | Gemini API key |
-| `GEMINI_MODEL` | `gemini-2.5-pro` | Model name (try `gemini-3.1-pro-preview`) |
+| `GEMINI_MODEL` | `gemini-2.5-pro` | Model name |
 | `USE_GENERIC_TOOLS` | `true` | Set to `false` to use legacy typed tools |
 
 ## Running Locally
@@ -62,9 +62,9 @@ python3 -m uvicorn main:app --reload --port 8080
 
 ## Deploying to Cloud Run
 ```bash
-gcloud builds submit --tag gcr.io/PROJECT_ID/tripletex
+gcloud builds submit --tag gcr.io/ai-nm26osl-1788/tripletex
 gcloud run deploy tripletex \
-  --image gcr.io/PROJECT_ID/tripletex \
+  --image gcr.io/ai-nm26osl-1788/tripletex \
   --platform managed --region europe-west1 \
   --allow-unauthenticated \
   --set-env-vars GOOGLE_API_KEY=...,GEMINI_MODEL=gemini-2.5-pro
@@ -92,9 +92,16 @@ Submit endpoint URL at: https://app.ainm.no/submit/tripletex
 - Voucher `postings` cannot be null — must be a non-empty array
 - PUT action endpoints (/:payment, /:send) take params in query_params, not body
 
-## Iterating on Errors
-1. Run a test submission
-2. Check cloud logs for `>>>SELF_HEAL_START<<<` patterns
-3. Fix the root cause: update `build_endpoint_catalog.py` (GOTCHA_NOTES, TIER1_TAGS) or `prompts.py` (planner hints, workflow recipes)
-4. Regenerate: `python3 build_endpoint_catalog.py`
-5. Check `md/api_errors.md` for documented error patterns
+## Iteration Workflow
+1. Run a test submission (or use `test_local.py`)
+2. Harvest logs: `/harvest-logs` (Claude Code skill) — extracts prompts, errors, plans from Cloud Run logs
+3. Diagnose: check `md/api_errors.md` for patterns, review plans for bad reasoning
+4. Fix root cause: update `build_endpoint_catalog.py` (GOTCHA_NOTES, TIER1_TAGS), `prompts.py` (planner hints, workflow recipes), or `agent.py` (execution logic)
+5. Regenerate: `python3 build_endpoint_catalog.py`
+6. Re-test and redeploy
+
+## Current Status (2026-03-20)
+See `PLAN.md` in project root for the full iteration roadmap.
+The agent is functional and deployed. Main areas for improvement:
+planner accuracy, efficiency optimization, self-heal success rate,
+and test coverage across all 7 languages and task categories.
