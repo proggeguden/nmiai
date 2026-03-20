@@ -153,12 +153,15 @@ See `PLAN.md` for error analysis, improvement roadmap, and round-by-round change
 - Cloud Run (GCP) for deployment
 
 ## Key Files
-| File             | Purpose                                    |
-|------------------|--------------------------------------------|
-| `main.py`        | FastAPI app with /solve endpoint           |
-| `api_client.py`  | API client for astar-island endpoints      |
-| `predictor.py`   | Prediction logic (observations → tensor)   |
-| `test_local.py`  | Local testing against real API             |
+| File                          | Purpose                                         |
+|-------------------------------|--------------------------------------------------|
+| `main.py`                     | FastAPI app with /solve endpoint                |
+| `api_client.py`               | API client for astar-island endpoints           |
+| `predictor.py`                | Prediction logic (observations → tensor)        |
+| `test_local.py`               | Local testing against real API                  |
+| `test_predictor_unit.py`      | 39 unit tests, synthetic data, no network (<1s) |
+| `test_predictor_integration.py` | 27 integration tests, synthetic data, no network (<1s) |
+| `test_backtest.py`            | Enhanced backtest: JSON output, per-terrain KL, regression detection |
 
 ## Running Locally
 ```bash
@@ -170,6 +173,41 @@ python3 test_local.py --backtest all     # backtest against ground truth
 python3 test_local.py --my-rounds        # check scores
 python3 -m uvicorn main:app --port 8080  # run server
 ```
+
+## Testing
+
+### Offline tests (no API needed, < 1s total)
+```bash
+pytest test_predictor_unit.py test_predictor_integration.py -v
+```
+- Unit tests cover every public function in predictor.py with synthetic grids
+- Integration tests verify end-to-end pipeline properties (sum-to-1, floor, shape, ordering)
+- Safe to run on every code change — deterministic and fast
+
+### Backtest with regression detection (requires API, ~30s)
+```bash
+python3 test_backtest.py --output results.json                      # generate baseline
+python3 test_backtest.py --output results.json --baseline baseline.json  # compare
+```
+- Outputs machine-readable JSON with per-round, per-terrain, and per-cell diagnostics
+- `--baseline baseline.json` compares against saved results, fails (exit 1) on regression
+- `--threshold 0.10` controls per-round regression sensitivity (default 10% relative)
+- Exit codes: 0 = pass, 1 = regression, 2 = error
+
+### Overnight self-improvement loop sequence
+```bash
+# 1. Make model change
+# 2. Fast gate (< 1s):
+pytest test_predictor_unit.py test_predictor_integration.py -x --tb=short
+# 3. Backtest gate (~30s):
+python3 test_backtest.py --output results.json --baseline baseline.json --threshold 0.10
+# 4. If improved: cp results.json baseline.json
+# 5. If active round: python3 test_local.py --submit
+```
+Key: step 2 catches broken logic instantly; step 3 catches regressions against real GT.
+The JSON output includes `per_terrain_kl` (which terrain types improved/regressed),
+`worst_cells` (top 10 worst-predicted cells with bucket keys), and `model_variants`
+(comparison of spatial vs spatial+forward). Parse these to guide the next hypothesis.
 
 ## Scoring
 - Entropy-weighted KL divergence

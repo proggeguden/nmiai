@@ -181,9 +181,42 @@ Key dynamics:
 
 ### Workflow for each improvement:
 1. Make the code change in a worktree
-2. Run `python3 test_local.py --backtest all` — compare all 4 model variants
-3. Keep only if 5seed-Spatial improves on avg without regressing any round >5%
-4. Commit and merge
+2. Run fast gate: `pytest test_predictor_unit.py test_predictor_integration.py -x --tb=short`
+3. Run backtest gate: `python3 test_backtest.py --output results.json --baseline baseline.json`
+4. Keep only if no regression detected (exit code 0)
+5. If improved: `cp results.json baseline.json` to update baseline
+6. Commit and merge
+
+### Overnight self-improvement loop
+The test suite is designed for automated iteration. The loop:
+```bash
+while true; do
+  # 1. Apply next hypothesis (parameter tune, feature experiment)
+  # 2. Fast offline gate (< 1s, no API):
+  pytest test_predictor_unit.py test_predictor_integration.py -x --tb=short
+  #    → FAIL? Revert, try next hypothesis
+  # 3. Backtest regression gate (~30s, requires API):
+  python3 test_backtest.py --output results.json --baseline baseline.json --threshold 0.10
+  #    → EXIT 1 (regression)? Revert, try next hypothesis
+  # 4. If improved: cp results.json baseline.json
+  # 5. If active round: python3 test_local.py --submit
+  # 6. Log results, continue
+done
+```
+
+**Backtest JSON output** (written by `--output`) contains everything needed to guide the loop:
+- `overall.avg_weighted_kl` — single number to compare
+- `per_round[].per_terrain_kl` — which terrain types improved/regressed (Plains is 55% of loss)
+- `per_round[].worst_cells` — top 10 worst cells with bucket_key, GT vs pred distributions
+- `per_round[].model_variants` — spatial vs spatial+forward comparison
+- `regression` — populated when `--baseline` is used, null if no regression
+
+**Exit codes**: 0 = pass, 1 = regression detected, 2 = error
+
+**Generating initial baseline**:
+```bash
+python3 test_backtest.py --output baseline.json
+```
 
 ### When a new round starts:
 ```bash
@@ -195,8 +228,8 @@ python3 test_local.py --submit               # full pipeline: 50 queries + submi
 ### After a round completes:
 ```bash
 python3 test_local.py --my-rounds            # check our score and rank
-python3 test_local.py --backtest ROUND_ID    # compare our model vs ground truth
-python3 test_local.py --backtest all         # backtest all completed rounds
+python3 test_backtest.py --round ROUND_ID --output results.json  # detailed analysis
+python3 test_backtest.py --output baseline.json                  # regenerate baseline with new round
 python3 test_local.py --leaderboard          # check standings
 ```
 
