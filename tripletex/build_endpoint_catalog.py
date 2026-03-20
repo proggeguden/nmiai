@@ -39,8 +39,9 @@ TIER1_TAGS = {
 GOTCHA_NOTES = {
     "POST /product": "NOTE: Do NOT send priceIncludingVatCurrency — it conflicts with priceExcludingVatCurrency.",
     "POST /invoice": "NOTE: Company must have a registered bank account first, or this will fail.",
-    "POST /employee": "NOTE: department.id may be required by the API even though the schema says optional.",
+    "POST /employee": "NOTE: department.id may be required even though schema says optional. userType is REQUIRED — use 'STANDARD' for normal employees, 'EXTENDED' for administrators.",
     "POST /ledger/voucher": "NOTE: postings cannot be null — must be a non-empty array.",
+    "POST /order": "NOTE: deliveryDate is REQUIRED even though schema says optional. Use orderDate value if not specified.",
 }
 
 

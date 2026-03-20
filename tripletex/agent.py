@@ -11,14 +11,30 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 
 from logger import get_logger
-from prompts import EXECUTOR_FALLBACK_PROMPT, FIX_ARGS_PROMPT, PLANNER_PROMPT
+from prompts import FIX_ARGS_PROMPT, PLANNER_PROMPT
 from state import AgentState
 from tools import load_tools
 
 log = get_logger("tripletex.agent")
 
+# Sentinel for unresolved $step_N placeholders (empty search results, etc.)
+_UNRESOLVED = "__UNRESOLVED__"
+
 # Status codes worth retrying with LLM fix (body/param errors)
 RETRYABLE_STATUS_CODES = {400, 422}
+
+
+def _contains_unresolved(obj) -> bool:
+    """Check if any value in a nested structure contains the _UNRESOLVED sentinel."""
+    if obj is _UNRESOLVED or obj == _UNRESOLVED:
+        return True
+    if isinstance(obj, str) and _UNRESOLVED in obj:
+        return True
+    if isinstance(obj, dict):
+        return any(_contains_unresolved(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_contains_unresolved(item) for item in obj)
+    return False
 
 
 def _extract_text(content) -> str:
@@ -108,6 +124,19 @@ def build_agent():
 
         # Resolve $step_N placeholders recursively through nested dicts/lists
         resolved_args = _resolve_placeholders_deep(args, results, llm)
+
+        # Skip steps with unresolved dependencies (e.g. empty search results)
+        if _contains_unresolved(resolved_args):
+            log.warning(f"Step {step['step_number']} skipped: unresolved dependency from previous step")
+            results[f"step_{step['step_number']}"] = {"skipped": True, "reason": "unresolved_dependency"}
+            completed.append(step["step_number"])
+            return {
+                "current_step": step_idx + 1,
+                "results": results,
+                "error_count": error_count,
+                "completed_steps": completed,
+                "messages": [AIMessage(content=f"Step {step['step_number']} skipped: dependency unresolved")],
+            }
 
         # Call the tool
         if tool_name not in tool_map:
@@ -245,6 +274,15 @@ def _is_api_error(result_str: str) -> tuple[bool, int]:
             return True, status
         return False, 0
     except (json.JSONDecodeError, TypeError):
+        # Detect HTML error pages (e.g. 405 Method Not Allowed)
+        status_match = re.search(r"HTTP Status (\d{3})", result_str)
+        if status_match:
+            code = int(status_match.group(1))
+            if code >= 400:
+                return True, code
+        # Any HTML response from the API is an error
+        if "<html" in result_str.lower():
+            return True, 500
         return False, 0
 
 
@@ -451,8 +489,8 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
             if isinstance(obj, list) and idx < len(obj):
                 obj = obj[idx]
             else:
-                obj = None
-                break
+                log.warning(f"Index [{idx}] out of bounds (list length {len(obj) if isinstance(obj, list) else 'N/A'})")
+                return _UNRESOLVED
 
     if obj is not None:
         # If the entire string is just the placeholder, return the resolved value directly
@@ -461,20 +499,6 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
         # Otherwise replace inline
         return value.replace(match.group(0), str(obj))
 
-    # Fallback: use LLM to extract
-    log.info(f"Using LLM fallback to resolve: {value}")
-    try:
-        fallback_prompt = EXECUTOR_FALLBACK_PROMPT.format(
-            response=json.dumps(results[result_key])[:2000],
-            description=f"Extract value for path: {path_str} (from placeholder {value})",
-        )
-        resp = llm.invoke([HumanMessage(content=fallback_prompt)])
-        extracted = _extract_text(resp.content).strip()
-        # Try to convert to int if it looks like an ID
-        try:
-            return int(extracted)
-        except ValueError:
-            return extracted
-    except Exception as e:
-        log.error(f"LLM fallback failed for {value}: {e}")
-        return value
+    # Placeholder could not be resolved — return sentinel instead of expensive LLM fallback
+    log.warning(f"Placeholder {value} could not be resolved from results")
+    return _UNRESOLVED

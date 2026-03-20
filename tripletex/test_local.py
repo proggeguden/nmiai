@@ -19,6 +19,8 @@ import json
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from io import StringIO
 
 import requests
 from dotenv import load_dotenv
@@ -47,12 +49,16 @@ def load_prompts() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def call_solve(prompt: str, label: str = "") -> dict:
-    """Send a prompt to the /solve endpoint and return the response."""
-    print(f"\n{'='*70}")
-    print(f"TEST: {label}")
-    print(f"{'='*70}")
-    print(f"Prompt: {prompt[:120]}{'...' if len(prompt) > 120 else ''}")
-    print()
+    """Send a prompt to the /solve endpoint and return the response.
+
+    Output is buffered to prevent interleaving when run in parallel.
+    """
+    lines = []
+    lines.append(f"\n{'='*70}")
+    lines.append(f"TEST: {label}")
+    lines.append(f"{'='*70}")
+    lines.append(f"Prompt: {prompt[:120]}{'...' if len(prompt) > 120 else ''}")
+    lines.append("")
 
     payload = {
         "prompt": prompt,
@@ -79,8 +85,11 @@ def call_solve(prompt: str, label: str = "") -> dict:
     except Exception:
         body = {"raw": resp.text}
 
-    print(f"  HTTP {status} — {elapsed:.1f}s")
-    print(f"  Response: {json.dumps(body, ensure_ascii=False)[:200]}")
+    lines.append(f"  HTTP {status} — {elapsed:.1f}s")
+    lines.append(f"  Response: {json.dumps(body, ensure_ascii=False)[:200]}")
+
+    # Print atomically to avoid interleaving
+    print("\n".join(lines))
 
     return {"status": status, "body": body, "elapsed": elapsed}
 
@@ -191,10 +200,13 @@ def main():
 
     # Run by category
     if arg in categories:
-        results = []
-        for p in prompts:
-            if p["category"] == arg:
-                results.append(run_test(p))
+        tests_to_run = [p for p in prompts if p["category"] == arg]
+        with ThreadPoolExecutor(max_workers=min(len(tests_to_run), 8)) as pool:
+            futures = {pool.submit(run_test, t): t for t in tests_to_run}
+            results = []
+            for future in as_completed(futures):
+                results.append(future.result())
+        results.sort(key=lambda r: r["test_id"])
         print_summary(results)
         sys.exit(0)
 
@@ -206,9 +218,12 @@ def main():
         sys.exit(1)
 
     # Run all
-    results = []
-    for p in prompts:
-        results.append(run_test(p))
+    with ThreadPoolExecutor(max_workers=min(len(prompts), 8)) as pool:
+        futures = {pool.submit(run_test, p): p for p in prompts}
+        results = []
+        for future in as_completed(futures):
+            results.append(future.result())
+    results.sort(key=lambda r: r["test_id"])
     print_summary(results)
 
 
