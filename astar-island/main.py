@@ -84,7 +84,8 @@ def run_pipeline(round_id):
     print(f"\n--- Learning phase: observing seed 0 with {queries_max} queries ---")
     observations = observe_seed(round_id, seed_index=0,
                                 height=height, width=width,
-                                max_queries=queries_max)
+                                max_queries=queries_max,
+                                initial_grid=initial_states[0]["grid"])
     print(f"Collected {len(observations)} observations")
 
     # Tag observations with seed index for the transition model
@@ -130,12 +131,18 @@ def run_pipeline(round_id):
     return {"seeds_submitted": len(results), "results": results}
 
 
-def observe_seed(round_id, seed_index, height, width, max_queries):
+def observe_seed(round_id, seed_index, height, width, max_queries,
+                 initial_grid=None):
     """Query viewports to observe the map for a given seed.
 
-    Strategy: tile the map with 15×15 viewports for full coverage,
-    then repeat tiles round-robin for more statistical samples.
+    Strategy:
+    1. Score each tile by dynamic cell count (non-ocean, non-mountain)
+    2. Skip tiles that are mostly static (ocean/mountain)
+    3. Full coverage of dynamic tiles first
+    4. Repeat queries on most dynamic tiles (settlement-heavy areas)
     """
+    from predictor import STATIC_CODES
+
     observations = []
     vp_w, vp_h = 15, 15
 
@@ -148,10 +155,38 @@ def observe_seed(round_id, seed_index, height, width, max_queries):
             positions.append((x, y))
             x += vp_w
         y += vp_h
-    # For 40×40 map: 9 tiles (3×3 grid)
 
-    # Phase 1: Full coverage (9 queries)
-    for x, y in positions[:max_queries]:
+    # Score tiles by dynamic cell count if we have the initial grid
+    if initial_grid:
+        tile_scores = []
+        for tx, ty in positions:
+            dynamic = 0
+            settlements = 0
+            for r in range(ty, min(ty + vp_h, height)):
+                for c in range(tx, min(tx + vp_w, width)):
+                    code = initial_grid[r][c]
+                    if code not in STATIC_CODES:
+                        dynamic += 1
+                    if code in (1, 2):  # settlement or port
+                        settlements += 1
+            # Score: settlements count 3x (most valuable to observe)
+            tile_scores.append(dynamic + settlements * 3)
+
+        # Sort tiles by score descending
+        scored_tiles = sorted(zip(tile_scores, positions), reverse=True)
+
+        # Phase 1: Cover all tiles with dynamic cells (skip pure ocean/mountain)
+        coverage_tiles = [(s, pos) for s, pos in scored_tiles if s > 0]
+        repeat_tiles = [(s, pos) for s, pos in scored_tiles if s > 10]
+
+        print(f"  Tiles: {len(coverage_tiles)} dynamic (of {len(positions)}), "
+              f"{len(repeat_tiles)} high-value for repeats")
+    else:
+        coverage_tiles = [(1, pos) for pos in positions]
+        repeat_tiles = coverage_tiles
+
+    # Phase 1: Full coverage of dynamic tiles
+    for _, (x, y) in coverage_tiles[:max_queries]:
         try:
             result = api_client.query_seed(round_id, seed_index,
                                            viewport_x=x, viewport_y=y,
@@ -161,17 +196,18 @@ def observe_seed(round_id, seed_index, height, width, max_queries):
             print(f"  Query error at ({x},{y}): {e}")
             break
 
-    # Phase 2: Repeat tiles round-robin for more samples
+    # Phase 2: Repeat queries on high-value tiles (settlement-heavy areas)
     remaining = max_queries - len(observations)
-    for i in range(remaining):
-        x, y = positions[i % len(positions)]
-        try:
-            result = api_client.query_seed(round_id, seed_index,
-                                           viewport_x=x, viewport_y=y,
-                                           viewport_w=vp_w, viewport_h=vp_h)
-            observations.append(result)
-        except Exception as e:
-            print(f"  Query error repeat ({x},{y}): {e}")
-            break
+    if repeat_tiles:
+        for i in range(remaining):
+            _, (x, y) = repeat_tiles[i % len(repeat_tiles)]
+            try:
+                result = api_client.query_seed(round_id, seed_index,
+                                               viewport_x=x, viewport_y=y,
+                                               viewport_w=vp_w, viewport_h=vp_h)
+                observations.append(result)
+            except Exception as e:
+                print(f"  Query error repeat ({x},{y}): {e}")
+                break
 
     return observations
