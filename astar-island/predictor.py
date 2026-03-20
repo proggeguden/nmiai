@@ -1079,30 +1079,28 @@ def build_prediction(height, width, initial_grid, observations,
                 predictions[r, c] = np.maximum(predictions[r, c], 0.001)
                 predictions[r, c] /= predictions[r, c].sum()
 
-    # Step 1.8: Confidence calibration — shrink toward global prior
-    if transition_model:
-        # Ensure we have settlement_dists
-        if settlement_dists is None:
-            settlement_dists = _precompute_settlement_distances(initial_grid)
-        for r in range(height):
-            for c in range(width):
-                code = initial_grid[r][c]
-                if code in STATIC_CODES:
-                    continue
-                global_prior = transition_model.get(code)
-                if global_prior is None:
-                    continue
-                d = settlement_dists[r][c]
-                # Near settlements: high uncertainty, more calibration
-                # Far from settlements: mostly static, trust model
-                if d <= 2:
-                    strength = 0.10
-                elif d <= 4:
-                    strength = 0.06
-                else:
-                    strength = 0.02
-                predictions[r, c] = (1 - strength) * predictions[r, c] + strength * global_prior
-                predictions[r, c] /= predictions[r, c].sum()
+    # Step 1.8: Distance-based temperature scaling
+    # Near settlements: outcomes are stochastic (expansion/conflict/winter) → T>1 spreads mass
+    # Far from settlements: outcomes are deterministic (cells stay same) → T<1 sharpens
+    # This replaces the prior-blending approach which had a bias toward the global average
+    if settlement_dists is None:
+        settlement_dists = _precompute_settlement_distances(initial_grid)
+    for r in range(height):
+        for c in range(width):
+            code = initial_grid[r][c]
+            if code in STATIC_CODES:
+                continue
+            d = settlement_dists[r][c]
+            if d <= 2:
+                T = 1.10   # spread: near settlements, high uncertainty
+            elif d <= 4:
+                T = 1.03   # slight spread
+            else:
+                T = 0.92   # sharpen: far from settlements, low uncertainty
+            if abs(T - 1.0) > 0.005:
+                inv_T = 1.0 / T
+                scaled = np.power(np.maximum(predictions[r, c], 1e-10), inv_T)
+                predictions[r, c] = scaled / scaled.sum()
 
     # Step 2: Blend per-cell observations (for directly observed cells)
     if observations:
