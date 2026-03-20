@@ -188,8 +188,9 @@ def compute_bucket_key(initial_grid, r, c, settlement_dists=None, cluster_densit
         return (11, dist_bucket, is_coastal, forest_level, is_clustered)
     elif code == 0:  # Empty
         return (0, dist_bucket, has_adj_forest)
-    elif code == 4:  # Forest
-        return (4, dist_bucket, has_adj_settlement, is_coastal)
+    elif code == 4:  # Forest — 3-level settlement adjacency
+        adj_sett_level = 0 if adj_settlement == 0 else (1 if adj_settlement == 1 else 2)
+        return (4, dist_bucket, adj_sett_level, is_coastal)
     elif code == 3:  # Ruin — dropped has_adj_forest
         return (3, dist_bucket, has_adj_settlement)
     else:
