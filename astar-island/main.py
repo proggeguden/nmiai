@@ -265,9 +265,51 @@ def observe_seed(round_id, seed_index, height, width, max_queries,
             print(f"  Query error at ({x},{y}): {e}")
             break
 
-    # Phase 2: Repeat queries on high-value tiles (settlement-heavy areas)
+    # Phase 2: Repeat queries targeting under-observed bucket coverage
     remaining = max_queries - len(observations)
-    if repeat_tiles:
+    if remaining > 0 and initial_grid:
+        from predictor import compute_feature_map
+        fmap, _, _ = compute_feature_map(initial_grid)
+
+        # Count bucket observations from Phase 1
+        bucket_obs_count = {}
+        for obs in observations:
+            vp = obs.get("viewport", {})
+            grid = obs.get("grid", [])
+            vp_x, vp_y = vp.get("x", 0), vp.get("y", 0)
+            for dr in range(len(grid)):
+                for dc in range(len(grid[0]) if grid else 0):
+                    r, c = vp_y + dr, vp_x + dc
+                    if 0 <= r < height and 0 <= c < width:
+                        bk = fmap[r][c]
+                        bucket_obs_count[bk] = bucket_obs_count.get(bk, 0) + 1
+
+        # Score tiles by sum of 1/(1+obs_count) for cells — tiles with rare buckets score higher
+        tile_bucket_scores = []
+        for tx, ty in positions:
+            score = 0.0
+            for r in range(ty, min(ty + vp_h, height)):
+                for c in range(tx, min(tx + vp_w, width)):
+                    if initial_grid[r][c] not in STATIC_CODES:
+                        bk = fmap[r][c]
+                        score += 1.0 / (1.0 + bucket_obs_count.get(bk, 0))
+            if score > 0:
+                tile_bucket_scores.append((score, (tx, ty)))
+
+        tile_bucket_scores.sort(reverse=True)
+        for i in range(remaining):
+            if not tile_bucket_scores:
+                break
+            _, (x, y) = tile_bucket_scores[i % len(tile_bucket_scores)]
+            try:
+                result = api_client.query_seed(round_id, seed_index,
+                                               viewport_x=x, viewport_y=y,
+                                               viewport_w=vp_w, viewport_h=vp_h)
+                observations.append(result)
+            except Exception as e:
+                print(f"  Query error repeat ({x},{y}): {e}")
+                break
+    elif remaining > 0 and repeat_tiles:
         for i in range(remaining):
             _, (x, y) = repeat_tiles[i % len(repeat_tiles)]
             try:
