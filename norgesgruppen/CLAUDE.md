@@ -1,5 +1,11 @@
 # NorgesGruppen — Object Detection
 
+## Local Files
+Weight files (`.onnx`, `.npy`, `.pt`) are gitignored. They live in `norgesgruppen/` on main:
+- `detector.onnx` (167MB), `classifier.onnx` (31MB), `embeddings.npy` (131MB), `submission.zip`
+- When using a worktree, symlink them: `ln -s ~/Desktop/nmiai/code/nmiai/norgesgruppen/*.onnx .`
+- Training data lives in `norgesgruppen/data/` (also gitignored) — must exist locally and on GCP VMs
+
 ## Task
 Detect grocery products on store shelves. Scored: 70% detection mAP (IoU>=0.5, category ignored) + 30% classification mAP.
 
