@@ -50,10 +50,38 @@
 
 ## Next Improvements (Priority Order)
 
-### 1. User Photos for Weak Categories (expected +2-5%)
-- Photograph egg variants, AP=0 categories, confusable products
-- Integrate via add_photos.py → retrain classifier + re-embed
-- **Biggest expected gain**: egg products alone are 56% of all errors
+### 1. Letterbox Retraining + User Photos (expected +3-6%)
+**The #1 improvement opportunity.** Two changes, done together:
+
+**a) Retrain classifier with letterbox crops (preserving aspect ratio)**
+- Currently crops are squashed to 260×260, destroying width/height info
+- Egg 6-packs (363px wide) and 12-packs (675px wide) become identical squares
+- Tested letterbox at inference: 6-pack AP improved +0.20, but 12-packs broke (−0.13)
+  because classifier was trained on squashed crops → distribution mismatch
+- **Fix: retrain with letterboxed crops from the start**
+- Modify `extract_crops.py` to use letterbox (resize-with-pad) instead of squash
+- Modify `train_classifier.py` augmentations to match
+- Then enable `USE_LETTERBOX_CROPS = True` in run.py
+- **On GCP VM**: re-extract crops → retrain classifier → re-export ONNX + embeddings
+
+**b) Photograph products at the store**
+- Priority: egg variants (6/10/12-pack), AP=0 categories, no-ref-image products
+- See `shopping_list.txt` for full prioritized list
+- See `data/viz/egg_reference/` to compare existing ref images vs shelf crops
+
+**Photography tips (for tomorrow):**
+- Photograph products ON THE SHELF, straight-on at eye level
+- Use store lighting (no flash — causes packaging reflections)
+- Take 2-3 shots per product at slightly different angles (±10-15°)
+- For eggs: make sure the pack size number ("6 stk", "12 stk") is clearly readable
+- For eggs: include a photo showing different pack sizes side by side on the shelf
+- Phone camera is fine — matches the training data quality
+- Focus on: egg variants > AP=0 categories > no-ref-image products > confusable pairs
+
+**16 egg categories have NO reference images** (308 annotations total):
+- Økologiske Egg 6/10stk, Eldorado variants, Galåvolden, Tørresvik, Sunnmørsegg, Leka
+- Full list: see `data/viz/egg_reference/` folder for what exists vs what's missing
+- Taking photos of these would directly fill a critical gap
 
 ### 2. WBF Ensemble (expected +1-3%)
 - Combine two-stage pipeline + multi-class YOLO predictions
@@ -84,10 +112,18 @@
 ## Key Classification Failures (from analyze_results.py)
 
 ### Egg Products (40 confusions = 56% of all errors)
-- 16× EGG FRITTGÅENDE M/L 6PK ← EGG FRITTGÅENDE 12STK (Prior)
+- 18× EGG FRITTGÅENDE M/L 6PK ← EGG FRITTGÅENDE 12STK (Prior)
 - 7× SOLEGG 6STK ← SOLEGG 12STK
 - 3× EGG ØKOLOGISK ← FROKOSTEGG
 - Various farm eggs confused (Galåvolden, Tørresvik, Leka)
+
+**Root cause: aspect ratio destruction in crop preprocessing**
+- 6-pack: ~363px wide × 183px tall → squashed to 260×260
+- 12-pack: ~675px wide × 183px tall → squashed to 260×260
+- Same height, same brand, same colors → indistinguishable after squashing
+- Letterbox inference test: 6-pack AP +0.20, but 12-pack AP −0.13 (needs retraining)
+- 16/30 egg categories have NO reference images → kNN can't help
+- Browse: `data/viz/egg_reference/` — all egg ref images + annotated egg shelf
 
 ### Other Confusions
 - Lady Grey TEA 25pos vs 200g (3×)

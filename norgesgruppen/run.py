@@ -35,6 +35,15 @@ CLS_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 CLS_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 PAD_RATIO = 0.05
 
+# Aspect ratio preservation
+# Letterbox helps 6-pack eggs (+0.20 AP) but hurts 12-packs and overall score
+# because the classifier was trained on squashed crops. REQUIRES RETRAINING.
+# After retraining with letterbox crops: set USE_LETTERBOX_CROPS = True
+USE_LETTERBOX_CROPS = False
+USE_DUAL_CROPS = False
+USE_ADAPTIVE_LETTERBOX = False   # letterbox TTA only for wide/tall crops
+ADAPTIVE_AR_THRESHOLD = 1.5     # aspect ratio threshold for adaptive letterbox
+
 # kNN settings
 KNN_K = 5
 KNN_WEIGHT = 0.4  # weight for kNN in ensemble (classifier gets 1 - KNN_WEIGHT)
@@ -220,59 +229,99 @@ def soft_nms(boxes, scores, sigma=0.5, score_thresh=0.01):
     return np.array([]).reshape(0, 4), np.array([])
 
 
+def letterbox_crop(crop_pil, imgsz):
+    """Resize crop preserving aspect ratio, pad to square with mean color.
+
+    A 6-pack egg (wide) becomes a wide image with gray bars top/bottom.
+    A 12-pack egg (even wider) gets a different pad pattern.
+    This preserves the width/height ratio the classifier can learn from.
+    """
+    w, h = crop_pil.size
+    if w < 1 or h < 1:
+        return Image.new("RGB", (imgsz, imgsz), (124, 116, 104))
+    scale = min(imgsz / w, imgsz / h)
+    nw, nh = int(w * scale), int(h * scale)
+    resized = crop_pil.resize((nw, nh), Image.BILINEAR)
+
+    # Pad with approximate ImageNet mean color (in 0-255 range)
+    pad_color = (124, 116, 104)  # ~= CLS_MEAN * 255
+    canvas = Image.new("RGB", (imgsz, imgsz), pad_color)
+    paste_x = (imgsz - nw) // 2
+    paste_y = (imgsz - nh) // 2
+    canvas.paste(resized, (paste_x, paste_y))
+    return canvas
+
+
+def extract_crop_pil(img, box):
+    """Extract a padded crop from image given an xyxy box."""
+    w_img, h_img = img.size
+    x1, y1, x2, y2 = box
+    bw, bh = x2 - x1, y2 - y1
+    px, py = bw * PAD_RATIO, bh * PAD_RATIO
+    cx1 = max(0, int(x1 - px))
+    cy1 = max(0, int(y1 - py))
+    cx2 = min(w_img, int(x2 + px))
+    cy2 = min(h_img, int(y2 + py))
+    return img.crop((cx1, cy1, cx2, cy2))
+
+
+def crop_to_array(crop_pil, imgsz):
+    """Convert a PIL crop to normalized numpy array for classifier."""
+    if USE_LETTERBOX_CROPS:
+        crop_pil = letterbox_crop(crop_pil, imgsz)
+    else:
+        crop_pil = crop_pil.resize((imgsz, imgsz), Image.BILINEAR)
+
+    arr = np.array(crop_pil, dtype=np.float32) / 255.0
+    arr = (arr - CLS_MEAN) / CLS_STD
+    arr = arr.transpose(2, 0, 1)
+    return arr
+
+
 def preprocess_crops(img, boxes, imgsz):
     """Extract and preprocess crops from detected boxes."""
-    w_img, h_img = img.size
     crops = []
     for box in boxes:
-        x1, y1, x2, y2 = box
-        bw, bh = x2 - x1, y2 - y1
-        px, py = bw * PAD_RATIO, bh * PAD_RATIO
-        cx1 = max(0, int(x1 - px))
-        cy1 = max(0, int(y1 - py))
-        cx2 = min(w_img, int(x2 + px))
-        cy2 = min(h_img, int(y2 + py))
-
-        crop = img.crop((cx1, cy1, cx2, cy2))
-        crop = crop.resize((imgsz, imgsz), Image.BILINEAR)
-
-        arr = np.array(crop, dtype=np.float32) / 255.0
-        arr = (arr - CLS_MEAN) / CLS_STD
-        arr = arr.transpose(2, 0, 1)
-        crops.append(arr)
+        crop_pil = extract_crop_pil(img, box)
+        crops.append(crop_to_array(crop_pil, imgsz))
 
     return np.array(crops, dtype=np.float32) if crops else np.zeros((0, 3, imgsz, imgsz), dtype=np.float32)
 
 
 def preprocess_crops_tta(img, boxes, imgsz):
-    """Extract crops with TTA: original + horizontal flip + 2 rotations.
+    """Extract crops with TTA augmentations.
 
-    Returns (crops_array, n_augments) where crops are interleaved:
-    [orig_0, flip_0, rot+5_0, rot-5_0, orig_1, flip_1, rot+5_1, rot-5_1, ...]
+    ADAPTIVE mode: 4 augments for square-ish crops (squash only),
+                   6 augments for wide/tall crops (squash + letterbox).
+    Returns variable-length arrays with per-box augment counts.
     """
-    w_img, h_img = img.size
     crops = []
-    n_aug = 4  # original + flip + 2 rotations
+    fill = (124, 116, 104)  # ~ImageNet mean
+    n_augs_per_box = []  # track augment count per box
 
     for box in boxes:
-        x1, y1, x2, y2 = box
-        bw, bh = x2 - x1, y2 - y1
-        px, py = bw * PAD_RATIO, bh * PAD_RATIO
-        cx1 = max(0, int(x1 - px))
-        cy1 = max(0, int(y1 - py))
-        cx2 = min(w_img, int(x2 + px))
-        cy2 = min(h_img, int(y2 + py))
+        crop_pil = extract_crop_pil(img, box)
+        w, h = crop_pil.size
+        ar = max(w, h) / max(min(w, h), 1)
 
-        crop_pil = img.crop((cx1, cy1, cx2, cy2))
-        crop_resized = crop_pil.resize((imgsz, imgsz), Image.BILINEAR)
-
-        # Generate augmented variants
+        # Standard squashed augments (always used)
+        squashed = crop_pil.resize((imgsz, imgsz), Image.BILINEAR)
         variants = [
-            crop_resized,                                        # original
-            crop_resized.transpose(Image.FLIP_LEFT_RIGHT),       # horizontal flip
-            crop_resized.rotate(5, fillcolor=(114, 114, 114)),   # +5 degree
-            crop_resized.rotate(-5, fillcolor=(114, 114, 114)),  # -5 degree
+            squashed,                                       # original
+            squashed.transpose(Image.FLIP_LEFT_RIGHT),      # flip
+            squashed.rotate(5, fillcolor=fill),             # rot +5
+            squashed.rotate(-5, fillcolor=fill),            # rot -5
         ]
+
+        # Add letterbox augments for non-square crops
+        if USE_ADAPTIVE_LETTERBOX and ar >= ADAPTIVE_AR_THRESHOLD:
+            letterboxed = letterbox_crop(crop_pil, imgsz)
+            variants.extend([
+                letterboxed,                                    # letterbox original
+                letterboxed.transpose(Image.FLIP_LEFT_RIGHT),  # letterbox flip
+            ])
+
+        n_augs_per_box.append(len(variants))
 
         for var in variants:
             arr = np.array(var, dtype=np.float32) / 255.0
@@ -281,9 +330,9 @@ def preprocess_crops_tta(img, boxes, imgsz):
             crops.append(arr)
 
     if not crops:
-        return np.zeros((0, 3, imgsz, imgsz), dtype=np.float32), n_aug
+        return np.zeros((0, 3, imgsz, imgsz), dtype=np.float32), n_augs_per_box
 
-    return np.array(crops, dtype=np.float32), n_aug
+    return np.array(crops, dtype=np.float32), n_augs_per_box
 
 
 def softmax(x, axis=-1):
@@ -342,10 +391,10 @@ def main():
 
         # Stage 2: Classify + embed crops in batches
         if USE_TTA:
-            crop_batch, n_aug = preprocess_crops_tta(img, boxes, CLS_IMGSZ)
+            crop_batch, n_augs = preprocess_crops_tta(img, boxes, CLS_IMGSZ)
         else:
             crop_batch = preprocess_crops(img, boxes, CLS_IMGSZ)
-            n_aug = 1
+            n_augs = [1] * len(boxes)
 
         batch_size = 64
         all_logits = []
@@ -361,26 +410,27 @@ def main():
         all_logits = np.concatenate(all_logits, axis=0)
         cls_probs = softmax(all_logits, axis=1)
 
-        # Average TTA augmentations
-        if n_aug > 1:
-            n_boxes = len(boxes)
-            # Reshape: (n_boxes * n_aug, n_classes) -> (n_boxes, n_aug, n_classes)
-            cls_probs = cls_probs.reshape(n_boxes, n_aug, -1).mean(axis=1)
+        if has_features and all_features:
+            all_features_cat = np.concatenate(all_features, axis=0)
+        else:
+            all_features_cat = None
 
-            if has_features and all_features:
-                all_features_cat = np.concatenate(all_features, axis=0)
-                # Average features across augmentations too
-                all_features_cat = all_features_cat.reshape(n_boxes, n_aug, -1).mean(axis=1)
-                all_features = [all_features_cat]
+        # Average TTA augmentations (variable augment count per box)
+        n_boxes = len(boxes)
+        avg_probs = np.zeros((n_boxes, cls_probs.shape[1]), dtype=np.float32)
+        avg_features = np.zeros((n_boxes, all_features_cat.shape[1]), dtype=np.float32) if all_features_cat is not None else None
+        offset = 0
+        for j in range(n_boxes):
+            n = n_augs[j]
+            avg_probs[j] = cls_probs[offset:offset + n].mean(axis=0)
+            if avg_features is not None:
+                avg_features[j] = all_features_cat[offset:offset + n].mean(axis=0)
+            offset += n
+        cls_probs = avg_probs
 
         # kNN ensemble
-        if use_knn and all_features:
-            if n_aug > 1:
-                features = all_features[0]  # already averaged
-            else:
-                features = np.concatenate(all_features, axis=0)
-            knn_probs = knn_predict(features, ref_embeddings, ref_labels, KNN_K, num_classes)
-            # Ensemble: weighted average
+        if use_knn and avg_features is not None:
+            knn_probs = knn_predict(avg_features, ref_embeddings, ref_labels, KNN_K, num_classes)
             final_probs = (1 - KNN_WEIGHT) * cls_probs + KNN_WEIGHT * knn_probs
         else:
             final_probs = cls_probs
