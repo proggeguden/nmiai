@@ -202,9 +202,11 @@ class TestComputeBucketKey:
         # Plains at (1,3): dist to settlement
         key = compute_bucket_key(GRID_5x5_MIXED, 1, 3, dist, cluster)
         assert key[0] == 11
-        assert len(key) == 5  # (11, dist_bucket, is_coastal, forest_level, is_clustered)
+        assert len(key) == 6  # (11, dist_bucket, is_coastal, forest_level, is_clustered, adj_sett_level)
         # forest_level is int 0/1/2 (not bool)
         assert key[3] in (0, 1, 2)
+        # adj_sett_level is int 0/1/2
+        assert key[5] in (0, 1, 2)
 
     def test_empty_cell_key(self):
         dist = _precompute_settlement_distances(GRID_5x5_MIXED)
