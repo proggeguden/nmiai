@@ -174,13 +174,21 @@ All 4 priority items implemented and submitted:
 - **Widen expansion modulation d≤6→d≤8** ✅: Gradual decay d=5-8 instead of d=5-6. Overall KL 0.0497→0.0491 (-1.2%). R7 improved 0.1243→0.1218, R5 0.0542→0.0526. No regressions.
 - **Distance-based temperature scaling** ✅: Replaced Step 1.8 prior-blending with temperature scaling (d≤2: T=1.10 spread, d=3-4: T=1.03, d≥5: T=0.92 sharpen). Overall KL 0.0491→0.0457 (-6.9%). R3 -19%, R7 -11%, R5 -10.6%. Key insight: model had bidirectional calibration failure — over-confident near settlements, under-confident far away. Temperature scaling fixes both directions simultaneously.
 
+**Attempted and failed/neutral (2026-03-20 evening):**
+- **Per-terrain temperature** ➖: Forest d≤2 T=1.04, d≥5 T=0.95, Plains unchanged. Overall neutral (0.0457→0.0457). R2 improved slightly but R3/R8 regressed. Not worth the complexity.
+- **Expansion-modulated forest injection** ❌: Boost forest entropy injection proportional to expansion_rate. R2 regressed +29.6% because expansion_rate measures settlement growth into Plains, NOT forest clearing. High expansion ≠ high forest clearing.
+- **Spatial smoothing (MRF-style)** ❌: 8-connected neighbor averaging (alpha=0.08) near settlements. R4 regressed +10.4% — blurs predictions across terrain boundaries, adding noise to already-accurate moderate rounds.
+- **Temperature parameter tuning (1.12/1.05/0.94)** ➖: More spreading near, less sharpening far. Overall neutral (0.0457→0.0457). R7 improved 1.3% but R2/R4/R8 worsened. The (1.10/1.03/0.92) values appear to be a local optimum.
+
+**Key lesson**: The temperature scaling parameters are already well-tuned. Post-model adjustments have diminishing returns. The remaining error is dominated by within-bucket variance (irreducible without better features).
+
 **Promising directions not yet tried:**
 - Plains bucket refinement: split by distance + cluster density interaction
-- Per-round adaptive entropy injection: condition forest shrink on observed survival rate, not just retention
 - Ruin-to-forest transition: currently under-predicted, especially near forests in harsh winters
-- Temperature tuning: current T values (1.10/1.03/0.92) may not be optimal; could try per-terrain T
-- Spatial smoothing / MRF-style post-processing: capture spatial correlation between neighboring cells
-- R2/R8 slight regression from temperature scaling: the sharpening at d≥5 may be too aggressive for some conditions
+- Adjacent settlement COUNT for Plains (not just binary is_clustered): 2+ adjacent settlements = much higher expansion
+- Better port prediction for coastal settlements (R7 worst cell: Settlement→Port under-predicted)
+- Ensemble approach: run predictions with multiple parameter sets and average
+- Non-linear feature interactions: multiplicative features in bucket key (e.g., coastal AND clustered AND near_forest)
 
 ---
 
