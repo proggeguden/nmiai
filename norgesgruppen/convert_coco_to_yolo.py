@@ -1,7 +1,6 @@
-"""Convert COCO annotations to YOLO format for single-class detection MVP."""
+"""Convert COCO annotations to YOLO format for multi-class detection."""
 
 import json
-import os
 import random
 from pathlib import Path
 
@@ -18,6 +17,10 @@ def main():
 
     # Build image lookup: id -> {file_name, width, height}
     images = {img["id"]: img for img in coco["images"]}
+
+    # Build category lookup for dataset.yaml
+    categories = {cat["id"]: cat["name"] for cat in coco["categories"]}
+    num_classes = max(categories.keys()) + 1
 
     # Group annotations by image_id
     anns_by_image = {}
@@ -36,6 +39,7 @@ def main():
 
     print(f"Total images: {len(image_ids)}")
     print(f"Train: {len(splits['train'])}, Val: {len(splits['val'])}")
+    print(f"Categories: {num_classes}")
 
     # Create directories and write labels
     for split_name, ids in splits.items():
@@ -51,17 +55,18 @@ def main():
             fname = img_info["file_name"]
             stem = Path(fname).stem
 
-            # Symlink image
+            # Symlink image (use pathlib resolve for path, but need os.symlink)
             src = COCO_DIR / "images" / fname
             dst = img_dir / fname
             if not dst.exists():
-                os.symlink(src.resolve(), dst)
+                dst.symlink_to(src.resolve())
 
             # Write YOLO label (class x_center y_center w h — all normalized)
             anns = anns_by_image.get(img_id, [])
             lines = []
             for ann in anns:
                 x, y, w, h = ann["bbox"]  # COCO: top-left x,y + width,height (absolute px)
+                cat_id = ann["category_id"]
                 x_center = (x + w / 2) / w_img
                 y_center = (y + h / 2) / h_img
                 w_norm = w / w_img
@@ -73,7 +78,7 @@ def main():
                 w_norm = max(0.0, min(1.0, w_norm))
                 h_norm = max(0.0, min(1.0, h_norm))
 
-                lines.append(f"0 {x_center:.6f} {y_center:.6f} {w_norm:.6f} {h_norm:.6f}")
+                lines.append(f"{cat_id} {x_center:.6f} {y_center:.6f} {w_norm:.6f} {h_norm:.6f}")
                 total_boxes += 1
 
             with open(lbl_dir / f"{stem}.txt", "w") as f:
@@ -81,16 +86,17 @@ def main():
 
         print(f"{split_name}: {len(ids)} images, {total_boxes} boxes")
 
-    # Write dataset.yaml
-    yaml_path = YOLO_DIR / "dataset.yaml"
+    # Write dataset.yaml with all category names
+    names_lines = "\n".join(f"  {i}: {categories.get(i, f'class_{i}')}" for i in range(num_classes))
     yaml_content = f"""path: {YOLO_DIR.resolve()}
 train: images/train
 val: images/val
 
-nc: 1
+nc: {num_classes}
 names:
-  0: product
+{names_lines}
 """
+    yaml_path = YOLO_DIR / "dataset.yaml"
     with open(yaml_path, "w") as f:
         f.write(yaml_content)
 
