@@ -1008,20 +1008,33 @@ def build_prediction(height, width, initial_grid, observations,
         for r in range(height):
             for c in range(width):
                 code = initial_grid[r][c]
-                if code in (11, 4) and settlement_dists[r][c] <= 4:
+                if code in (11, 4) and settlement_dists[r][c] <= 6:
                     model_exp += predictions[r, c, 1]
                     exp_count += 1
         if exp_count > 0:
             model_avg = model_exp / exp_count
             if model_avg > 0.005:
                 scale = expansion_rate / model_avg
-                scale = max(0.5, min(scale, 2.5))
+                scale = max(0.3, min(scale, 3.5))  # wider clamp for extreme rounds
                 if abs(scale - 1.0) > 0.05:  # only adjust if meaningful difference
                     for r in range(height):
                         for c in range(width):
                             code = initial_grid[r][c]
-                            if code in (11, 4) and settlement_dists[r][c] <= 4:
-                                predictions[r, c, 1] *= scale
+                            d = settlement_dists[r][c]
+                            if code in (11, 4) and d <= 6:
+                                # Decay effect for d=5-6
+                                effective_scale = 1.0 + (scale - 1.0) * max(0.0, 1.0 - max(0, d - 4) / 3.0)
+                                predictions[r, c, 1] *= effective_scale
+                                # Also scale Port for coastal cells
+                                is_coastal = any(
+                                    0 <= r + dr < height and 0 <= c + dc < width
+                                    and initial_grid[r + dr][c + dc] == 10
+                                    for dr in (-1, 0, 1) for dc in (-1, 0, 1)
+                                    if (dr, dc) != (0, 0)
+                                )
+                                if is_coastal:
+                                    port_scale = 1.0 + (effective_scale - 1.0) * 0.5
+                                    predictions[r, c, 2] *= port_scale
                                 predictions[r, c] = np.maximum(predictions[r, c], 0.001)
                                 predictions[r, c] /= predictions[r, c].sum()
 
