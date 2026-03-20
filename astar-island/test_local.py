@@ -125,12 +125,21 @@ def backtest_round(round_id):
         if total > 0:
             global_model[code] = probs / total
 
+    BUCKET_SMOOTH_K = 5.0
     spatial_model = {}
     for bucket, probs in spatial_probs.items():
-        if spatial_obs[bucket] >= 5:
-            total = probs.sum()
-            if total > 0:
-                spatial_model[bucket] = probs / total
+        n = spatial_obs[bucket]
+        if n < 3:
+            continue
+        total = probs.sum()
+        if total > 0:
+            bucket_prob = probs / total
+            terrain_code = bucket[0]
+            if terrain_code in global_model:
+                weight = n / (n + BUCKET_SMOOTH_K)
+                spatial_model[bucket] = weight * bucket_prob + (1 - weight) * global_model[terrain_code]
+            else:
+                spatial_model[bucket] = bucket_prob
 
     # Also build single-seed models for comparison
     gt0 = all_gt[0]
@@ -154,8 +163,18 @@ def backtest_round(round_id):
             single_spatial_obs[bucket] += 1
 
     single_global = {code: p / p.sum() for code, p in single_global_probs.items() if p.sum() > 0}
-    single_spatial = {b: p / p.sum() for b, p in single_spatial_probs.items()
-                      if single_spatial_obs[b] >= 5 and p.sum() > 0}
+    single_spatial = {}
+    for b, p in single_spatial_probs.items():
+        n = single_spatial_obs[b]
+        if n < 3 or p.sum() == 0:
+            continue
+        bucket_prob = p / p.sum()
+        terrain_code = b[0]
+        if terrain_code in single_global:
+            weight = n / (n + BUCKET_SMOOTH_K)
+            single_spatial[b] = weight * bucket_prob + (1 - weight) * single_global[terrain_code]
+        else:
+            single_spatial[b] = bucket_prob
 
     print(f"\nModels: {len(global_model)} terrain codes, {len(spatial_model)} spatial buckets (multi-seed)")
     print(f"Single-seed: {len(single_global)} terrain codes, {len(single_spatial)} spatial buckets")

@@ -80,16 +80,31 @@ def run_pipeline(round_id):
     width = detail.get("map_width", len(initial_states[0]["grid"][0]))
     print(f"Grid: {width}x{height}, Seeds: {seeds_count}, Max queries: {queries_max}")
 
-    # 2. Observe all seeds (spread queries evenly for diverse coverage)
-    queries_per_seed = queries_max // seeds_count
+    # 2. Observe all seeds (allocate queries proportional to settlement density)
+    # Score each seed by number of dynamic cells (settlements count extra)
+    seed_scores = []
+    for seed_idx in range(seeds_count):
+        grid = initial_states[seed_idx]["grid"]
+        settlements = sum(1 for row in grid for code in row if code in (1, 2, 3))
+        dynamic = sum(1 for row in grid for code in row if code not in (10, 5))
+        # Settlements are most valuable; also count total dynamic cells
+        seed_scores.append(dynamic + settlements * 5)
+
+    total_score = sum(seed_scores) or 1
+    seed_query_alloc = [max(5, round(queries_max * s / total_score)) for s in seed_scores]
+    # Adjust to exactly hit budget
+    while sum(seed_query_alloc) > queries_max:
+        seed_query_alloc[seed_query_alloc.index(max(seed_query_alloc))] -= 1
+    while sum(seed_query_alloc) < queries_max:
+        seed_query_alloc[seed_query_alloc.index(min(seed_query_alloc))] += 1
+
+    print(f"Query allocation: {seed_query_alloc} (scores: {seed_scores})")
+
     all_observations = []
     seed_observations = {}  # seed_idx → list of observations
 
     for seed_idx in range(seeds_count):
-        n_queries = queries_per_seed
-        # Give remaining queries to last seed
-        if seed_idx == seeds_count - 1:
-            n_queries = queries_max - len(all_observations)
+        n_queries = seed_query_alloc[seed_idx]
 
         print(f"\n--- Learning phase: observing seed {seed_idx} with {n_queries} queries ---")
         obs = observe_seed(round_id, seed_index=seed_idx,

@@ -34,8 +34,23 @@ STATIC_CODES = {10, 5}  # Ocean → always Empty, Mountain → always Mountain
 # Probability floor to avoid KL divergence → infinity
 PROB_FLOOR = 0.01
 
+# Adaptive smoothing: k controls how much we trust the bucket model vs per-cell observations
+# High k → trust bucket model more; Low k → trust empirical observations more
+# Settlements/ports are highly variable (trust model), plains/forest are predictable (trust data)
+K_PER_CODE = {
+    1: 8.0,   # Settlement — high variance, trust model
+    2: 8.0,   # Port — high variance, trust model
+    3: 5.0,   # Ruin — moderate
+    0: 3.0,   # Empty — predictable
+    11: 3.0,  # Plains — predictable
+    4: 3.0,   # Forest — predictable
+    10: 5.0,  # Ocean — static anyway
+    5: 5.0,   # Mountain — static anyway
+}
+K_DEFAULT = 5.0
+
 # Minimum observations per spatial bucket before we trust it
-MIN_BUCKET_OBS = 10
+MIN_BUCKET_OBS = 5
 
 
 def terrain_code_to_class(code):
@@ -101,6 +116,7 @@ def compute_bucket_key(initial_grid, r, c, settlement_dists=None):
     adj_forest = 0
     adj_ocean = 0
     adj_settlement = 0
+    adj_mountain = 0
     for dr in (-1, 0, 1):
         for dc in (-1, 0, 1):
             if dr == 0 and dc == 0:
@@ -114,6 +130,8 @@ def compute_bucket_key(initial_grid, r, c, settlement_dists=None):
                     adj_ocean += 1
                 elif n in (1, 2):
                     adj_settlement += 1
+                elif n == 5:
+                    adj_mountain += 1
 
     # Compute distance bucket to nearest settlement
     if settlement_dists is not None:
@@ -133,18 +151,21 @@ def compute_bucket_key(initial_grid, r, c, settlement_dists=None):
     has_adj_forest = adj_forest > 0
     has_adj_settlement = adj_settlement > 0
 
+    # Graduated forest adjacency: 0/1/2/3+ adjacent forests
+    adj_forest_level = min(adj_forest, 3)
+
     if code == 1:    # Settlement
-        return (1, has_adj_forest, has_adj_settlement)
+        return (1, adj_forest_level, has_adj_settlement, is_coastal)
     elif code == 2:  # Port
-        return (2, has_adj_forest)
+        return (2, adj_forest_level)
     elif code == 11: # Plains
-        return (11, dist_bucket, is_coastal)
+        return (11, dist_bucket, is_coastal, has_adj_forest)
     elif code == 0:  # Empty
-        return (0, dist_bucket)
+        return (0, dist_bucket, has_adj_forest)
     elif code == 4:  # Forest
-        return (4, dist_bucket)
+        return (4, dist_bucket, has_adj_settlement)
     elif code == 3:  # Ruin
-        return (3, dist_bucket)
+        return (3, dist_bucket, has_adj_settlement, has_adj_forest)
     else:
         return (code,)
 
@@ -272,13 +293,25 @@ def learn_spatial_transition_model(initial_grids, observations):
             probs[terrain_code_to_class(code)] = 1.0
             global_model[code] = probs
 
-    # Normalize spatial model (with minimum observation threshold)
+    # Normalize spatial model with Bayesian smoothing towards global prior
+    # Instead of hard threshold, blend bucket evidence with global model
+    BUCKET_SMOOTH_K = 5.0  # pseudo-count for global prior
     spatial_model = {}
     for bucket, counts in spatial_counts.items():
-        if spatial_obs[bucket] >= MIN_BUCKET_OBS:
-            total = counts.sum()
-            if total > 0:
-                spatial_model[bucket] = counts / total
+        n = spatial_obs[bucket]
+        if n < 3:  # absolute minimum — too few to even blend
+            continue
+        total = counts.sum()
+        if total > 0:
+            bucket_prob = counts / total
+            # Get global prior for this terrain code
+            terrain_code = bucket[0]
+            if terrain_code in global_model:
+                global_prior = global_model[terrain_code]
+                weight = n / (n + BUCKET_SMOOTH_K)
+                spatial_model[bucket] = weight * bucket_prob + (1 - weight) * global_prior
+            else:
+                spatial_model[bucket] = bucket_prob
 
     return global_model, spatial_model
 
@@ -344,8 +377,13 @@ def build_prediction(height, width, initial_grid, observations,
             np.divide(cell_counts, cell_totals, out=cell_probs,
                       where=(cell_totals > 0))
 
-            k = 5.0
-            alpha = cell_obs_count / (cell_obs_count + k)
+            # Adaptive k per terrain type
+            k_grid = np.full((height, width), K_DEFAULT)
+            for r in range(height):
+                for c in range(width):
+                    k_grid[r, c] = K_PER_CODE.get(initial_grid[r][c], K_DEFAULT)
+
+            alpha = cell_obs_count / (cell_obs_count + k_grid)
             alpha = alpha[..., np.newaxis]
 
             for r in range(height):
