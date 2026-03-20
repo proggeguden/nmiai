@@ -891,12 +891,12 @@ def build_prediction(height, width, initial_grid, observations,
                     if predictions[r, c, 2] < min_port:
                         deficit = min_port - predictions[r, c, 2]
                         predictions[r, c, 2] = min_port
-                        # Remove deficit from the dominant non-Port class
-                        dominant = max(
-                            (i for i in range(NUM_CLASSES) if i != 2),
-                            key=lambda i: predictions[r, c, i]
-                        )
-                        predictions[r, c, dominant] -= deficit
+                        # Distribute deficit proportionally across non-port classes
+                        non_port_mass = sum(predictions[r, c, i] for i in range(NUM_CLASSES) if i != 2)
+                        if non_port_mass > 0:
+                            for i in range(NUM_CLASSES):
+                                if i != 2:
+                                    predictions[r, c, i] -= deficit * (predictions[r, c, i] / non_port_mass)
                         predictions[r, c] = np.maximum(predictions[r, c], 0.001)
                         predictions[r, c] /= predictions[r, c].sum()
 
