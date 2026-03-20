@@ -170,6 +170,9 @@ All 4 priority items implemented and submitted:
 - R7 is the outlier (KL 0.124) — harsh winter. R3 also tough (KL 0.056, near-total collapse)
 - Sp+Forward consistently worse than pure Spatial
 
+**Attempted and improved:**
+- **Widen expansion modulation d≤6→d≤8** ✅: Gradual decay d=5-8 instead of d=5-6. Overall KL 0.0497→0.0491 (-1.2%). R7 improved 0.1243→0.1218, R5 0.0542→0.0526. No regressions.
+
 **Promising directions not yet tried:**
 - Plains bucket refinement: split by distance + cluster density interaction
 - Per-round adaptive entropy injection: condition forest shrink on observed survival rate, not just retention
