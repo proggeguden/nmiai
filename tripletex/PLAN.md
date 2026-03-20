@@ -1,60 +1,64 @@
 # Tripletex — Road to Perfect Score
 
-**Goal:** World-class score (correctness × efficiency). Current baseline: functional agent, generic 2-tool system, planner/executor/self-heal pipeline.
+**Goal:** World-class score (correctness × efficiency). Current baseline: 38/38 local tests passing, efficiency-optimized planner.
 
-## Status: Round 9 Complete (2026-03-20)
+## Status: Round 10 Complete (2026-03-20)
 
 ### Architecture
 ```
-Prompt → Multi-Agent Planner (3 parallel LLM calls) → Score & Select → Executor → Adaptive Self-Heal → Done
-                                                                            ↓
-                                                                    call_api / lookup_endpoint
+Prompt → Single Planner (efficient, t=0) → validate_plan() → Executor → Adaptive Self-Heal → Done
+                                                                   ↓
+                                                           call_api / lookup_endpoint
 ```
 
-- **Multi-agent planner**: 3 profiles (cautious/efficient/creative), scored, best wins
+- **Single planner**: efficiency-focused profile (replaced 3 parallel profiles — faster, same quality)
+- **validate_plan()**: strips vatType lookups, fixes fields/dates, injects department, injects travel paymentType
 - **Adaptive self-heal**: retry/skip/replace actions (can restructure remaining plan)
 - **Default model**: gemini-2.5-flash (overridable via GEMINI_MODEL)
-- **26 test prompts** across 10 categories and 7 languages
-- **Log harvesting**: `/harvest-logs` skill for Cloud Run logs
+- **38 test prompts** across 10 categories and 7 languages — **all passing**
 
-### Local Test Results (Round 9)
+### Local Test Results (Round 10)
 
-**Tested (10/26) — all pass, warnings fixed:**
-- Simple CRUD: 2 (departments nn), 5 (supplier nb), 7 (customer en), 22 (supplier fr), 24 (departments en)
-- Complex: 6 (project en), 23 (travel fr), 25 (voucher pt), 26 (supplier invoice es), 4 (send invoice es)
+**38/38 tests pass** — full suite verified after efficiency optimizations.
 
-**Not yet tested locally (16/26):**
-- Payment: 1 (es), 3 (de), 11 (fr cancel), 14 (fr products+pay), 18 (nn products+pay)
-- Invoice: 9 (en hours), 10 (en hours), 12 (nb credit note), 13 (en hours), 20 (de hours), 21 (pt multi-VAT)
-- Employee: 8 (en)
-- Payroll: 15 (es), 16 (en), 17 (es)
-- Project: 19 (es fixed-price)
+### Changes in Round 10 (Efficiency Optimization)
 
-### Fixes Applied in Round 9
-1. Adaptive self-heal (retry/skip/replace) replaces fixed-args-only self-heal
-2. Multi-agent planner (3 parallel, scored)
-3. gemini-2.5-flash default
-4. Lighter recipes (hints not mandates)
-5. validate_plan: strip product numbers, travel inline fields, voucher voucherType, add project startDate, add voucher row numbers
-6. Ternary and OR-fallback placeholder resolution
-7. Planner rules 19-24 (simple placeholders, startDate, vatType path, no voucherType, no custom dimensions, integer IDs)
-8. Catalog: travel sub-endpoints, perDiem location, voucher gotchas
-9. LOG_FILE support for local warning analysis
+**Prompt changes (prompts.py):**
+1. Combined invoice+payment hint (paidAmount + paymentTypeId=0 in query_params)
+2. Combined invoice+send hint (sendToCustomer=true)
+3. Known vatType IDs table (1,3,5,6,33 — no GET needed)
+4. New rules 27-28 for combo endpoints
+5. Single planner profile (replaced cautious/efficient/creative)
+6. Strengthened Rule 1 ("this is the #1 scoring criterion")
+
+**Validation changes (agent.py → validate_plan()):**
+7. Strip GET /ledger/vatType for known IDs, replace $step refs with literal IDs
+8. Fix fields filter dot→parentheses (prevents 400)
+9. Fix date range From >= To by bumping To +1 day (prevents 422)
+10. Convert null voucher postings to []
+11. Auto-inject GET /department + ref for POST /employee without department
+
+**Architecture changes (agent.py):**
+12. Single planner call (removed ThreadPoolExecutor, 3 profiles, _score_and_select_plan)
+13. Strengthened scoring: per-step cost (-3/step), combo bonuses (+5), bulk bonuses (+3), lookup penalties (-5)
+
+**Expected impact:** ~25-40 fewer API calls across the test suite.
 
 ### Known Remaining Issues
+- Some vatType errors still occur when planner uses non-standard vatType numbers
 - Employee dedup generates extra skipped steps (efficiency cost, not correctness)
 - travelExpense/cost may still 422 on some field combinations
-- Custom dimensions (test 25) — planner now works around API limitation via descriptions
+- Not yet deployed — need scored submission to measure real efficiency gain
 
 ---
 
 ## Next Steps (Priority Order)
 
-1. **Run remaining 16 tests locally** — fix any new warning patterns
-2. **Harvest production logs** — compare error rates pre/post Round 9
-3. **Employee dedup optimization** — reduce wasted GET+skip cycles
-4. **Response validation** — post-execution check that critical steps succeeded
-5. **Parallel-safe credentials** — contextvars for concurrent safety
+1. **Deploy and submit** — measure real efficiency scores vs previous submission
+2. **Harvest production logs** — compare error rates pre/post Round 10
+3. **Response validation** — post-execution check that critical steps succeeded
+4. **Parallel-safe credentials** — contextvars for concurrent safety
+5. **Further vatType fixes** — handle edge cases where planner uses non-standard numbers
 
 ---
 
