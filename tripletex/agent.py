@@ -862,9 +862,31 @@ def _resolve_placeholders_deep(obj: Any, results: dict, llm) -> Any:
 
 
 def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
-    """Resolve $step_N.value.id (and similar) placeholders from previous results."""
+    """Resolve $step_N.value.id (and similar) placeholders from previous results.
+
+    Also handles ternary conditionals the LLM sometimes generates:
+      $step_A.values.length > 0 ? $step_A.values[0].id : $step_B.value.id
+    """
     if not isinstance(value, str):
         return value
+
+    # Handle ternary conditional: $step_A.values.length > 0 ? $step_A... : $step_B...
+    ternary = re.match(
+        r"\$step_(\d+)\.values\.length\s*>\s*0\s*\?\s*"
+        r"(\$step_\d+(?:[\.\[\w\]]+)*)\s*:\s*"
+        r"(\$step_\d+(?:[\.\[\w\]]+)*)\s*$",
+        value.strip(),
+    )
+    if ternary:
+        check_step = f"step_{ternary.group(1)}"
+        true_ref = ternary.group(2)
+        false_ref = ternary.group(3)
+        # Evaluate the condition: does step_A have non-empty values?
+        check_result = results.get(check_step, {})
+        values = check_result.get("values", []) if isinstance(check_result, dict) else []
+        chosen = true_ref if values else false_ref
+        log.info(f"Resolved ternary placeholder: chose {'true' if values else 'false'} branch → {chosen}")
+        return _resolve_placeholder(chosen, results, llm)
 
     pattern = r"\$step_(\d+)((?:[\.\[\w\]]+)*)"
     match = re.search(pattern, value)

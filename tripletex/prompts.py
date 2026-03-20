@@ -105,6 +105,7 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
     with query_params: {{"employeeId": $step_N.value.id, "template": "ALL_PRIVILEGES"}}. Then assign as projectManager.
 17. For GET /invoice with date filters: invoiceDateTo must be strictly AFTER invoiceDateFrom (exclusive end). Use the next day.
 18. For POST /product/list: omit the "number" field to auto-generate — existing product numbers cause 422.
+19. **Placeholders must be simple**: only use $step_N.value.id or $step_N.values[0].id — never ternary expressions or conditionals. The executor handles empty search results automatically.
 
 ## Output format
 Return ONLY a JSON array of steps, no other text:
