@@ -88,27 +88,32 @@ Per-cell observations blended with adaptive k (terrain-dependent).
 more diverse terrain layouts → better spatial bucket coverage → better model.
 
 **Key spatial features (implemented)**:
-- Manhattan distance to nearest settlement: 3-level bucket (≤2, 3-4, 5+)
-- Graduated forest adjacency (0/1/2/3+) for settlements/ports
+- Manhattan distance to nearest settlement: 3-level bucket (≤2, 3-4, 5+) with continuous interpolation
+- Binary forest adjacency for settlements, coastal-only for ports (~20 buckets, down from ~30)
 - Coastal adjacency for plains and settlements
-- Adjacent forest for plains, empty, ruin cells
+- Adjacent forest for plains, empty cells
 - Adjacent settlement for forest, ruin cells
 - BFS-precomputed distances for efficiency
-- ~30 spatial buckets with Bayesian smoothing towards global prior (K=5)
+- Bayesian smoothing towards global prior (K=5)
+
+**Post-model adjustments (applied after spatial model, before floor)**:
+- Port probability boost: coastal cells near settlements (d≤3) get minimum 5%/3% Port mass
+- Winter severity calibration: estimate settlement survival rate from observations, scale predictions
+- Continuous distance interpolation: blend between adjacent distance brackets based on raw distance
 
 **Adaptive smoothing**: Per-cell blending uses terrain-dependent k values:
 - Settlements/ports k=8 (high variance → trust model more)
 - Plains/forest/empty k=3 (predictable → trust observations more)
 
 **Backtest performance** (weighted KL, lower is better):
-- Rounds 1–6 avg: ~0.059 (5-seed spatial model)
-- Best: 0.039 (round 4), Worst: 0.071 (round 5)
+- Rounds 1–7 avg: ~0.066 (5-seed spatial model)
+- Best: 0.038 (round 4), Worst: 0.147 (round 7, harsh winter)
+- Rounds 1–6 avg: ~0.058
 
 **Known issues**:
-- Port probability is systematically under-predicted (per-cell KL 0.83!)
-- Plains cells cause 55.7% of total KL loss; forest cells 30.1%
-- Viewport positions waste 26% of observation capacity (bug: last tile at x=30 not x=25)
+- Plains cells are largest error source (~55% of KL loss)
 - Settlement stats from query responses are completely unused
+- No settlement cluster features yet
 
 See `PLAN.md` for error analysis, improvement roadmap, and round-by-round changelog.
 

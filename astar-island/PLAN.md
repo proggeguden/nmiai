@@ -30,15 +30,16 @@
 - [x] ~30 spatial buckets (up from 14)
 
 ### Backtest Results (5-seed spatial, weighted KL — lower is better)
-| Round | Phase 3 (R6) | Phase 3.5 (R7) | Delta | Notes |
-|-------|-------------|---------------|-------|-------|
-| 1     | 0.0671      | 0.0664        | -0.001 | |
-| 2     | 0.0500      | 0.0495        | -0.001 | |
-| 3     | 0.0747      | 0.0666        | -0.008 | Harsh winter — biggest improvement |
-| 4     | 0.0396      | 0.0392        | -0.000 | Best round, already good |
-| 5     | 0.0715      | 0.0706        | -0.001 | |
-| 6     | 0.0643      | 0.0641        | -0.000 | |
-| **Avg** | **0.0612** | **0.0594**  | **-0.002** | |
+| Round | Phase 3 (R6) | Phase 3.5 (R7) | Phase 4 (R8) | Notes |
+|-------|-------------|---------------|-------------|-------|
+| 1     | 0.0671      | 0.0664        | 0.0632      | |
+| 2     | 0.0500      | 0.0495        | 0.0468      | |
+| 3     | 0.0747      | 0.0666        | 0.0690      | Harsh winter |
+| 4     | 0.0396      | 0.0392        | 0.0384      | Best round |
+| 5     | 0.0715      | 0.0706        | 0.0718      | |
+| 6     | 0.0643      | 0.0641        | 0.0615      | |
+| 7     | —           | 0.1506        | 0.1468      | Very harsh winter |
+| **Avg** | **0.0612** | **0.0594**  | **0.0568** (R1-6) | |
 
 ### Key Insights
 - **Hidden params are unique per round** — historical priors don't help, must learn fresh
@@ -52,20 +53,20 @@
 ### Scoring Context
 - Our round 5 score: 13.1/100 (naive predictor, submitted before model was ready)
 - Round 6 score: **78.5** (rank 28/186) — first real submission with spatial model
-- Round 7: submitted with Phase 3.5 improvements (score pending)
+- Round 7 score: **60.36** (rank 83/199) — 18-point drop, very harsh winter round (7% survival)
+- Round 8: submitted with Phase 4 improvements (score pending)
 - Top teams: ~115-119 weighted score → ~80-87+ raw per round
-- Gap to close: ~5-10 raw points per round. Current backtest avg KL ~0.059; need ~0.04
+- Gap to close: ~5-10 raw points per round
 
 ---
 
-## Phase 4: Close the Gap to Top Teams (NEXT)
+## Phase 4: Close the Gap to Top Teams
 
 ### Competitive Position
-- R6 score: 78.5 (rank 28/186). Top teams: 80-87+ per round.
+- R6 score: 78.5 (rank 28/186). R7 score: 60.36 (rank 83/199).
 - Leaderboard = **best round score × round weight**. Weights compound 5%/round.
-- R8 weight ≈ 1.48. Scoring **85 on R8 → weighted 125.8 → #1 on leaderboard**.
-- Even **80 on R8 → weighted 118.2 → top 3**.
-- So a 5-7 point improvement wins the whole thing.
+- R7 regression caused by harsh winter (7% survival) and observation sparsity.
+- Phase 4 targets both issues with calibration and fewer buckets.
 
 ### Round 6 Error Analysis (where we actually lose points)
 | Source | Share of total KL loss | What goes wrong |
@@ -75,80 +76,46 @@
 | Settlement (code 1) | 3.6% | Per-cell KL high (0.14) but few cells |
 | Port (code 2) | 0.7% | Extremely high per-cell KL (0.83!) but only ~5 cells |
 
-**97.7% of weighted KL comes from medium+high entropy cells** (settlements, nearby plains/forest).
-Static cells are essentially free points.
-
-**Key systematic error: Port probability is under-predicted everywhere.**
-GT shows 17-29% Port probability at many coastal cells, but our model assigns near-zero.
-
-### What we tried in Round 7 and what we learned:
-- **Graduated forest adjacency (0/1/2/3+)**: Tiny improvement
+### What we tried and learned across rounds:
+- **Graduated forest adjacency (0/1/2/3+)**: Tiny improvement → reverted to binary in Phase 4
 - **Forest adjacency on empty/ruin cells**: **Big win** for harsh winters (R3: 0.075→0.067)
 - **4-level distance buckets**: **Consistently hurts** — fragments data, don't try again
 - **Bayesian bucket smoothing (K=5)**: Small but consistent wins. K=20 too aggressive.
 
 ---
 
-### 4a. Fix viewport position bug (FREE POINTS — implement first)
-**Bug**: Current viewport positions `[0, 15, 30]` for a 40-wide grid waste capacity.
-Viewport at x=30 only covers 10 cells (30-39) despite having capacity for 15.
+### 4a. Fix viewport position bug ✅ (committed before R8)
++425 cell-observations per coverage pass (+26%).
 
-**Fix**: Use positions `[0, 15, 25]` instead. Last viewport covers 25-39 (full 15 cells).
-Overlap at x=25-29 gives those cells double observations for free.
+### 4b. Continuous distance interpolation ✅ (R8 submission)
+Blends between adjacent distance brackets based on raw Manhattan distance.
+Uses midpoints [1.0, 3.5, 7.0] for linear interpolation. Applied at prediction
+time only — bucket training unchanged.
 
-**Impact**: +425 cell-observations per coverage pass (+26%). Every cell in the
-overlap band gets observed twice instead of once. Zero cost.
+### 4c. Winter severity calibration ✅ (R8 submission)
+`estimate_survival_rate()` counts how many initial settlement/port cells survived
+in observations. Scales model's settlement/port predictions to match observed rate.
+Clamped to [0.3, 3.0] to avoid wild swings. R8 saw 7.1% survival → correctly
+scaled down from model's average.
 
-### 4b. Continuous distance blending in prediction (HIGH IMPACT)
-**Problem**: 3 discrete distance buckets lose info. 4 buckets fragment. Interpolation
-captures both benefits.
+### 4d. Port probability fix ✅ (R8 submission)
+Coastal cells within d≤3 of settlements get minimum Port probability (5% if d≤1,
+3% if d≤3). Deficit taken from dominant non-Port class.
 
-**Approach**: At prediction time (not training), for each cell with distance d:
-1. Look up bucket distributions for the two adjacent distance brackets
-2. Linearly interpolate based on actual distance
-3. E.g., d=4 is midway between bracket-1 (≤4) and bracket-2 (5+) → blend 50/50
+### 4e. Simplified bucket keys ✅ (R8 submission)
+Reduced from ~30 to ~20 buckets:
+- Settlement: binary `has_adj_forest` (was graduated 0/1/2/3+)
+- Port: `is_coastal` only (was `adj_forest_level`)
+- Ruin: dropped `has_adj_forest`
+- Plains, Empty, Forest: unchanged
 
-This is done in `build_prediction`, NOT in bucket training. Buckets stay at 3 levels,
-no fragmentation. But predictions get smooth distance curves.
-
-### 4c. Estimate winter severity → global calibration (HIGH IMPACT)
-**Key insight**: Winter severity is the single biggest source of round-to-round variance.
-It's a hidden parameter shared across all cells AND all seeds. If we estimate it, we
-can calibrate ALL predictions at once.
-
-**Implementation**:
-1. From initial grids (free): count initial settlements across all 5 seeds (~200+)
-2. From observations: check how many initial-settlement positions are still settlements
-3. `survival_rate = still_settlement / observed_initial_settlements`
-4. This is a precise estimate (200+ samples)
-5. Use survival_rate to scale settlement probability in predictions:
-   - If our bucket says P(Settlement)=0.40 but survival_rate=0.15 (harsh)
-     → scale down: `P_adj = P * (survival_rate / bucket_survival_rate)`
-   - Redistribute mass to Empty/Forest/Ruin proportionally
-
-This is NOT about building a simulator. It's a one-number global calibration that fixes
-the biggest variance source.
-
-### 4d. Port probability fix (TARGETED — fixes systematic error)
-The error analysis shows Port is catastrophically under-predicted (per-cell KL=0.83).
-
-**Root cause**: Ports are rare in initial grid (~5 per seed). Our bucket model sees
-few port creations. Bayesian smoothing pulls the already-low Port mass towards zero.
-
-**Fix options**:
-1. Add explicit Port-formation features: `(is_coastal AND dist_to_settlement ≤ 2)` → boost Port prior
-2. In bucket smoothing, use terrain-specific priors that include Port probability for
-   coastal cells (not the global prior, which has ~0% Port)
-3. When blending, set a minimum Port probability (e.g., 0.03) for any coastal cell
-   near a settlement
-
-### 4e. Settlement cluster features (MEDIUM IMPACT)
+### 4f. Settlement cluster features (MEDIUM IMPACT — NOT YET DONE)
 Count settlements within Manhattan distance 5 in initial grid. Discretize: isolated (0-1),
 small (2-3), dense (4+). Dense clusters survive more (trade) but also collapse more (raids).
 
 Use as feature in plains/forest/settlement bucket keys.
 
-### 4f. Settlement stats from query responses (MEDIUM IMPACT — unused data)
+### 4g. Settlement stats from query responses (MEDIUM IMPACT — NOT YET DONE)
 The simulate endpoint returns settlement stats (food, population, defense, wealth)
 that we currently **completely ignore**. The observation dict has a `settlements` key.
 
@@ -156,7 +123,7 @@ that we currently **completely ignore**. The observation dict has a `settlements
 Settlements with avg food < threshold → predict collapse. Could help per-cell blending
 for settlement cells specifically.
 
-### 4g. Lightweight forward model (HIGH EFFORT, TRANSFORMATIVE)
+### 4h. Lightweight forward model (HIGH EFFORT, TRANSFORMATIVE — NOT YET DONE)
 Not a full simulator — just calibrate 3-4 key rates from observations:
 1. **Settlement survival rate** (from 4c above)
 2. **Expansion rate**: how many new settlements formed / initial settlements
@@ -171,24 +138,26 @@ Then for each cell, compute:
 
 This would be a parametric model calibrated per-round instead of a nonparametric bucket model.
 
-### 4h. Deploy to Cloud Run (DO WHEN MODEL IS GOOD)
+### 4i. Deploy to Cloud Run (DO WHEN MODEL IS GOOD)
 - [ ] Deploy Dockerfile to Cloud Run
 - [ ] Register endpoint at app.ainm.no
 - [ ] Automated round handling via /solve endpoint
 
 ---
 
-### Priority for Round 8 (ordered by expected impact / effort)
+### R8 submission summary
+All 4 priority items implemented and submitted:
+- 4a viewport fix ✅, 4b distance interpolation ✅, 4c winter calibration ✅, 4d port fix ✅, 4e bucket simplification ✅
+- R8 round had 7.1% settlement survival (very harsh winter)
+- Backtest: R1-6 avg 0.0568 (was 0.0594), R7 0.1468 (was 0.1506)
+
+### Priority for Round 9+ (remaining items)
 | # | Change | Expected gain | Effort |
 |---|--------|---------------|--------|
-| 1 | **Fix viewport positions** (4a) | ~2 pts (more observations) | 10 min |
-| 2 | **Winter severity calibration** (4c) | ~3-5 pts (fixes biggest variance source) | 1 hr |
-| 3 | **Port probability fix** (4d) | ~2-3 pts (fixes systematic error) | 30 min |
-| 4 | **Continuous distance blend** (4b) | ~2-3 pts (smooth distance effects) | 1 hr |
-| 5 | **Settlement cluster features** (4e) | ~1-2 pts | 30 min |
-| 6 | **Parse settlement stats** (4f) | ~1 pt | 30 min |
-
-Items 1-4 together could yield ~10 points → score ~88 → **#1 on leaderboard**.
+| 1 | **Settlement cluster features** (4f) | ~1-2 pts | 30 min |
+| 2 | **Parse settlement stats** (4g) | ~1 pt | 30 min |
+| 3 | **Lightweight forward model** (4h) | ~3-5 pts (transformative) | 4 hr |
+| 4 | **Deploy to Cloud Run** (4i) | Automation | 1 hr |
 
 ---
 
