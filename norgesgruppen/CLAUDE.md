@@ -40,13 +40,22 @@ Two-stage pipeline: single-class YOLOv8l detector + EfficientNet-B2 classifier w
 6. `train.py` — Multi-class YOLOv8m (for WBF ensemble, future use)
 
 ### Inference (run.py)
-1. YOLO detect (conf=0.10, max_det=500) → bounding boxes
+1. YOLO detect (conf=0.10, max_det=500) → bounding boxes (hard NMS, IoU=0.5)
 2. Crop each detection (5% padding) → resize 260×260
-3. Classify: EfficientNet-B2 → logits + features (one forward pass, dual-output ONNX)
-4. kNN: cosine similarity to precomputed embeddings → vote distribution
-5. Ensemble: 0.6 × classifier_softmax + 0.4 × knn_vote
-6. Final score = detection_conf × classification_conf
-7. Graceful fallback: works without embeddings.npy (classifier-only mode)
+3. TTA: 4 augmented variants per crop (original, flip, ±5° rotation)
+4. Classify: EfficientNet-B2 → logits + features (one forward pass, dual-output ONNX)
+5. Average TTA softmax probabilities + feature vectors
+6. kNN: cosine similarity to precomputed embeddings → vote distribution
+7. Ensemble: 0.6 × classifier_softmax + 0.4 × knn_vote
+8. Final score = detection_conf × classification_conf^0.7
+9. Graceful fallback: works without embeddings.npy (classifier-only mode)
+
+### Diagnostics & Tools
+- `validate.py` — full 70/30 competition scoring with per-class AP breakdown
+- `analyze_results.py` — annotated val images, confusion report, crop galleries
+- `shopping_list.py` — prioritized products to photograph at the store
+- `add_photos.py` — integrate user photos into training pipeline (`data/user_photos/{cat_id}/`)
+- `sweep.py` — automated A/B testing of run.py hyperparameters
 
 ### Packaging
 - `package.py` — bundles run.py + detector.onnx + classifier.onnx + embeddings.npy
@@ -74,11 +83,21 @@ gcloud compute instances delete nmiai-train-multiclass --zone=europe-west1-c --p
 ```
 
 ## Current Results
-| Model | Metric | Value |
-|-------|--------|-------|
-| YOLOv8l single-class detector | val mAP@0.5 | 0.967 |
-| EfficientNet-B2 classifier | val accuracy | 90.8% (356 classes) |
-| Multi-class YOLOv8m (first run) | val mAP@0.5 | 0.816 |
+| Metric | Value |
+|--------|-------|
+| **Competition score (local val)** | **0.9392** |
+| Detection mAP@0.5 (category-ignored) | 0.959 |
+| Classification mAP@0.5 (per-category) | 0.893 |
+| Detection recall | 97.4% |
+| Classification accuracy (matched det) | 96.6% |
+| Categories with AP=0 in val | 10 |
+| Categories with NO val data | 134 |
+
+### Known Weaknesses
+- **Egg products**: 40/71 misclassifications (56%). 6-pack vs 12-pack Prior eggs = 16 confusions alone.
+- **10 categories with AP=0**: Jacobs Gårdsegg, Grissini, Lady Grey, Müsli Frukt, etc.
+- **134 categories unmeasurable**: no val annotations (10% image-level split too coarse for 356 classes)
+- **Soft-NMS hurts**: generates excess FPs on dense shelves, −0.003 score
 
 ## Weight Budget
 | File | Size | Purpose |
