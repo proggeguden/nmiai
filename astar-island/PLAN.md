@@ -60,74 +60,135 @@
 
 ## Phase 4: Close the Gap to Top Teams (NEXT)
 
-Gap: ~5-10 raw points per round. Need avg KL from ~0.059 to ~0.04.
-Top teams score 80-87+ per round consistently.
+### Competitive Position
+- R6 score: 78.5 (rank 28/186). Top teams: 80-87+ per round.
+- Leaderboard = **best round score × round weight**. Weights compound 5%/round.
+- R8 weight ≈ 1.48. Scoring **85 on R8 → weighted 125.8 → #1 on leaderboard**.
+- Even **80 on R8 → weighted 118.2 → top 3**.
+- So a 5-7 point improvement wins the whole thing.
+
+### Round 6 Error Analysis (where we actually lose points)
+| Source | Share of total KL loss | What goes wrong |
+|--------|----------------------|-----------------|
+| **Plains** (code 11) | **55.7%** | Misjudge Empty/Settlement/Forest balance near settlements |
+| **Forest** (code 4) | **30.1%** | Underestimate Port creation on coast, miss expansion |
+| Settlement (code 1) | 3.6% | Per-cell KL high (0.14) but few cells |
+| Port (code 2) | 0.7% | Extremely high per-cell KL (0.83!) but only ~5 cells |
+
+**97.7% of weighted KL comes from medium+high entropy cells** (settlements, nearby plains/forest).
+Static cells are essentially free points.
+
+**Key systematic error: Port probability is under-predicted everywhere.**
+GT shows 17-29% Port probability at many coastal cells, but our model assigns near-zero.
 
 ### What we tried in Round 7 and what we learned:
-- **Graduated forest adjacency (0/1/2/3+)**: Tiny improvement, forest count matters less than presence
+- **Graduated forest adjacency (0/1/2/3+)**: Tiny improvement
 - **Forest adjacency on empty/ruin cells**: **Big win** for harsh winters (R3: 0.075→0.067)
-- **4-level distance buckets**: **Consistently hurts** — fragments data, R5 regressed 15%. Don't try again.
-- **Bayesian bucket smoothing (K=5)**: Small but consistent wins. K=20 was too aggressive.
-- **Adjacent mountain**: No effect (counted but unused in bucket keys currently)
+- **4-level distance buckets**: **Consistently hurts** — fragments data, don't try again
+- **Bayesian bucket smoothing (K=5)**: Small but consistent wins. K=20 too aggressive.
 
-### 4a. Continuous distance interpolation (HIGH IMPACT — UNTRIED)
-**Problem**: 3 discrete distance buckets lose info. 4 buckets fragment. Solution: interpolate.
+---
 
-**Approach**: For a cell at distance d=3.5, blend between bucket-1 (≤2) and bucket-2 (3-4)
-distributions using linear interpolation. This gives smooth distance effects without
-creating more buckets.
+### 4a. Fix viewport position bug (FREE POINTS — implement first)
+**Bug**: Current viewport positions `[0, 15, 30]` for a 40-wide grid waste capacity.
+Viewport at x=30 only covers 10 cells (30-39) despite having capacity for 15.
 
-Implementation:
-1. Compute raw distance d for each cell
-2. Find two nearest bucket boundaries
-3. Interpolate: `pred = w * bucket_near + (1-w) * bucket_far` where w = fractional position
-4. Apply per bucket key (distance is just one component)
+**Fix**: Use positions `[0, 15, 25]` instead. Last viewport covers 25-39 (full 15 cells).
+Overlap at x=25-29 gives those cells double observations for free.
 
-**Why this might work**: It gives us the equivalent of infinite distance buckets without
-any data fragmentation. The backtest showed 4 levels helped R3 dramatically (0.075→0.041)
-but killed R5 — interpolation would capture the R3 gains without the R5 regression.
+**Impact**: +425 cell-observations per coverage pass (+26%). Every cell in the
+overlap band gets observed twice instead of once. Zero cost.
 
-### 4b. Settlement cluster density (HIGH IMPACT — UNTRIED)
-Count settlements within radius 3-5 (from initial grid). Dense clusters have more
-conflict (raids) + trade → different survival curves than isolated settlements.
-Binary feature: `dense_cluster = settlements_within_r5 >= 3`.
+### 4b. Continuous distance blending in prediction (HIGH IMPACT)
+**Problem**: 3 discrete distance buckets lose info. 4 buckets fragment. Interpolation
+captures both benefits.
 
-### 4c. Viewport optimization: smaller viewports for more observations (HIGH IMPACT)
-**Problem**: 15×15 viewports × 10 queries = 2250 cells observed per seed. But with
-10×10 viewports, we get 10×100 = 1000 cells but can observe settlement-heavy areas
-3-4 times instead of 1-2 times. More observations per cell = better per-cell blending.
+**Approach**: At prediction time (not training), for each cell with distance d:
+1. Look up bucket distributions for the two adjacent distance brackets
+2. Linearly interpolate based on actual distance
+3. E.g., d=4 is midway between bracket-1 (≤4) and bracket-2 (5+) → blend 50/50
 
-**Approach**: Use 10×10 viewports for repeat queries on settlement-heavy tiles.
-The model already handles per-cell blending — more observations would directly help.
+This is done in `build_prediction`, NOT in bucket training. Buckets stay at 3 levels,
+no fragmentation. But predictions get smooth distance curves.
 
-### 4d. Exploit settlement stats from simulate responses (MEDIUM IMPACT)
-Parse population/food/wealth/defense from simulate response. Use average food level
-as soft signal for settlement survival. High food → survives winter → stays Settlement.
-Low food → collapses → becomes Ruin/Empty/Forest.
+### 4c. Estimate winter severity → global calibration (HIGH IMPACT)
+**Key insight**: Winter severity is the single biggest source of round-to-round variance.
+It's a hidden parameter shared across all cells AND all seeds. If we estimate it, we
+can calibrate ALL predictions at once.
 
-**Risk**: Noisy with only ~2 observations per cell. Maybe useful as tie-breaker.
+**Implementation**:
+1. From initial grids (free): count initial settlements across all 5 seeds (~200+)
+2. From observations: check how many initial-settlement positions are still settlements
+3. `survival_rate = still_settlement / observed_initial_settlements`
+4. This is a precise estimate (200+ samples)
+5. Use survival_rate to scale settlement probability in predictions:
+   - If our bucket says P(Settlement)=0.40 but survival_rate=0.15 (harsh)
+     → scale down: `P_adj = P * (survival_rate / bucket_survival_rate)`
+   - Redistribute mass to Empty/Forest/Ruin proportionally
 
-### 4e. Simulation-informed priors (HIGH EFFORT, HIGH REWARD)
-Build a lightweight forward model:
-1. Estimate food supply per settlement (count adj forests)
-2. Estimate winter severity from observation data (what % of settlements collapsed?)
-3. Use estimated severity to adjust all settlement survival probabilities
-4. This directly addresses the biggest variance source (winter severity)
+This is NOT about building a simulator. It's a one-number global calibration that fixes
+the biggest variance source.
 
-The key insight: **winter severity is the same for all cells in a round**. If we can
-estimate it from our observations (e.g., 30% of observed settlements survived → harsh winter),
-we can shift ALL settlement predictions accordingly, even for unobserved cells.
+### 4d. Port probability fix (TARGETED — fixes systematic error)
+The error analysis shows Port is catastrophically under-predicted (per-cell KL=0.83).
 
-### 4f. Deploy to Cloud Run (DO WHEN MODEL IS GOOD)
+**Root cause**: Ports are rare in initial grid (~5 per seed). Our bucket model sees
+few port creations. Bayesian smoothing pulls the already-low Port mass towards zero.
+
+**Fix options**:
+1. Add explicit Port-formation features: `(is_coastal AND dist_to_settlement ≤ 2)` → boost Port prior
+2. In bucket smoothing, use terrain-specific priors that include Port probability for
+   coastal cells (not the global prior, which has ~0% Port)
+3. When blending, set a minimum Port probability (e.g., 0.03) for any coastal cell
+   near a settlement
+
+### 4e. Settlement cluster features (MEDIUM IMPACT)
+Count settlements within Manhattan distance 5 in initial grid. Discretize: isolated (0-1),
+small (2-3), dense (4+). Dense clusters survive more (trade) but also collapse more (raids).
+
+Use as feature in plains/forest/settlement bucket keys.
+
+### 4f. Settlement stats from query responses (MEDIUM IMPACT — unused data)
+The simulate endpoint returns settlement stats (food, population, defense, wealth)
+that we currently **completely ignore**. The observation dict has a `settlements` key.
+
+**Use**: Average food level of observed settlements → signal for settlement survival.
+Settlements with avg food < threshold → predict collapse. Could help per-cell blending
+for settlement cells specifically.
+
+### 4g. Lightweight forward model (HIGH EFFORT, TRANSFORMATIVE)
+Not a full simulator — just calibrate 3-4 key rates from observations:
+1. **Settlement survival rate** (from 4c above)
+2. **Expansion rate**: how many new settlements formed / initial settlements
+3. **Port formation rate**: new ports / coastal settlements
+4. **Forest reclamation rate**: forest cells gained / ruin+empty cells near forest
+
+Then for each cell, compute:
+- P(Settlement) = f(initial_code, distance, survival_rate, expansion_rate)
+- P(Port) = f(is_coastal, distance, port_formation_rate)
+- P(Forest) = f(adj_forest, distance, reclamation_rate)
+- P(Empty) = 1 - sum(above) - P(Ruin) - P(Mountain)
+
+This would be a parametric model calibrated per-round instead of a nonparametric bucket model.
+
+### 4h. Deploy to Cloud Run (DO WHEN MODEL IS GOOD)
 - [ ] Deploy Dockerfile to Cloud Run
 - [ ] Register endpoint at app.ainm.no
 - [ ] Automated round handling via /solve endpoint
 
-### Priority for Round 8
-1. **4a** — Continuous distance interpolation (best risk/reward)
-2. **4e winter severity estimation** — global calibration from observations
-3. **4c** — Smaller viewports for settlement areas
-4. **4b** — Settlement cluster density
+---
+
+### Priority for Round 8 (ordered by expected impact / effort)
+| # | Change | Expected gain | Effort |
+|---|--------|---------------|--------|
+| 1 | **Fix viewport positions** (4a) | ~2 pts (more observations) | 10 min |
+| 2 | **Winter severity calibration** (4c) | ~3-5 pts (fixes biggest variance source) | 1 hr |
+| 3 | **Port probability fix** (4d) | ~2-3 pts (fixes systematic error) | 30 min |
+| 4 | **Continuous distance blend** (4b) | ~2-3 pts (smooth distance effects) | 1 hr |
+| 5 | **Settlement cluster features** (4e) | ~1-2 pts | 30 min |
+| 6 | **Parse settlement stats** (4f) | ~1 pt | 30 min |
+
+Items 1-4 together could yield ~10 points → score ~88 → **#1 on leaderboard**.
 
 ---
 

@@ -104,7 +104,13 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 - Rounds 1–6 avg: ~0.059 (5-seed spatial model)
 - Best: 0.039 (round 4), Worst: 0.071 (round 5)
 
-See `PLAN.md` for improvement roadmap and round-by-round changelog.
+**Known issues**:
+- Port probability is systematically under-predicted (per-cell KL 0.83!)
+- Plains cells cause 55.7% of total KL loss; forest cells 30.1%
+- Viewport positions waste 26% of observation capacity (bug: last tile at x=30 not x=25)
+- Settlement stats from query responses are completely unused
+
+See `PLAN.md` for error analysis, improvement roadmap, and round-by-round changelog.
 
 ## API
 - **Base URL**: `https://api.ainm.no`
