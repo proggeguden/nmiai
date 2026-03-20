@@ -30,16 +30,16 @@
 - [x] ~30 spatial buckets (up from 14)
 
 ### Backtest Results (5-seed spatial, weighted KL — lower is better)
-| Round | Phase 3 (R6) | Phase 3.5 (R7) | Phase 4 (R8) | Notes |
-|-------|-------------|---------------|-------------|-------|
-| 1     | 0.0671      | 0.0664        | 0.0632      | |
-| 2     | 0.0500      | 0.0495        | 0.0468      | |
-| 3     | 0.0747      | 0.0666        | 0.0690      | Harsh winter |
-| 4     | 0.0396      | 0.0392        | 0.0384      | Best round |
-| 5     | 0.0715      | 0.0706        | 0.0718      | |
-| 6     | 0.0643      | 0.0641        | 0.0615      | |
-| 7     | —           | 0.1506        | 0.1468      | Very harsh winter |
-| **Avg** | **0.0612** | **0.0594**  | **0.0568** (R1-6) | |
+| Round | Phase 3 (R6) | Phase 3.5 (R7) | Phase 4 (R8) | Phase 4f+g (cluster+stats) | Notes |
+|-------|-------------|---------------|-------------|---------------------------|-------|
+| 1     | 0.0671      | 0.0664        | 0.0632      | 0.0620                    | |
+| 2     | 0.0500      | 0.0495        | 0.0468      | 0.0456                    | |
+| 3     | 0.0747      | 0.0666        | 0.0690      | 0.0690                    | Harsh winter |
+| 4     | 0.0396      | 0.0392        | 0.0384      | 0.0380                    | Best round |
+| 5     | 0.0715      | 0.0706        | 0.0718      | 0.0700                    | |
+| 6     | 0.0643      | 0.0641        | 0.0615      | 0.0608                    | |
+| 7     | —           | 0.1506        | 0.1468      | 0.1416                    | Very harsh winter |
+| **Avg** | **0.0612** | **0.0594**  | **0.0568** (R1-6) | **0.0576** (R1-6)   | |
 
 ### Key Insights
 - **Hidden params are unique per round** — historical priors don't help, must learn fresh
@@ -109,34 +109,33 @@ Reduced from ~30 to ~20 buckets:
 - Ruin: dropped `has_adj_forest`
 - Plains, Empty, Forest: unchanged
 
-### 4f. Settlement cluster features (MEDIUM IMPACT — NOT YET DONE)
-Count settlements within Manhattan distance 5 in initial grid. Discretize: isolated (0-1),
-small (2-3), dense (4+). Dense clusters survive more (trade) but also collapse more (raids).
+### 4f. Settlement cluster density ✅ (committed)
+Binary `is_clustered` (≥2 settlements within Manhattan d≤5) added to Settlement and Plains
+bucket keys. Tested 3 variants: both (best), settlement-only, none.
+- R7 improved 0.1468→0.1416 (biggest gain — clustered vs isolated settlements behave differently in harsh winters)
+- R1-6 avg 0.0568→0.0576 (slight regression — more buckets = less data per bucket)
+- R1-7 avg improved overall due to R7 gain
 
-Use as feature in plains/forest/settlement bucket keys.
+### 4g. Settlement stats extraction ✅ (committed, pending live validation)
+`extract_settlement_stats()` parses food/population/wealth from simulate query responses.
+- Level 1: avg_food modulates winter calibration scale (±20%, clamped)
+- Level 2 (per-cell food z-score) and Level 3 (expansion signal) not yet implemented
+- Schema discovery blocked by rate limit — wired but safe no-op until live data confirms fields
+- Cannot backtest (GT has no settlement stats)
 
-### 4g. Settlement stats from query responses (MEDIUM IMPACT — NOT YET DONE)
-The simulate endpoint returns settlement stats (food, population, defense, wealth)
-that we currently **completely ignore**. The observation dict has a `settlements` key.
+### 4h. Forward model ✅ (implemented but DISABLED in production)
+Rate estimation functions: expansion, port_formation, forest_reclamation, ruin.
+Physics-based forward probabilities with context-dependent blending weights.
 
-**Use**: Average food level of observed settlements → signal for settlement survival.
-Settlements with avg food < threshold → predict collapse. Could help per-cell blending
-for settlement cells specifically.
+**Result: consistently hurts in backtesting.** Even at very low weights (3-10%), the
+parametric formulas can't match the data-driven bucket model. Reasons:
+- Bucket model already captures actual transition dynamics from observations
+- Physics formulas use simplified exponential/linear approximations
+- The bucket model has access to the same spatial features the forward model uses
+- Forward model adds noise rather than correcting errors
 
-### 4h. Lightweight forward model (HIGH EFFORT, TRANSFORMATIVE — NOT YET DONE)
-Not a full simulator — just calibrate 3-4 key rates from observations:
-1. **Settlement survival rate** (from 4c above)
-2. **Expansion rate**: how many new settlements formed / initial settlements
-3. **Port formation rate**: new ports / coastal settlements
-4. **Forest reclamation rate**: forest cells gained / ruin+empty cells near forest
-
-Then for each cell, compute:
-- P(Settlement) = f(initial_code, distance, survival_rate, expansion_rate)
-- P(Port) = f(is_coastal, distance, port_formation_rate)
-- P(Forest) = f(adj_forest, distance, reclamation_rate)
-- P(Empty) = 1 - sum(above) - P(Ruin) - P(Mountain)
-
-This would be a parametric model calibrated per-round instead of a nonparametric bucket model.
+**Kept for future use** — rate estimation functions may be useful for settlement stats
+integration or as diagnostic tools.
 
 ### 4i. Deploy to Cloud Run (DO WHEN MODEL IS GOOD)
 - [ ] Deploy Dockerfile to Cloud Run
@@ -152,12 +151,12 @@ All 4 priority items implemented and submitted:
 - Backtest: R1-6 avg 0.0568 (was 0.0594), R7 0.1468 (was 0.1506)
 
 ### Priority for Round 9+ (remaining items)
-| # | Change | Expected gain | Effort |
-|---|--------|---------------|--------|
-| 1 | **Settlement cluster features** (4f) | ~1-2 pts | 30 min |
-| 2 | **Parse settlement stats** (4g) | ~1 pt | 30 min |
-| 3 | **Lightweight forward model** (4h) | ~3-5 pts (transformative) | 4 hr |
-| 4 | **Deploy to Cloud Run** (4i) | Automation | 1 hr |
+| # | Change | Status | Notes |
+|---|--------|--------|-------|
+| 1 | **Settlement cluster features** (4f) | ✅ Done | +3.5% on R7, slight regression R1-6 |
+| 2 | **Parse settlement stats** (4g) | ✅ Wired, needs live validation | Food modulation of winter calibration |
+| 3 | **Lightweight forward model** (4h) | ❌ Disabled | Consistently hurts in backtest |
+| 4 | **Deploy to Cloud Run** (4i) | Not started | Automation |
 
 ---
 

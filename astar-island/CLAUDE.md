@@ -89,7 +89,8 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 
 **Key spatial features (implemented)**:
 - Manhattan distance to nearest settlement: 3-level bucket (≤2, 3-4, 5+) with continuous interpolation
-- Binary forest adjacency for settlements, coastal-only for ports (~20 buckets, down from ~30)
+- Settlement cluster density: binary `is_clustered` for Settlement and Plains bucket keys
+- Binary forest adjacency for settlements, coastal-only for ports (~25-28 buckets)
 - Coastal adjacency for plains and settlements
 - Adjacent forest for plains, empty cells
 - Adjacent settlement for forest, ruin cells
@@ -106,14 +107,28 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 - Plains/forest/empty k=3 (predictable → trust observations more)
 
 **Backtest performance** (weighted KL, lower is better):
-- Rounds 1–7 avg: ~0.066 (5-seed spatial model)
-- Best: 0.038 (round 4), Worst: 0.147 (round 7, harsh winter)
+- Rounds 1–7 avg: ~0.067 (5-seed spatial model)
+- Best: 0.038 (round 4), Worst: 0.142 (round 7, harsh winter)
 - Rounds 1–6 avg: ~0.058
+
+**Settlement cluster density** (Phase 4f):
+- Binary `is_clustered` (≥2 settlements within Manhattan d≤5) added to Settlement and Plains bucket keys
+- Helps most on harsh winter rounds (R7: 0.147→0.142)
+
+**Settlement stats extraction** (Phase 4g):
+- Parses food/population/wealth from simulate query responses
+- Modulates winter calibration scale based on avg food (±20%)
+- Schema discovery pending (rate-limited), wired but no-op until confirmed
+
+**Forward model** (Phase 4h):
+- Rate estimation functions implemented (expansion, port_formation, forest_reclamation, ruin)
+- Physics-based forward probabilities computed but NOT applied in production
+- Backtesting showed consistent regression — bucket model is more accurate
+- Code kept for potential future use with better rate formulas
 
 **Known issues**:
 - Plains cells are largest error source (~55% of KL loss)
-- Settlement stats from query responses are completely unused
-- No settlement cluster features yet
+- Forward model doesn't improve on data-driven bucket model
 
 See `PLAN.md` for error analysis, improvement roadmap, and round-by-round changelog.
 

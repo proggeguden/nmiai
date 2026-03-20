@@ -19,7 +19,8 @@ load_dotenv()
 import api_client
 from predictor import (
     build_prediction, predictions_to_list, validate_predictions,
-    learn_spatial_transition_model, estimate_survival_rate,
+    learn_spatial_transition_model, estimate_survival_rate, estimate_all_rates,
+    extract_settlement_stats,
 )
 
 app = FastAPI()
@@ -126,9 +127,22 @@ def run_pipeline(round_id):
         initial_grids, all_observations
     )
 
-    # Estimate winter severity from observed settlement survival
+    # Estimate winter severity and all forward model rates
     survival_rate = estimate_survival_rate(initial_grids, all_observations)
+    forward_rates = estimate_all_rates(initial_grids, all_observations)
     print(f"Estimated survival rate: {survival_rate}")
+    print(f"Forward model rates: {forward_rates}")
+
+    # Extract settlement stats from observations
+    settlement_stats = extract_settlement_stats(all_observations)
+    if settlement_stats:
+        print(f"Settlement stats: avg_food={settlement_stats['avg_food']:.1f}, "
+              f"median_food={settlement_stats['median_food']:.1f}, "
+              f"avg_pop={settlement_stats['avg_population']:.1f}, "
+              f"positions={settlement_stats['unique_positions']}, "
+              f"obs={settlement_stats['total_observations']}")
+    else:
+        print("Settlement stats: insufficient data")
 
     from predictor import CLASS_NAMES
     print(f"\nLearned: {len(global_model)} terrain codes, {len(spatial_model)} spatial buckets")
@@ -149,7 +163,8 @@ def run_pipeline(round_id):
         pred = build_prediction(height, width, initial_grid, seed_obs,
                                 transition_model=global_model,
                                 spatial_model=spatial_model,
-                                survival_rate=survival_rate)
+                                survival_rate=survival_rate,
+                                settlement_stats=settlement_stats)
         pred_list = predictions_to_list(pred)
         validate_predictions(pred_list, height, width)
 

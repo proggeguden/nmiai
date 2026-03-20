@@ -23,7 +23,8 @@ from predictor import (
     build_prediction, learn_transition_model, learn_spatial_transition_model,
     compute_feature_map, predictions_to_list,
     validate_predictions, terrain_code_to_class,
-    NUM_CLASSES, CLASS_NAMES,
+    NUM_CLASSES, CLASS_NAMES, STATIC_CODES,
+    estimate_survival_rate as _est_survival,
 )
 
 
@@ -100,7 +101,7 @@ def backtest_round(round_id):
     for seed_idx in range(seeds_count):
         gt = all_gt[seed_idx]
         init_grid = initial_states[seed_idx]["grid"]
-        fmap, _ = compute_feature_map(init_grid)
+        fmap, _, _ = compute_feature_map(init_grid)
 
         for r in range(height):
             for c in range(width):
@@ -144,7 +145,7 @@ def backtest_round(round_id):
     # Also build single-seed models for comparison
     gt0 = all_gt[0]
     init_grid_0 = initial_states[0]["grid"]
-    fmap_0, _ = compute_feature_map(init_grid_0)
+    fmap_0, _, _ = compute_feature_map(init_grid_0)
 
     single_global_probs = {}
     single_spatial_probs = {}
@@ -185,32 +186,101 @@ def backtest_round(round_id):
         top_str = ", ".join(f"{CLASS_NAMES[i]}={p:.3f}" for i, p in top if p > 0.005)
         print(f"  {bucket} (n={n}): {top_str}")
 
-    # Score all seeds with all model variants
-    print(f"\n{'Model':<16} | {'Seed 0':>8} {'Seed 1':>8} {'Seed 2':>8} {'Seed 3':>8} {'Seed 4':>8} | {'Avg':>8}")
-    print("-" * 83)
+    # Compute forward model rates directly from GT probability distributions
+    # Use expected values from GT probabilities (not argmax) for accurate rates
+    initial_grids = [s["grid"] for s in initial_states]
+    survival_total = 0.0
+    survival_count = 0
+    expansion_new = 0.0
+    expansion_eligible = 0
+    port_formed = 0.0
+    coastal_nonport = 0
+    forest_reclaimed = 0.0
+    forest_eligible = 0
+    ruin_total = 0.0
+    ruin_count = 0
 
-    last_scores = None
-    for model_name, gm, sm in [
-        ("1seed-Global", single_global, None),
-        ("1seed-Spatial", single_global, single_spatial),
-        ("5seed-Global", global_model, None),
-        ("5seed-Spatial", global_model, spatial_model),
+    for seed_idx in range(seeds_count):
+        gt = all_gt[seed_idx]  # H×W×6 probability
+        init_grid = initial_states[seed_idx]["grid"]
+        for r in range(height):
+            for c in range(width):
+                code = init_grid[r][c]
+                if code in STATIC_CODES:
+                    continue
+                gt_probs = gt[r, c]  # 6-class probability vector
+
+                if code in (1, 2):
+                    # Settlement/port survival and ruin rates
+                    survival_total += gt_probs[1] + gt_probs[2]
+                    ruin_total += gt_probs[3]
+                    survival_count += 1
+                    ruin_count += 1
+
+                elif code in (0, 11):
+                    # Expansion: non-settlement becoming settlement
+                    expansion_new += gt_probs[1]
+                    expansion_eligible += 1
+
+                    # Port formation for coastal cells
+                    is_coastal = False
+                    for nr, nc in ((r-1,c),(r+1,c),(r,c-1),(r,c+1)):
+                        if 0 <= nr < height and 0 <= nc < width and init_grid[nr][nc] == 10:
+                            is_coastal = True
+                            break
+                    if is_coastal:
+                        port_formed += gt_probs[2]
+                        coastal_nonport += 1
+
+                # Forest reclamation (non-forest near forest)
+                if code != 4 and code not in STATIC_CODES:
+                    adj_forest = 0
+                    for ar in range(max(0, r-1), min(height, r+2)):
+                        for ac in range(max(0, c-1), min(width, c+2)):
+                            if (ar, ac) != (r, c) and init_grid[ar][ac] == 4:
+                                adj_forest += 1
+                    if adj_forest > 0:
+                        forest_reclaimed += gt_probs[4]
+                        forest_eligible += 1
+
+    forward_rates = {
+        "survival": survival_total / survival_count if survival_count > 0 else None,
+        "expansion": expansion_new / expansion_eligible if expansion_eligible > 0 else None,
+        "port_formation": port_formed / coastal_nonport if coastal_nonport > 0 else None,
+        "forest_reclamation": forest_reclaimed / forest_eligible if forest_eligible > 0 else None,
+        "ruin": ruin_total / ruin_count if ruin_count > 0 else None,
+    }
+    print(f"\nForward model rates (from GT): { {k: f'{v:.4f}' if v else v for k, v in forward_rates.items()} }")
+
+    # Score all seeds with all model variants
+    print(f"\n{'Model':<20} | {'Seed 0':>8} {'Seed 1':>8} {'Seed 2':>8} {'Seed 3':>8} {'Seed 4':>8} | {'Avg':>8}")
+    print("-" * 87)
+
+    best_scores = None
+    for model_name, gm, sm, fr in [
+        ("1seed-Global", single_global, None, None),
+        ("1seed-Spatial", single_global, single_spatial, None),
+        ("5seed-Global", global_model, None, None),
+        ("5seed-Spatial", global_model, spatial_model, None),
+        ("5seed-Sp+Forward", global_model, spatial_model, forward_rates),
     ]:
         kl_scores = []
         for seed_idx in range(seeds_count):
             gt = all_gt[seed_idx]
             init_grid_s = initial_states[seed_idx]["grid"]
             pred = build_prediction(height, width, init_grid_s, [],
-                                    transition_model=gm, spatial_model=sm)
+                                    transition_model=gm, spatial_model=sm,
+                                    forward_rates=fr)
             wkl, _ = _score_predictions(pred, gt)
             kl_scores.append(wkl)
 
         avg = np.mean(kl_scores)
         scores_str = " ".join(f"{s:.4f}" for s in kl_scores)
-        print(f"{model_name:<16} | {scores_str} | {avg:.4f}")
-        last_scores = kl_scores
+        print(f"{model_name:<20} | {scores_str} | {avg:.4f}")
+        if model_name == "5seed-Spatial":
+            best_scores = kl_scores
 
-    return np.mean(last_scores)  # return best model score (5seed-Spatial)
+    return np.mean(best_scores)  # return primary model score (5seed-Spatial)
 
 
 def test_pipeline(round_id, submit=False):
