@@ -498,9 +498,10 @@ def main():
         num_classes = NUM_CLASSES
 
     images_dir = Path(args.input)
-    image_files = sorted(images_dir.glob("*.jpg"))
-    if not image_files:
-        image_files = sorted(images_dir.glob("*.png"))
+    image_files = sorted(
+        f for f in images_dir.iterdir()
+        if f.suffix.lower() in (".jpg", ".jpeg", ".png")
+    )
 
     predictions = []
 
