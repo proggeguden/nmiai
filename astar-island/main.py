@@ -1,6 +1,10 @@
-"""FastAPI app for the Astar Island /solve endpoint."""
+"""FastAPI app for the Astar Island /solve endpoint.
 
-import os
+Strategy: hidden parameters are shared across all 5 seeds in a round.
+So we observe heavily on 1 seed to learn transition probabilities,
+then apply that model to predict all 5 seeds.
+"""
+
 import time
 import traceback
 
@@ -13,7 +17,10 @@ from typing import Optional
 load_dotenv()
 
 import api_client
-from predictor import build_prediction, predictions_to_list, validate_predictions
+from predictor import (
+    build_prediction, predictions_to_list, validate_predictions,
+    learn_transition_model,
+)
 
 app = FastAPI()
 
@@ -33,7 +40,6 @@ async def solve(request: Request, body: SolveRequest):
     t_start = time.monotonic()
     print(f"=== /solve request: round_id={body.round_id} ===")
 
-    # Override token if provided in request
     if body.access_token:
         api_client.ACCESS_TOKEN = body.access_token
 
@@ -50,10 +56,12 @@ async def solve(request: Request, body: SolveRequest):
 
 
 def run_pipeline(round_id):
-    """Full pipeline: observe → predict → submit for all seeds.
+    """Full pipeline: observe seed 0 → learn transitions → predict all seeds.
 
-    Query budget is SHARED across all seeds (not per-seed).
-    Strategy: distribute queries evenly across seeds.
+    Query budget (50) is SHARED across all seeds. Strategy:
+    - Spend all 50 queries on seed 0 to learn transition probabilities
+    - 9 tiles for full coverage × ~5 repeats each = good statistics
+    - Apply learned model to all 5 seeds using their initial grids
     """
 
     # 1. Get round details
@@ -72,31 +80,43 @@ def run_pipeline(round_id):
     width = detail.get("map_width", len(initial_states[0]["grid"][0]))
     print(f"Grid: {width}x{height}, Seeds: {seeds_count}, Max queries: {queries_max}")
 
-    # 2. Distribute queries evenly across seeds (budget is shared!)
-    queries_per_seed = queries_max // seeds_count
+    # 2. Observe seed 0 with all queries to learn transition model
+    print(f"\n--- Learning phase: observing seed 0 with {queries_max} queries ---")
+    observations = observe_seed(round_id, seed_index=0,
+                                height=height, width=width,
+                                max_queries=queries_max)
+    print(f"Collected {len(observations)} observations")
 
-    # 3. For each seed: observe and predict
+    # Tag observations with seed index for the transition model
+    for obs in observations:
+        obs["seed_index"] = 0
+
+    # 3. Learn transition model from observations
+    transition_model = learn_transition_model(
+        [initial_states[0]["grid"]],  # only seed 0's initial grid
+        observations
+    )
+    print(f"Learned transitions for {len(transition_model)} terrain codes:")
+    from predictor import CLASS_NAMES
+    for code, probs in sorted(transition_model.items()):
+        top = sorted(enumerate(probs), key=lambda x: -x[1])[:3]
+        top_str = ", ".join(f"{CLASS_NAMES[i]}={p:.2f}" for i, p in top if p > 0.01)
+        print(f"  Code {code}: {top_str}")
+
+    # 4. Predict and submit for all seeds
     results = []
-    queries_used = 0
     for seed_idx in range(seeds_count):
-        print(f"\n--- Seed {seed_idx} ---")
+        print(f"\n--- Predicting seed {seed_idx} ---")
         initial_grid = initial_states[seed_idx]["grid"]
 
-        # Observe with our budget slice
-        remaining = queries_max - queries_used
-        budget = min(queries_per_seed, remaining)
-        observations = observe_seed(round_id, seed_idx, height, width, budget)
-        queries_used += len(observations)
-        print(f"  Collected {len(observations)} observations (total used: {queries_used}/{queries_max})")
+        # For seed 0, also pass direct observations for per-cell blending
+        seed_obs = observations if seed_idx == 0 else []
 
-        # Build prediction
-        pred = build_prediction(height, width, initial_grid, observations)
+        pred = build_prediction(height, width, initial_grid, seed_obs,
+                                transition_model=transition_model)
         pred_list = predictions_to_list(pred)
-
-        # Validate
         validate_predictions(pred_list, height, width)
 
-        # Submit
         print(f"  Submitting prediction...")
         try:
             resp = api_client.submit_prediction(round_id, seed_idx, pred_list)
@@ -112,13 +132,13 @@ def run_pipeline(round_id):
 def observe_seed(round_id, seed_index, height, width, max_queries):
     """Query viewports to observe the map for a given seed.
 
-    Strategy: tile the map with 15×15 viewports first to get full coverage,
-    then use remaining budget for repeat observations on dynamic areas.
+    Strategy: tile the map with 15×15 viewports for full coverage,
+    then repeat tiles round-robin for more statistical samples.
     """
     observations = []
     vp_w, vp_h = 15, 15
 
-    # Phase 1: Tile the map for full coverage
+    # Compute tile positions for full coverage
     positions = []
     y = 0
     while y < height:
@@ -127,9 +147,9 @@ def observe_seed(round_id, seed_index, height, width, max_queries):
             positions.append((x, y))
             x += vp_w
         y += vp_h
+    # For 40×40 map: 9 tiles (3×3 grid)
 
-    # For a 40×40 map with 15×15 viewports: ceil(40/15)^2 = 9 tiles
-    # With 50 queries / 5 seeds = 10 per seed, that's 9 tiles + 1 repeat
+    # Phase 1: Full coverage (9 queries)
     for x, y in positions[:max_queries]:
         try:
             result = api_client.query_seed(round_id, seed_index,
@@ -140,10 +160,9 @@ def observe_seed(round_id, seed_index, height, width, max_queries):
             print(f"  Query error at ({x},{y}): {e}")
             break
 
-    # Phase 2: Use remaining budget for repeat observations (more samples = better stats)
+    # Phase 2: Repeat tiles round-robin for more samples
     remaining = max_queries - len(observations)
     for i in range(remaining):
-        # Re-observe tiles in round-robin to build statistics
         x, y = positions[i % len(positions)]
         try:
             result = api_client.query_seed(round_id, seed_index,

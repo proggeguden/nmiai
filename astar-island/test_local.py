@@ -1,11 +1,15 @@
 """Local testing script for the Astar Island pipeline.
 
 Usage:
-    python3 test_local.py                  # full pipeline test (observe + predict + validate)
-    python3 test_local.py --submit         # also submit predictions
-    python3 test_local.py --round ROUND_ID # test specific round
-    python3 test_local.py --server         # test against local /solve endpoint
-    python3 test_local.py --list-rounds    # list available rounds
+    python3 test_local.py                      # full pipeline test on active round
+    python3 test_local.py --submit             # also submit predictions
+    python3 test_local.py --round ROUND_ID     # test specific round
+    python3 test_local.py --server             # test against local /solve endpoint
+    python3 test_local.py --list-rounds        # list available rounds
+    python3 test_local.py --my-rounds          # show scores and ranks
+    python3 test_local.py --leaderboard        # show leaderboard
+    python3 test_local.py --backtest ROUND_ID  # backtest against ground truth
+    python3 test_local.py --backtest all       # backtest all completed rounds
 """
 
 import argparse
@@ -16,20 +20,109 @@ import numpy as np
 
 import api_client
 from predictor import (
-    build_prediction,
-    predictions_to_list,
-    validate_predictions,
-    NUM_CLASSES,
-    terrain_code_to_class,
+    build_prediction, learn_transition_model, predictions_to_list,
+    validate_predictions, terrain_code_to_class,
+    NUM_CLASSES, CLASS_NAMES,
 )
 
 
 def list_rounds():
-    """List all available rounds."""
     print("Fetching rounds...")
     rounds = api_client.get_rounds()
-    print(json.dumps(rounds, indent=2))
-    return rounds
+    for r in rounds:
+        print(f"  Round {r['round_number']} ({r['status']}): {r['id']}")
+        print(f"    {r['started_at']} → {r['closes_at']}")
+
+
+def show_my_rounds():
+    print("Fetching team rounds...")
+    rounds = api_client.get_my_rounds()
+    for r in rounds:
+        score = r.get("round_score")
+        rank = r.get("rank")
+        total = r.get("total_teams")
+        print(f"  Round {r['round_number']} ({r['status']}): "
+              f"score={score}, rank={rank}/{total}, "
+              f"seeds={r['seeds_submitted']}/5, "
+              f"queries={r['queries_used']}/{r['queries_max']}")
+        if r.get("seed_scores"):
+            print(f"    seed_scores: {r['seed_scores']}")
+
+
+def show_leaderboard():
+    print("Leaderboard:")
+    lb = api_client.get_leaderboard()
+    for t in lb[:15]:
+        print(f"  #{t['rank']} {t['team_name']}: "
+              f"weighted={t['weighted_score']:.1f}, "
+              f"streak={t['hot_streak_score']:.1f}, "
+              f"rounds={t['rounds_participated']}")
+
+
+def backtest_round(round_id):
+    """Backtest our predictor against ground truth from a completed round."""
+    print(f"\n{'='*60}")
+    print(f"Backtesting round: {round_id}")
+    print(f"{'='*60}")
+
+    detail = api_client.get_round_detail(round_id)
+    height, width = detail["map_height"], detail["map_width"]
+    seeds_count = detail["seeds_count"]
+    initial_states = detail["initial_states"]
+
+    # Use ground truth from seed 0 to build a transition model
+    # (simulates learning from observations)
+    gt0 = np.array(api_client.get_analysis(round_id, 0)["ground_truth"])
+
+    # Build transition model from seed 0's ground truth probabilities
+    transition_probs = {}
+    init_grid = initial_states[0]["grid"]
+    for r in range(height):
+        for c in range(width):
+            code = init_grid[r][c]
+            if code not in transition_probs:
+                transition_probs[code] = np.zeros(NUM_CLASSES)
+            transition_probs[code] += gt0[r, c]
+
+    transition_model = {}
+    for code, probs in transition_probs.items():
+        total = probs.sum()
+        if total > 0:
+            transition_model[code] = probs / total
+
+    print("\nTransition model (learned from seed 0 ground truth):")
+    for code, probs in sorted(transition_model.items()):
+        top = sorted(enumerate(probs), key=lambda x: -x[1])[:3]
+        top_str = ", ".join(f"{CLASS_NAMES[i]}={p:.3f}" for i, p in top if p > 0.005)
+        print(f"  Code {code}: {top_str}")
+
+    # Predict and score all seeds
+    print("\nPer-seed results:")
+    kl_scores = []
+    for seed_idx in range(seeds_count):
+        gt = np.array(api_client.get_analysis(round_id, seed_idx)["ground_truth"])
+        init_grid_s = initial_states[seed_idx]["grid"]
+
+        pred = build_prediction(height, width, init_grid_s, [],
+                                transition_model=transition_model)
+
+        # Entropy-weighted KL divergence
+        kl = np.sum(gt * np.log((gt + 1e-10) / (pred + 1e-10)), axis=2)
+        entropy = -np.sum(gt * np.log(gt + 1e-10), axis=2)
+        dynamic = entropy > 0.01
+
+        if dynamic.any():
+            weighted_kl = (kl[dynamic] * entropy[dynamic]).sum() / entropy[dynamic].sum()
+        else:
+            weighted_kl = 0
+
+        kl_scores.append(weighted_kl)
+        print(f"  Seed {seed_idx}: weighted_KL={weighted_kl:.4f}, "
+              f"dynamic_cells={dynamic.sum()}/{height*width}")
+
+    avg_kl = np.mean(kl_scores)
+    print(f"\nAverage weighted KL: {avg_kl:.4f}")
+    return avg_kl
 
 
 def test_pipeline(round_id, submit=False):
@@ -38,20 +131,13 @@ def test_pipeline(round_id, submit=False):
     print(f"Testing pipeline for round: {round_id}")
     print(f"{'='*60}")
 
-    # 1. Get round detail
-    print("\n[1] Fetching round detail...")
     detail = api_client.get_round_detail(round_id)
     print(f"  Status: {detail.get('status')}")
     seeds_count = detail.get("seeds_count", len(detail.get("initial_states", [])))
     initial_states = detail.get("initial_states", [])
     queries_max = detail.get("queries_max", 50)
-
-    if not initial_states:
-        print("  ERROR: No initial states found!")
-        return False
-
-    height = len(initial_states[0]["grid"])
-    width = len(initial_states[0]["grid"][0])
+    height = detail.get("map_height", len(initial_states[0]["grid"]))
+    width = detail.get("map_width", len(initial_states[0]["grid"][0]))
     print(f"  Grid: {width}x{height}, Seeds: {seeds_count}, Max queries: {queries_max}")
 
     # Show initial terrain distribution for seed 0
@@ -63,75 +149,72 @@ def test_pipeline(round_id, submit=False):
             cls = terrain_code_to_class(code)
             class_counts[cls] += 1
     total = sum(class_counts)
-    for i, name in enumerate(["Empty", "Settlement", "Port", "Ruin", "Forest", "Mountain"]):
+    for i, name in enumerate(CLASS_NAMES):
         pct = class_counts[i] / total * 100
         print(f"    {name}: {class_counts[i]} ({pct:.1f}%)")
 
-    # 2. Query a few viewports for seed 0
-    print(f"\n[2] Querying viewports for seed 0...")
-    queries_per_seed = queries_max // seeds_count
-    observations = []
+    if detail.get("status") != "active":
+        print("\n  Round is not active — skipping queries. Use --backtest instead.")
+        return True
 
-    # Query a few positions (tile the map)
-    test_positions = [(0, 0), (15, 0), (30, 0), (0, 15), (15, 15), (30, 15), (0, 30), (15, 30), (30, 30)]
-    for x, y in test_positions[:queries_per_seed]:
+    # Observe seed 0 with a few queries for testing
+    print(f"\n  Querying seed 0 (4 tiles for quick test)...")
+    observations = []
+    test_positions = [(0, 0), (15, 0), (0, 15), (15, 15)]
+    for x, y in test_positions:
         try:
             result = api_client.query_seed(round_id, 0, viewport_x=x, viewport_y=y)
             vp = result.get("viewport", {})
-            grid_obs = result.get("grid", [])
-            settlements = result.get("settlements", [])
-            print(f"  Query ({x},{y}): viewport={vp}, grid={len(grid_obs)}x{len(grid_obs[0]) if grid_obs else 0}, settlements={len(settlements)}")
+            print(f"    ({x},{y}): viewport={vp}, queries={result['queries_used']}/{result['queries_max']}")
+            result["seed_index"] = 0
             observations.append(result)
         except Exception as e:
-            print(f"  Query ({x},{y}) error: {e}")
+            print(f"    ({x},{y}) error: {e}")
+            break
 
-    # 3. Build prediction
-    print(f"\n[3] Building prediction for seed 0...")
-    pred = build_prediction(height, width, initial_states[0]["grid"], observations)
-    print(f"  Shape: {pred.shape}")
-    print(f"  Sum range: [{pred.sum(axis=2).min():.4f}, {pred.sum(axis=2).max():.4f}]")
-    print(f"  Min prob: {pred.min():.6f}")
-    print(f"  Max prob: {pred.max():.6f}")
+    # Learn transition model
+    transition_model = learn_transition_model(
+        [initial_states[0]["grid"]], observations
+    )
+    print(f"\n  Transition model ({len(transition_model)} codes):")
+    for code, probs in sorted(transition_model.items()):
+        top = sorted(enumerate(probs), key=lambda x: -x[1])[:3]
+        top_str = ", ".join(f"{CLASS_NAMES[i]}={p:.2f}" for i, p in top if p > 0.01)
+        print(f"    Code {code}: {top_str}")
 
-    # Show predicted distribution
-    avg_probs = pred.mean(axis=(0, 1))
-    print(f"\n  Average predicted probabilities:")
-    for i, name in enumerate(["Empty", "Settlement", "Port", "Ruin", "Forest", "Mountain"]):
-        print(f"    {name}: {avg_probs[i]:.4f}")
-
-    # 4. Validate
-    print(f"\n[4] Validating predictions...")
+    # Predict seed 0
+    pred = build_prediction(height, width, initial_states[0]["grid"],
+                            observations, transition_model=transition_model)
     pred_list = predictions_to_list(pred)
-    try:
-        validate_predictions(pred_list, height, width)
-        print("  PASSED: Valid prediction format")
-    except AssertionError as e:
-        print(f"  FAILED: {e}")
-        return False
+    validate_predictions(pred_list, height, width)
+    print(f"\n  Prediction valid: shape={pred.shape}, "
+          f"sum=[{pred.sum(axis=2).min():.4f}, {pred.sum(axis=2).max():.4f}], "
+          f"min_prob={pred.min():.6f}")
 
-    # 5. Submit if requested
     if submit:
-        print(f"\n[5] Submitting prediction for seed 0...")
-        try:
-            resp = api_client.submit_prediction(round_id, 0, pred_list)
-            print(f"  Response: {json.dumps(resp, indent=2)}")
-        except Exception as e:
-            print(f"  Submit error: {e}")
-    else:
-        print(f"\n[5] Skipping submit (use --submit to submit)")
+        print(f"\n  Submitting all 5 seeds...")
+        for seed_idx in range(seeds_count):
+            init_grid = initial_states[seed_idx]["grid"]
+            seed_obs = observations if seed_idx == 0 else []
+            p = build_prediction(height, width, init_grid, seed_obs,
+                                 transition_model=transition_model)
+            pl = predictions_to_list(p)
+            validate_predictions(pl, height, width)
+            try:
+                resp = api_client.submit_prediction(round_id, seed_idx, pl)
+                print(f"    Seed {seed_idx}: {resp.get('status')}")
+            except Exception as e:
+                print(f"    Seed {seed_idx} error: {e}")
 
     print(f"\n{'='*60}")
-    print("Pipeline test completed successfully!")
+    print("Pipeline test completed!")
     return True
 
 
 def test_server(round_id, server_url="http://localhost:8080"):
-    """Test the /solve endpoint on a local server."""
     import requests
+    print(f"Testing /solve at {server_url}...")
 
-    print(f"Testing /solve endpoint at {server_url}...")
-
-    # Health check
     try:
         resp = requests.get(f"{server_url}/health")
         print(f"Health: {resp.json()}")
@@ -139,12 +222,10 @@ def test_server(round_id, server_url="http://localhost:8080"):
         print(f"Health check failed: {e}")
         return False
 
-    # Solve
     payload = {"round_id": round_id}
     if api_client.ACCESS_TOKEN:
         payload["access_token"] = api_client.ACCESS_TOKEN
 
-    print(f"Sending /solve with round_id={round_id}...")
     resp = requests.post(f"{server_url}/solve", json=payload, timeout=300)
     print(f"Status: {resp.status_code}")
     print(f"Response: {json.dumps(resp.json(), indent=2)}")
@@ -153,40 +234,57 @@ def test_server(round_id, server_url="http://localhost:8080"):
 
 def main():
     parser = argparse.ArgumentParser(description="Astar Island local test")
-    parser.add_argument("--round", type=str, help="Specific round ID to test")
+    parser.add_argument("--round", type=str, help="Specific round ID")
     parser.add_argument("--submit", action="store_true", help="Submit predictions")
-    parser.add_argument("--server", action="store_true", help="Test local /solve endpoint")
-    parser.add_argument("--server-url", default="http://localhost:8080", help="Server URL")
-    parser.add_argument("--list-rounds", action="store_true", help="List available rounds")
+    parser.add_argument("--server", action="store_true", help="Test local /solve")
+    parser.add_argument("--server-url", default="http://localhost:8080")
+    parser.add_argument("--list-rounds", action="store_true")
+    parser.add_argument("--my-rounds", action="store_true")
+    parser.add_argument("--leaderboard", action="store_true")
+    parser.add_argument("--backtest", type=str,
+                        help="Backtest against ground truth (round ID or 'all')")
     args = parser.parse_args()
 
     if args.list_rounds:
         list_rounds()
         return
+    if args.my_rounds:
+        show_my_rounds()
+        return
+    if args.leaderboard:
+        show_leaderboard()
+        return
+
+    if args.backtest:
+        if args.backtest == "all":
+            rounds = api_client.get_rounds()
+            completed = [r for r in rounds if r["status"] == "completed"]
+            scores = []
+            for r in completed:
+                s = backtest_round(r["id"])
+                scores.append((r["round_number"], s))
+            print(f"\n{'='*60}")
+            print("Summary:")
+            for rnum, s in scores:
+                print(f"  Round {rnum}: avg weighted_KL = {s:.4f}")
+        else:
+            backtest_round(args.backtest)
+        return
 
     # Find a round to test
     round_id = args.round
     if not round_id:
-        print("Fetching active rounds...")
         rounds = api_client.get_rounds()
-        # Find an active round
-        active = [r for r in rounds if r.get("status") == "active"] if isinstance(rounds, list) else []
-        if not active and isinstance(rounds, list) and rounds:
-            active = rounds  # use whatever is available
-        elif isinstance(rounds, dict):
-            # Handle dict response format
-            active = rounds.get("rounds", rounds.get("data", []))
-
-        if not active:
-            print("No rounds found! Response:")
-            print(json.dumps(rounds, indent=2))
-            return
-
-        if isinstance(active[0], dict):
-            round_id = active[0].get("id", active[0].get("round_id"))
+        active = [r for r in rounds if r.get("status") == "active"]
+        if active:
+            round_id = active[0]["id"]
+            print(f"Using active round: {round_id}")
+        elif rounds:
+            round_id = rounds[0]["id"]
+            print(f"No active round, using latest: {round_id}")
         else:
-            round_id = active[0]
-        print(f"Using round: {round_id}")
+            print("No rounds found!")
+            return
 
     if args.server:
         test_server(round_id, args.server_url)
