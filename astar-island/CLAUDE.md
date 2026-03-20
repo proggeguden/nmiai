@@ -80,23 +80,31 @@ position, population, food, wealth, defense, tech level, port status, longship o
 - **Rate limit**: max 5 req/sec
 
 ## Prediction Strategy
-**Current approach**: Spread 10 queries per seed across all 5 seeds → learn spatial
-transition model P(final_class | terrain_code, distance_bucket, coastal) → apply to all seeds.
+**Current approach**: Allocate queries proportional to settlement density across all 5 seeds →
+learn spatial transition model P(final_class | bucket_key) with Bayesian smoothing → apply to all seeds.
+Per-cell observations blended with adaptive k (terrain-dependent).
 
 **Why this works**: Hidden parameters are shared across all seeds. More seeds give
 more diverse terrain layouts → better spatial bucket coverage → better model.
 
 **Key spatial features (implemented)**:
 - Manhattan distance to nearest settlement: 3-level bucket (≤2, 3-4, 5+)
-- Coastal adjacency (ocean neighbor) for plains
-- Adjacent forest / adjacent settlement for settlement/port cells
+- Graduated forest adjacency (0/1/2/3+) for settlements/ports
+- Coastal adjacency for plains and settlements
+- Adjacent forest for plains, empty, ruin cells
+- Adjacent settlement for forest, ruin cells
 - BFS-precomputed distances for efficiency
+- ~30 spatial buckets with Bayesian smoothing towards global prior (K=5)
+
+**Adaptive smoothing**: Per-cell blending uses terrain-dependent k values:
+- Settlements/ports k=8 (high variance → trust model more)
+- Plains/forest/empty k=3 (predictable → trust observations more)
 
 **Backtest performance** (weighted KL, lower is better):
-- Rounds 1–5 avg: ~0.06 (5-seed spatial model)
-- Best: 0.040 (round 4), Worst: 0.075 (round 3, harsh winter)
+- Rounds 1–6 avg: ~0.059 (5-seed spatial model)
+- Best: 0.039 (round 4), Worst: 0.071 (round 5)
 
-See `PLAN.md` for improvement roadmap.
+See `PLAN.md` for improvement roadmap and round-by-round changelog.
 
 ## API
 - **Base URL**: `https://api.ainm.no`

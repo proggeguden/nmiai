@@ -19,132 +19,115 @@
 - [x] BFS-precomputed distances for efficiency
 - [x] ~14 spatial buckets with fallback to global model if <10 observations
 
+### Phase 3.5: Richer Features + Smoothing (Round 7 submission)
+- [x] Graduated forest adjacency (0/1/2/3+) for settlements/ports
+- [x] Forest adjacency for plains, empty, ruin cells
+- [x] Settlement adjacency for forest, ruin cells
+- [x] Coastal flag for settlements
+- [x] Adaptive k per terrain type (settlements k=8, plains/forest k=3)
+- [x] Bayesian bucket smoothing (K=5) blends sparse buckets towards global prior
+- [x] Cross-seed query allocation proportional to settlement density
+- [x] ~30 spatial buckets (up from 14)
+
 ### Backtest Results (5-seed spatial, weighted KL — lower is better)
-| Round | Weighted KL | Notes |
-|-------|------------|-------|
-| 1     | 0.067      | |
-| 2     | 0.050      | |
-| 3     | 0.075      | Harsh winter, everything collapses |
-| 4     | 0.040      | Best performance |
-| 5     | 0.072      | |
+| Round | Phase 3 (R6) | Phase 3.5 (R7) | Delta | Notes |
+|-------|-------------|---------------|-------|-------|
+| 1     | 0.0671      | 0.0664        | -0.001 | |
+| 2     | 0.0500      | 0.0495        | -0.001 | |
+| 3     | 0.0747      | 0.0666        | -0.008 | Harsh winter — biggest improvement |
+| 4     | 0.0396      | 0.0392        | -0.000 | Best round, already good |
+| 5     | 0.0715      | 0.0706        | -0.001 | |
+| 6     | 0.0643      | 0.0641        | -0.000 | |
+| **Avg** | **0.0612** | **0.0594**  | **-0.002** | |
 
 ### Key Insights
 - **Hidden params are unique per round** — historical priors don't help, must learn fresh
 - **Multi-seed observation beats single-seed** on 4/5 rounds (more diverse terrain coverage)
 - **Distance-to-settlement is the strongest spatial feature** — settlement proximity drives expansion, food, and survival
 - **Settlement survival ranges 2–44%** across rounds depending on hidden params
+- **4-level distance buckets hurt** — fragments data too much, especially for harsh-winter rounds
+- **Forest adjacency on empty cells helps a lot for harsh winters** (forest reclamation)
+- **Bayesian smoothing helps more than hard min-obs threshold** — prevents overfitting sparse buckets
 
 ### Scoring Context
 - Our round 5 score: 13.1/100 (naive predictor, submitted before model was ready)
-- Round 6: submitted with spatial model (score pending)
-- Top teams: ~113 weighted score → ~80+ raw on best rounds
-- Gap to close: ~65+ points. Current model is ~0.06 avg KL; top teams are likely ~0.01-0.02
+- Round 6 score: **78.5** (rank 28/186) — first real submission with spatial model
+- Round 7: submitted with Phase 3.5 improvements (score pending)
+- Top teams: ~115-119 weighted score → ~80-87+ raw per round
+- Gap to close: ~5-10 raw points per round. Current backtest avg KL ~0.059; need ~0.04
 
 ---
 
 ## Phase 4: Close the Gap to Top Teams (NEXT)
 
-The gap from ~0.06 to ~0.01 weighted KL requires fundamentally better modeling,
-not just incremental feature tweaks. Here are the highest-leverage improvements,
-ordered by expected impact.
+Gap: ~5-10 raw points per round. Need avg KL from ~0.059 to ~0.04.
+Top teams score 80-87+ per round consistently.
 
-### 4a. Per-cell model with smoothing (HIGHEST IMPACT)
-**Problem**: Current bucket model pools all cells with same features into one distribution.
-But cells at (5,10) and (20,30) may have very different outcomes even with the same bucket key
-because they have different local contexts (specific neighbor configurations, faction proximity).
+### What we tried in Round 7 and what we learned:
+- **Graduated forest adjacency (0/1/2/3+)**: Tiny improvement, forest count matters less than presence
+- **Forest adjacency on empty/ruin cells**: **Big win** for harsh winters (R3: 0.075→0.067)
+- **4-level distance buckets**: **Consistently hurts** — fragments data, R5 regressed 15%. Don't try again.
+- **Bayesian bucket smoothing (K=5)**: Small but consistent wins. K=20 was too aggressive.
+- **Adjacent mountain**: No effect (counted but unused in bucket keys currently)
 
-**Approach**: Build a per-cell prediction by combining:
-1. **Per-cell empirical counts** from the ~2 observations of that specific cell (noisy but unbiased)
-2. **Bucket model** as prior (pooled, smooth)
-3. **Bayesian blending** with adaptive weight based on observation count
+### 4a. Continuous distance interpolation (HIGH IMPACT — UNTRIED)
+**Problem**: 3 discrete distance buckets lose info. 4 buckets fragment. Solution: interpolate.
 
-Current blending uses k=5.0 fixed. Tune this per-bucket or per-terrain-type.
-- Settlements need higher k (more variable, bucket prior is valuable)
-- Plains far from settlements need lower k (very predictable, empirical is good enough)
+**Approach**: For a cell at distance d=3.5, blend between bucket-1 (≤2) and bucket-2 (3-4)
+distributions using linear interpolation. This gives smooth distance effects without
+creating more buckets.
 
-**How to test**: Backtest with varying k values per terrain type. Measure KL improvement.
+Implementation:
+1. Compute raw distance d for each cell
+2. Find two nearest bucket boundaries
+3. Interpolate: `pred = w * bucket_near + (1-w) * bucket_far` where w = fractional position
+4. Apply per bucket key (distance is just one component)
 
-### 4b. Richer spatial features without bucket explosion (HIGH IMPACT)
-**Problem**: 14 buckets is too coarse. Top teams likely model continuous spatial effects.
+**Why this might work**: It gives us the equivalent of infinite distance buckets without
+any data fragmentation. The backtest showed 4 levels helped R3 dramatically (0.075→0.041)
+but killed R5 — interpolation would capture the R3 gains without the R5 regression.
 
-**Approaches to try** (pick one, backtest, iterate):
+### 4b. Settlement cluster density (HIGH IMPACT — UNTRIED)
+Count settlements within radius 3-5 (from initial grid). Dense clusters have more
+conflict (raids) + trade → different survival curves than isolated settlements.
+Binary feature: `dense_cluster = settlements_within_r5 >= 3`.
 
-1. **Graduated forest adjacency**: For settlements, count adj_forest 0/1/2/3+ instead of binary.
-   More forest → more food → higher survival. This is a core simulation mechanic.
+### 4c. Viewport optimization: smaller viewports for more observations (HIGH IMPACT)
+**Problem**: 15×15 viewports × 10 queries = 2250 cells observed per seed. But with
+10×10 viewports, we get 10×100 = 1000 cells but can observe settlement-heavy areas
+3-4 times instead of 1-2 times. More observations per cell = better per-cell blending.
 
-2. **Settlement cluster density**: Count settlements within radius 3-5. Dense clusters have
-   more conflict (raids) but also more trade. This affects survival probability.
+**Approach**: Use 10×10 viewports for repeat queries on settlement-heavy tiles.
+The model already handles per-cell blending — more observations would directly help.
 
-3. **Continuous distance interpolation**: Instead of 3 discrete distance buckets,
-   interpolate between adjacent bucket distributions using actual distance.
-   E.g., distance=2.5 → 50% near-bucket + 50% mid-bucket.
+### 4d. Exploit settlement stats from simulate responses (MEDIUM IMPACT)
+Parse population/food/wealth/defense from simulate response. Use average food level
+as soft signal for settlement survival. High food → survives winter → stays Settlement.
+Low food → collapses → becomes Ruin/Empty/Forest.
 
-4. **Interaction features**: distance × coastal, distance × forest_count.
-   But watch bucket sizes — need ≥30 observations per bucket.
+**Risk**: Noisy with only ~2 observations per cell. Maybe useful as tie-breaker.
 
-**How to test**: Add one feature at a time. Run `--backtest all`. Keep only if it improves
-avg KL without hurting any round by >5%.
+### 4e. Simulation-informed priors (HIGH EFFORT, HIGH REWARD)
+Build a lightweight forward model:
+1. Estimate food supply per settlement (count adj forests)
+2. Estimate winter severity from observation data (what % of settlements collapsed?)
+3. Use estimated severity to adjust all settlement survival probabilities
+4. This directly addresses the biggest variance source (winter severity)
 
-### 4c. Observation-aware confidence calibration (HIGH IMPACT)
-**Problem**: With only 10 queries per seed (2 per cell on avg), our per-cell counts
-are very noisy. But the model doesn't know which cells it's confident about.
+The key insight: **winter severity is the same for all cells in a round**. If we can
+estimate it from our observations (e.g., 30% of observed settlements survived → harsh winter),
+we can shift ALL settlement predictions accordingly, even for unobserved cells.
 
-**Approach**:
-- Track how many unique observations each cell got
-- For cells with 0 observations: use bucket model only (no blending)
-- For cells with 5+ observations: trust empirical more heavily
-- For intermediate: smooth interpolation
-
-Also: **viewport placement optimization** — instead of fixed 15×15 grid,
-compute which viewport positions maximize information gain:
-- Avoid ocean-dominated areas (no information)
-- Overlap viewports on settlement-heavy areas for more samples
-- Consider smaller viewports (e.g., 10×10) centered on dynamic areas to get
-  more total observations from 10 queries
-
-### 4d. Ensemble across query replays (MEDIUM IMPACT)
-**Problem**: Each query gives one stochastic simulation outcome. Pooling counts
-across queries works but doesn't capture the shape of the distribution well.
-
-**Approach**: Instead of just counting classes, compute per-cell distributions
-from each individual observation, then average them. This naturally handles
-the case where a cell is Settlement 60% of the time and Ruin 40%.
-
-Currently we already do this via counting. But we could:
-- Weight more recent queries higher (if there's temporal variation)
-- Detect bimodal distributions (cell is either Settlement OR Forest, rarely Empty)
-  and model them explicitly
-
-### 4e. Exploit settlement stats from simulate responses (MEDIUM IMPACT)
-**Problem**: The simulate endpoint returns rich settlement data (population, food,
-wealth, defense, tech_level, faction) that we currently ignore.
-
-**Approach**:
-- Group settlements by food level → high-food settlements survive more
-- Group by faction → large factions may dominate, small ones collapse
-- Group by defense level → well-defended settlements survive raids
-- Use these as additional bucket features for settlement cells specifically
-
-**Risk**: Stats are stochastic (vary per query), so need multiple observations
-to estimate reliably. With only ~2 observations per cell, this may be noisy.
-
-### 4f. Simulation-informed priors (LOW-MEDIUM IMPACT)
-**Problem**: We treat the simulator as a pure black box. But we know the mechanics:
-forests feed settlements, settlements expand, harsh winters kill, etc.
-
-**Approach**: Build a lightweight forward model:
-1. From initial grid, estimate food supply per settlement (count adj forests)
-2. Estimate expansion targets (nearby empty/plains cells)
-3. Use observation data to calibrate the forward model's parameters
-4. Run the forward model to generate predictions
-
-This is high-effort but could be transformative if done well. Top teams may
-be doing something like this.
-
-### 4g. Deploy to Cloud Run (DO WHEN MODEL IS GOOD)
+### 4f. Deploy to Cloud Run (DO WHEN MODEL IS GOOD)
 - [ ] Deploy Dockerfile to Cloud Run
 - [ ] Register endpoint at app.ainm.no
 - [ ] Automated round handling via /solve endpoint
+
+### Priority for Round 8
+1. **4a** — Continuous distance interpolation (best risk/reward)
+2. **4e winter severity estimation** — global calibration from observations
+3. **4c** — Smaller viewports for settlement areas
+4. **4b** — Settlement cluster density
 
 ---
 
