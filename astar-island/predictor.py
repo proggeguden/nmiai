@@ -32,7 +32,7 @@ TERRAIN_TO_CLASS = {
 STATIC_CODES = {10, 5}  # Ocean → always Empty, Mountain → always Mountain
 
 # Probability floor to avoid KL divergence → infinity
-PROB_FLOOR = 0.01
+PROB_FLOOR = 0.005
 
 # Adaptive smoothing: k controls how much we trust the bucket model vs per-cell observations
 # High k → trust bucket model more; Low k → trust empirical observations more
@@ -827,7 +827,7 @@ def _apply_forward_calibration(predictions, initial_grid, settlement_dists, rate
             w *= weight_scale
 
             predictions[r, c] = (1 - w) * predictions[r, c] + w * forward
-            predictions[r, c] = np.maximum(predictions[r, c], 0.001)
+            predictions[r, c] = np.maximum(predictions[r, c], 0)
             predictions[r, c] /= predictions[r, c].sum()
 
 
@@ -906,7 +906,7 @@ def build_prediction(height, width, initial_grid, observations,
                             for i in range(NUM_CLASSES):
                                 if i != 2:
                                     predictions[r, c, i] -= deficit * (predictions[r, c, i] / non_port_mass)
-                        predictions[r, c] = np.maximum(predictions[r, c], 0.001)
+                        predictions[r, c] = np.maximum(predictions[r, c], 0)
                         predictions[r, c] /= predictions[r, c].sum()
 
     # Step 1.6: Winter severity calibration (with optional food modulation)
