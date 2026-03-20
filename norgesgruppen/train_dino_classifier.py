@@ -28,7 +28,7 @@ DATA_DIR = Path(__file__).parent / "data"
 CROPS_DIR = DATA_DIR / "crops"
 SAVE_DIR = Path(__file__).parent / "runs" / "dino_classifier"
 
-IMG_SIZE = 260  # Match EfficientNet-B2 input size for shared ONNX
+IMG_SIZE = 252  # Must be divisible by 14 (DINOv2 patch size). 14×18=252.
 BATCH_SIZE = 128  # DINOv2-ViT-S is larger, reduce batch
 NUM_EPOCHS = 40  # Faster convergence with pretrained features
 LR_HEAD = 1e-3  # Linear head LR
@@ -112,7 +112,10 @@ class DINOClassifier(nn.Module):
     """DINOv2-ViT-S with linear classification head."""
     def __init__(self, num_classes, model_name="vit_small_patch14_dinov2.lvd142m"):
         super().__init__()
-        self.backbone = timm.create_model(model_name, pretrained=True, num_classes=0)
+        # img_size=260 overrides the default 518 to match our crop size
+        # dynamic_img_size allows variable input sizes at inference
+        self.backbone = timm.create_model(model_name, pretrained=True, num_classes=0,
+                                          img_size=IMG_SIZE, dynamic_img_size=True)
         embed_dim = self.backbone.embed_dim  # 384 for ViT-S
         self.head = nn.Sequential(
             nn.LayerNorm(embed_dim),

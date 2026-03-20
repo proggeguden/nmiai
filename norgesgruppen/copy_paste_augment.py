@@ -159,15 +159,15 @@ def paste_crop_on_image(bg_img, crop_item, scale_factor):
     # Random position (prefer shelf-like positions: middle 80% vertically)
     max_x = bg_w - new_w
     max_y = bg_h - new_h
-    if max_x < 0 or max_y < 0:
+    if max_x <= 0 or max_y <= 0:
         return None  # crop too big for background
 
-    paste_x = random.randint(max(0, int(bg_w * 0.02)), max(1, min(max_x, int(bg_w * 0.98) - new_w)))
+    paste_x = random.randint(0, max_x)
     # Vertical: prefer middle region (shelves are usually in middle)
-    y_min = max(0, int(bg_h * 0.1))
+    y_min = max(0, min(int(bg_h * 0.1), max_y))
     y_max = min(max_y, int(bg_h * 0.9))
     if y_max <= y_min:
-        paste_y = max(0, max_y // 2)
+        paste_y = random.randint(0, max_y)
     else:
         paste_y = random.randint(y_min, y_max)
 

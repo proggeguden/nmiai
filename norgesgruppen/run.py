@@ -46,7 +46,7 @@ PAD_RATIO = 0.05
 # Letterbox helps 6-pack eggs (+0.20 AP) but hurts 12-packs and overall score
 # because the classifier was trained on squashed crops. REQUIRES RETRAINING.
 # After retraining with letterbox crops: set USE_LETTERBOX_CROPS = True
-USE_LETTERBOX_CROPS = False
+USE_LETTERBOX_CROPS = True
 USE_DUAL_CROPS = False
 USE_ADAPTIVE_LETTERBOX = False   # letterbox TTA only for wide/tall crops
 ADAPTIVE_AR_THRESHOLD = 1.5     # aspect ratio threshold for adaptive letterbox
@@ -311,17 +311,21 @@ def preprocess_crops_tta(img, boxes, imgsz):
         w, h = crop_pil.size
         ar = max(w, h) / max(min(w, h), 1)
 
-        # Standard squashed augments (always used)
-        squashed = crop_pil.resize((imgsz, imgsz), Image.BILINEAR)
+        # Choose resize mode based on training mode
+        if USE_LETTERBOX_CROPS:
+            base = letterbox_crop(crop_pil, imgsz)
+        else:
+            base = crop_pil.resize((imgsz, imgsz), Image.BILINEAR)
+
         variants = [
-            squashed,                                       # original
-            squashed.transpose(Image.FLIP_LEFT_RIGHT),      # flip
-            squashed.rotate(5, fillcolor=fill),             # rot +5
-            squashed.rotate(-5, fillcolor=fill),            # rot -5
+            base,                                           # original
+            base.transpose(Image.FLIP_LEFT_RIGHT),          # flip
+            base.rotate(5, fillcolor=fill),                 # rot +5
+            base.rotate(-5, fillcolor=fill),                # rot -5
         ]
 
-        # Add letterbox augments for non-square crops
-        if USE_ADAPTIVE_LETTERBOX and ar >= ADAPTIVE_AR_THRESHOLD:
+        # Add letterbox augments for non-square crops (adaptive mode)
+        if USE_ADAPTIVE_LETTERBOX and not USE_LETTERBOX_CROPS and ar >= ADAPTIVE_AR_THRESHOLD:
             letterboxed = letterbox_crop(crop_pil, imgsz)
             variants.extend([
                 letterboxed,                                    # letterbox original

@@ -2,9 +2,18 @@
 
 ## Local Files
 Weight files (`.onnx`, `.npy`, `.pt`) are gitignored. They live in `norgesgruppen/` on main:
-- `detector.onnx` (167MB), `classifier.onnx` (31MB), `embeddings.npy` (131MB), `submission.zip`
+- `detector.onnx` (167MB), `classifier.onnx` (31MB), `multiclass_detector.onnx` (100MB), `submission.zip`
 - When using a worktree, symlink them: `ln -s ~/Desktop/nmiai/code/nmiai/norgesgruppen/*.onnx .`
 - Training data lives in `norgesgruppen/data/` (also gitignored) — must exist locally and on GCP VMs
+
+### Weight Versioning
+Proven weights are archived in `norgesgruppen/weights/` with descriptive names:
+- `classifier_letterbox_v1_0.9143.onnx` — EfficientNet-B2 letterbox, scored 0.9143 on test
+- `detector_yolov8l_v1.onnx` — YOLOv8l single-class detector
+- `multiclass_yolov8m_v1.onnx` — YOLOv8m multi-class
+- After training a new model, save to `weights/` with score before overwriting active files
+- Worktrees should symlink from `weights/` or main branch, never train from a worktree
+- On GCP VMs: backup `best.pt` before starting new training (e.g. `cp best.pt best_letterbox_0.9291.pt`)
 
 ## Task
 Detect grocery products on store shelves. Scored: 70% detection mAP (IoU>=0.5, category ignored) + 30% classification mAP.
@@ -73,34 +82,38 @@ Two-stage pipeline: single-class YOLOv8l detector + EfficientNet-B2 classifier w
 # Project: ai-nm26osl-1788
 
 # SSH
+# SSH
 gcloud compute ssh nmiai-train --zone=europe-west4-a --project=ai-nm26osl-1788
+gcloud compute ssh nmiai-train-arcface --zone=europe-west4-c --project=ai-nm26osl-1788
 gcloud compute ssh nmiai-train-multiclass --zone=europe-west1-c --project=ai-nm26osl-1788
 
 # IMPORTANT: Use separate VMs for each training job, never queue sequentially
 
 # After training, export + download:
-# On VM: python3 precompute_embeddings.py
-# Local: gcloud compute scp ... nmiai-train:~/norgesgruppen/classifier.onnx norgesgruppen/
-# Local: gcloud compute scp ... nmiai-train:~/norgesgruppen/embeddings.npy norgesgruppen/
+# On VM: python3 precompute_embeddings.py [--letterbox] [--arcface]
+# Local: gcloud compute scp <vm>:~/norgesgruppen/classifier.onnx norgesgruppen/
+
+# BACKUP before overwriting:
+# On VM: cp runs/classifier/best.pt runs/classifier/best_{name}_{val_acc}.pt
 
 # DELETE VMs when done (costs money!)
 gcloud compute instances delete nmiai-train --zone=europe-west4-a --project=ai-nm26osl-1788
+gcloud compute instances delete nmiai-train-arcface --zone=europe-west4-c --project=ai-nm26osl-1788
 gcloud compute instances delete nmiai-train-multiclass --zone=europe-west1-c --project=ai-nm26osl-1788
 ```
 
 ## Current Results
 | Metric | Value |
 |--------|-------|
-| **Competition score (local val)** | **0.9392** |
-| Detection mAP@0.5 (category-ignored) | 0.959 |
-| Classification mAP@0.5 (per-category) | 0.893 |
-| Detection recall | 97.4% |
-| Classification accuracy (matched det) | 96.6% |
+| **Competition score (test)** | **0.9143 (#13)** |
+| **Competition score (local val)** | **0.9408** |
+| Detection mAP@0.5 (category-ignored) | 0.949 |
+| Classification mAP@0.5 (per-category) | 0.922 |
 | Categories with AP=0 in val | 10 |
 | Categories with NO val data | 134 |
 
 ### Known Weaknesses
-- **Egg products**: 40/71 misclassifications (56%). 6-pack vs 12-pack Prior eggs = 16 confusions alone.
+- **Egg products**: still confusable (6-pack vs 12-pack), though letterbox helped a lot
 - **10 categories with AP=0**: Jacobs Gårdsegg, Grissini, Lady Grey, Müsli Frukt, etc.
 - **134 categories unmeasurable**: no val annotations (10% image-level split too coarse for 356 classes)
 - **Soft-NMS hurts**: generates excess FPs on dense shelves, −0.003 score
@@ -109,9 +122,9 @@ gcloud compute instances delete nmiai-train-multiclass --zone=europe-west1-c --p
 | File | Size | Purpose |
 |------|------|---------|
 | detector.onnx | 167MB | YOLOv8l single-class detection |
-| classifier.onnx | 31MB | EfficientNet-B2 dual-output (logits + features) |
-| embeddings.npy | 131MB | 24,308 precomputed kNN embeddings |
-| **Total** | **329MB** | < 420MB limit ✓ |
+| classifier.onnx | 31MB | EfficientNet-B2 letterbox, dual-output (logits + features) |
+| multiclass_detector.onnx | 100MB | YOLOv8m multi-class for WBF |
+| **Total** | **298MB** | < 420MB limit ✓ |
 
 ## Dependencies
 ```
