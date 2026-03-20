@@ -3,5 +3,9 @@ runs/
 weights/
 *.zip
 *.pt
+*.onnx
+*.npy
+*.safetensors
 __pycache__/
 *.pyc
+.DS_Store
