@@ -217,6 +217,9 @@ def compute_feature_map(initial_grid):
 # Bucket 0=[0,2] → mid 1.0, bucket 1=[3,4] → mid 3.5, bucket 2=[5+] → mid 7.0
 DIST_MIDPOINTS = [1.0, 3.5, 7.0]
 
+# Forest level midpoints: level 0=0 neighbors, level 1=1-2 neighbors (mid 1.5), level 2=3+ (mid 4.0)
+FOREST_LEVEL_MIDPOINTS = [0.0, 1.5, 4.0]
+
 
 def _interpolate_dist(d, key, dist_idx, spatial_model):
     """Interpolate between adjacent distance bracket distributions.
@@ -244,6 +247,33 @@ def _interpolate_dist(d, key, dist_idx, spatial_model):
     t = abs(d - current_mid) / abs(neighbor_mid - current_mid)
     t = min(t, 1.0)
     return (1 - t) * spatial_model[key] + t * spatial_model[neighbor_key]
+
+
+def _interpolate_forest(adj_forest_count, probs, key, forest_idx, spatial_model):
+    """Interpolate between adjacent forest level brackets for Plains cells.
+
+    Similar to _interpolate_dist but operates on the forest_level dimension.
+    `probs` is the base probability vector (possibly already distance-interpolated).
+    """
+    current_level = key[forest_idx]
+    current_mid = FOREST_LEVEL_MIDPOINTS[current_level]
+
+    if adj_forest_count < current_mid and current_level > 0:
+        neighbor_level = current_level - 1
+    elif adj_forest_count > current_mid and current_level < 2:
+        neighbor_level = current_level + 1
+    else:
+        return probs  # at edge, no interpolation
+
+    neighbor_key = key[:forest_idx] + (neighbor_level,) + key[forest_idx + 1:]
+
+    if neighbor_key not in spatial_model:
+        return probs
+
+    neighbor_mid = FOREST_LEVEL_MIDPOINTS[neighbor_level]
+    t = abs(adj_forest_count - current_mid) / abs(neighbor_mid - current_mid)
+    t = min(t, 0.5)  # cap blending at 50% to avoid over-smoothing
+    return (1 - t) * probs + t * spatial_model[neighbor_key]
 
 
 # ---------------------------------------------------------------------------
@@ -878,6 +908,14 @@ def build_prediction(height, width, initial_grid, observations,
                         predictions[r, c] = spatial_model[key]
                 else:
                     predictions[r, c] = spatial_model[key]
+                # Forest-level interpolation for Plains cells (forest_level is at index 3)
+                if code == 11:
+                    adj_f = sum(1 for dr in (-1, 0, 1) for dc in (-1, 0, 1)
+                                if (dr, dc) != (0, 0)
+                                and 0 <= r + dr < height and 0 <= c + dc < width
+                                and initial_grid[r + dr][c + dc] == 4)
+                    predictions[r, c] = _interpolate_forest(
+                        adj_f, predictions[r, c], key, 3, spatial_model)
             elif transition_model and code in transition_model:
                 predictions[r, c] = transition_model[code]
             else:
