@@ -1,11 +1,12 @@
 """
-Local test script for the /solve endpoint.
+Local test script using real prompts from md/test_prompts.json.
 
 Usage:
     python3 test_local.py            # run all tests
-    python3 test_local.py 3          # run test by index
-    python3 test_local.py employees  # run a group
+    python3 test_local.py 5          # run test by ID
+    python3 test_local.py payment    # run by category
     python3 test_local.py list       # list all tests
+    python3 test_local.py --plan 5   # show planner output only (no execution)
 
 Requires:
     - Server running: python3 -m uvicorn main:app --reload --port 8080
@@ -14,34 +15,44 @@ Requires:
         SANDBOX_SESSION_TOKEN=your-sandbox-token
 """
 
+import json
 import os
 import sys
-import json
+import time
+
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = os.environ.get("TEST_SERVER_URL", "http://localhost:8080")
 SANDBOX_API_URL = os.environ.get("SANDBOX_BASE_URL", "https://kkpqfuj-amager.tripletex.dev/v2")
 SANDBOX_TOKEN = os.environ.get("SANDBOX_SESSION_TOKEN", "")
+PROMPTS_FILE = os.path.join(os.path.dirname(__file__), "md", "test_prompts.json")
 
-if not SANDBOX_TOKEN:
-    print("ERROR: Set SANDBOX_SESSION_TOKEN in your .env file")
-    exit(1)
+SANDBOX_AUTH = ("0", SANDBOX_TOKEN) if SANDBOX_TOKEN else None
 
-SANDBOX_AUTH = ("0", SANDBOX_TOKEN)
+
+# ---------------------------------------------------------------------------
+# Load prompts from JSON
+# ---------------------------------------------------------------------------
+
+def load_prompts() -> list[dict]:
+    with open(PROMPTS_FILE) as f:
+        return json.load(f)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def call_solve(prompt: str, label: str = "") -> requests.Response:
-    print(f"\n{'='*60}")
-    print(f"TEST: {label or prompt[:60]}")
-    print(f"{'='*60}")
-    print(f"Prompt: {prompt}")
+def call_solve(prompt: str, label: str = "") -> dict:
+    """Send a prompt to the /solve endpoint and return the response."""
+    print(f"\n{'='*70}")
+    print(f"TEST: {label}")
+    print(f"{'='*70}")
+    print(f"Prompt: {prompt[:120]}{'...' if len(prompt) > 120 else ''}")
+    print()
 
     payload = {
         "prompt": prompt,
@@ -52,17 +63,30 @@ def call_solve(prompt: str, label: str = "") -> requests.Response:
         },
     }
 
-    resp = requests.post(f"{BASE_URL}/solve", json=payload, timeout=310)
-    print(f"→ HTTP {resp.status_code}", end="  ")
+    t0 = time.monotonic()
     try:
-        print(f"{resp.json()}")
+        resp = requests.post(f"{BASE_URL}/solve", json=payload, timeout=310)
+    except requests.exceptions.ConnectionError:
+        print("  ERROR: Cannot connect to server. Is it running?")
+        print(f"  Start with: python3 -m uvicorn main:app --reload --port 8080")
+        sys.exit(1)
+
+    elapsed = time.monotonic() - t0
+    status = resp.status_code
+
+    try:
+        body = resp.json()
     except Exception:
-        print(f"(raw) {resp.text}")
-    return resp
+        body = {"raw": resp.text}
+
+    print(f"  HTTP {status} — {elapsed:.1f}s")
+    print(f"  Response: {json.dumps(body, ensure_ascii=False)[:200]}")
+
+    return {"status": status, "body": body, "elapsed": elapsed}
 
 
-def tx_get(endpoint: str, params: dict = None):
-    """Query the sandbox directly to verify results."""
+def tx_get(endpoint: str, params: dict = None) -> dict:
+    """Query the sandbox Tripletex API directly."""
     resp = requests.get(
         f"{SANDBOX_API_URL}{endpoint}",
         auth=SANDBOX_AUTH,
@@ -71,263 +95,122 @@ def tx_get(endpoint: str, params: dict = None):
     return resp.json()
 
 
-def verify(label: str, endpoint: str, params: dict = None, check=None):
-    """Query sandbox and print verification result."""
-    data = tx_get(endpoint, params)
-    values = data.get("values", [data.get("value", data)])
-    if not isinstance(values, list):
-        values = [values]
-
-    print(f"\n  ✔ VERIFY [{label}]: {len(values)} result(s) found")
-    for v in values[:3]:  # show up to 3
-        print(f"    {json.dumps(v, ensure_ascii=False)}")
-
-    if check:
-        result = check(values)
-        status = "PASS ✓" if result else "FAIL ✗"
-        print(f"  → Check: {status}")
-        return result
-    return bool(values)
-
-
 def check_health():
-    print("Checking /health ...")
-    resp = requests.get(f"{BASE_URL}/health")
-    print(f"  {resp.status_code} — {resp.json()}")
-    assert resp.status_code == 200, "Health check failed"
-
-
-# ---------------------------------------------------------------------------
-# Test definitions
-# Each test has: label, group, prompt, and optionally a verify_fn
-# ---------------------------------------------------------------------------
-
-def make_test(label, group, prompt, verify_fn=None):
-    return {"label": label, "group": group, "prompt": prompt, "verify_fn": verify_fn}
-
-
-TESTS = [
-    # --- EMPLOYEES ---
-    make_test(
-        label="Create employee (Norwegian)",
-        group="employees",
-        prompt="Opprett en ansatt med fornavn Erik og etternavn Hansen, e-post erik.hansen@example.com. Han skal være kontoadministrator.",
-        verify_fn=lambda: verify(
-            "employee Erik Hansen",
-            "/employee",
-            {"fields": "id,firstName,lastName,email"},
-            check=lambda vs: any(v.get("firstName") == "Erik" and v.get("lastName") == "Hansen" for v in vs),
-        ),
-    ),
-    make_test(
-        label="Create employee (English)",
-        group="employees",
-        prompt="Create an employee named Sofia Berg with email sofia.berg@example.com.",
-        verify_fn=lambda: verify(
-            "employee Sofia Berg",
-            "/employee",
-            {"fields": "id,firstName,lastName,email"},
-            check=lambda vs: any(v.get("firstName") == "Sofia" for v in vs),
-        ),
-    ),
-    make_test(
-        label="Create employee (German)",
-        group="employees",
-        prompt="Erstelle einen Mitarbeiter mit dem Namen Klaus Müller und der E-Mail-Adresse k.mueller@example.com.",
-        verify_fn=lambda: verify(
-            "employee Klaus Müller",
-            "/employee",
-            {"fields": "id,firstName,lastName,email"},
-            check=lambda vs: any(v.get("firstName") == "Klaus" for v in vs),
-        ),
-    ),
-
-    # --- CUSTOMERS ---
-    make_test(
-        label="Create customer (Norwegian)",
-        group="customers",
-        prompt="Opprett en kunde med navn Solberg Consulting AS og e-post kontakt@solberg.no.",
-        verify_fn=lambda: verify(
-            "customer Solberg Consulting",
-            "/customer",
-            {"name": "Solberg", "fields": "id,name,email"},
-            check=lambda vs: any("Solberg" in v.get("name", "") for v in vs),
-        ),
-    ),
-    make_test(
-        label="Create customer (Spanish)",
-        group="customers",
-        prompt="Crea un cliente con el nombre Empresa Global S.A. y correo info@empresa.es.",
-        verify_fn=lambda: verify(
-            "customer Empresa Global",
-            "/customer",
-            {"name": "Empresa", "fields": "id,name,email"},
-        ),
-    ),
-    make_test(
-        label="Create customer (French)",
-        group="customers",
-        prompt="Créez un client avec le nom Société Dupont et l'email contact@dupont.fr.",
-        verify_fn=lambda: verify(
-            "customer Dupont",
-            "/customer",
-            {"name": "Dupont", "fields": "id,name,email"},
-        ),
-    ),
-
-    # --- PRODUCTS ---
-    make_test(
-        label="Create product (Norwegian)",
-        group="products",
-        prompt="Opprett et produkt med navn Konsulenttime, pris 1500 kr og varenummer KT-001.",
-        verify_fn=lambda: verify(
-            "product Konsulenttime",
-            "/product",
-            {"name": "Konsulenttime", "fields": "id,name,costExcludingVatCurrency,number"},
-        ),
-    ),
-
-    # --- INVOICING ---
-    make_test(
-        label="Create invoice for existing customer (Norwegian)",
-        group="invoicing",
-        prompt=(
-            "Opprett en faktura for kunden Solberg Consulting AS. "
-            "Fakturaen skal ha forfallsdato om 14 dager og én fakturalinje: "
-            "Konsulenttime, antall 2, enhetspris 1500 kr."
-        ),
-        verify_fn=lambda: verify(
-            "invoice",
-            "/invoice",
-            {"fields": "id,invoiceDate,invoiceDueDate,customer,amountCurrency", "invoiceDateFrom": "2020-01-01", "invoiceDateTo": "2030-12-31"},
-        ),
-    ),
-
-    # --- TRAVEL EXPENSES ---
-    make_test(
-        label="Create travel expense (Norwegian)",
-        group="travel",
-        prompt=(
-            "Registrer en reiseregning for ansatt Erik Hansen. "
-            "Reisen var fra Oslo til Bergen, dato 2026-03-15, formål: Kundemøte."
-        ),
-        verify_fn=lambda: verify(
-            "travel expense",
-            "/travelExpense",
-            {"fields": "id,title,employee"},
-        ),
-    ),
-
-    # --- PROJECTS ---
-    make_test(
-        label="Create project (Norwegian)",
-        group="projects",
-        prompt=(
-            "Opprett et prosjekt med navn 'Digitaliseringsprosjekt 2026' "
-            "koblet til kunden Solberg Consulting AS. Startdato er 2026-04-01."
-        ),
-        verify_fn=lambda: verify(
-            "project",
-            "/project",
-            {"name": "Digitaliseringsprosjekt", "fields": "id,name,startDate,customer"},
-        ),
-    ),
-
-    # --- DEPARTMENTS ---
-    make_test(
-        label="Create department (Norwegian)",
-        group="departments",
-        prompt="Opprett en avdeling med navn Salgsavdelingen.",
-        verify_fn=lambda: verify(
-            "department",
-            "/department",
-            {"fields": "id,name"},
-            check=lambda vs: any("Salg" in v.get("name", "") for v in vs),
-        ),
-    ),
-
-    # --- CORRECTIONS ---
-    make_test(
-        label="List and delete latest travel expense (Norwegian)",
-        group="corrections",
-        prompt=(
-            "Finn den siste reiseregningen i systemet og slett den."
-        ),
-        verify_fn=lambda: verify(
-            "travel expenses after delete",
-            "/travelExpense",
-            {"fields": "id,title"},
-        ),
-    ),
-
-    # --- NYNORSK ---
-    make_test(
-        label="Create employee (Nynorsk)",
-        group="employees",
-        prompt="Opprett ein tilsett med namn Ingrid Dahl og e-post ingrid.dahl@example.com.",
-        verify_fn=lambda: verify(
-            "employee Ingrid Dahl",
-            "/employee",
-            {"fields": "id,firstName,lastName,email"},
-            check=lambda vs: any(v.get("firstName") == "Ingrid" for v in vs),
-        ),
-    ),
-
-    # --- PORTUGUESE ---
-    make_test(
-        label="Create customer (Portuguese)",
-        group="customers",
-        prompt="Crie um cliente com o nome Empresa Portuguesa Ltda e email geral@empresa.pt.",
-        verify_fn=lambda: verify(
-            "customer Portuguesa",
-            "/customer",
-            {"name": "Portuguesa", "fields": "id,name,email"},
-        ),
-    ),
-]
-
-GROUPS = sorted(set(t["group"] for t in TESTS))
+    """Verify the server is running."""
+    try:
+        resp = requests.get(f"{BASE_URL}/health", timeout=5)
+        assert resp.status_code == 200
+        print(f"Server OK: {BASE_URL}")
+    except Exception:
+        print(f"ERROR: Server not reachable at {BASE_URL}")
+        print(f"Start with: python3 -m uvicorn main:app --reload --port 8080")
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
-def run_test(t: dict):
-    call_solve(t["prompt"], t["label"])
-    if t.get("verify_fn"):
-        try:
-            t["verify_fn"]()
-        except Exception as e:
-            print(f"  ✗ Verify error: {e}")
+def run_test(test: dict) -> dict:
+    """Run a single test and return results."""
+    label = f"[{test['id']}] {test['description']} ({test['language']})"
+    result = call_solve(test["prompt"], label)
+    result["test_id"] = test["id"]
+    result["category"] = test["category"]
+    return result
+
+
+def print_summary(results: list[dict]):
+    """Print a summary table of all test results."""
+    print(f"\n{'='*70}")
+    print("SUMMARY")
+    print(f"{'='*70}")
+    print(f"{'ID':<4} {'STATUS':<8} {'TIME':<8} {'CATEGORY':<12} DESCRIPTION")
+    print("-" * 70)
+
+    prompts = {p["id"]: p for p in load_prompts()}
+    ok_count = 0
+    for r in results:
+        test = prompts.get(r["test_id"], {})
+        status = "OK" if r["status"] == 200 else f"ERR {r['status']}"
+        if r["status"] == 200:
+            ok_count += 1
+        print(f"{r['test_id']:<4} {status:<8} {r['elapsed']:>5.1f}s  {r.get('category', ''):<12} {test.get('description', '')}")
+
+    print(f"\n{ok_count}/{len(results)} passed")
+
+
+def main():
+    prompts = load_prompts()
+    categories = sorted(set(p["category"] for p in prompts))
+
+    arg = sys.argv[1] if len(sys.argv) > 1 else None
+    arg2 = sys.argv[2] if len(sys.argv) > 2 else None
+
+    # List tests
+    if arg == "list":
+        print(f"\n{'ID':<4} {'LANG':<5} {'CATEGORY':<12} DESCRIPTION")
+        print("-" * 70)
+        for p in prompts:
+            print(f"{p['id']:<4} {p['language']:<5} {p['category']:<12} {p['description']}")
+        print(f"\nCategories: {', '.join(categories)}")
+        print(f"Total: {len(prompts)} tests")
+        sys.exit(0)
+
+    # Plan-only mode
+    if arg == "--plan":
+        test_id = int(arg2) if arg2 else None
+        if test_id is None:
+            print("Usage: python3 test_local.py --plan <test_id>")
+            sys.exit(1)
+        test = next((p for p in prompts if p["id"] == test_id), None)
+        if not test:
+            print(f"Test ID {test_id} not found")
+            sys.exit(1)
+        # Run with plan-only (just call solve and show output)
+        check_health()
+        run_test(test)
+        sys.exit(0)
+
+    if not SANDBOX_TOKEN:
+        print("ERROR: Set SANDBOX_SESSION_TOKEN in your .env file")
+        sys.exit(1)
+
+    check_health()
+
+    # Run by ID
+    if arg and arg.isdigit():
+        test_id = int(arg)
+        test = next((p for p in prompts if p["id"] == test_id), None)
+        if not test:
+            print(f"Test ID {test_id} not found. Use 'list' to see available tests.")
+            sys.exit(1)
+        result = run_test(test)
+        print_summary([result])
+        sys.exit(0)
+
+    # Run by category
+    if arg in categories:
+        results = []
+        for p in prompts:
+            if p["category"] == arg:
+                results.append(run_test(p))
+        print_summary(results)
+        sys.exit(0)
+
+    # Unknown arg
+    if arg:
+        print(f"Unknown argument '{arg}'.")
+        print(f"Usage: python3 test_local.py [list | <id> | <category> | --plan <id>]")
+        print(f"Categories: {', '.join(categories)}")
+        sys.exit(1)
+
+    # Run all
+    results = []
+    for p in prompts:
+        results.append(run_test(p))
+    print_summary(results)
 
 
 if __name__ == "__main__":
-    check_health()
-
-    arg = sys.argv[1] if len(sys.argv) > 1 else None
-
-    if arg == "list":
-        print(f"\n{'IDX':<4} {'GROUP':<14} LABEL")
-        print("-" * 60)
-        for i, t in enumerate(TESTS):
-            print(f"{i:<4} {t['group']:<14} {t['label']}")
-        sys.exit(0)
-
-    elif arg and arg.isdigit():
-        run_test(TESTS[int(arg)])
-
-    elif arg in GROUPS:
-        for t in TESTS:
-            if t["group"] == arg:
-                run_test(t)
-
-    else:
-        if arg and arg not in GROUPS:
-            print(f"Unknown argument '{arg}'. Use an index, a group name, or 'list'.")
-            print(f"Groups: {', '.join(GROUPS)}")
-            sys.exit(1)
-        for t in TESTS:
-            run_test(t)
-
-    print("\nDone.")
+    main()

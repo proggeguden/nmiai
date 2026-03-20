@@ -7,13 +7,14 @@
 - Smart self-heal: only retries 400/422, includes full endpoint schema in fix prompt
 - Recursive placeholder resolution (works through nested dicts/lists)
 - Model configurable via GEMINI_MODEL env var (try gemini-3.1-pro-preview)
+- **Test system**: `test_local.py` reads real prompts from `md/test_prompts.json`
 
 ---
 
 ## Next Steps
 
 ### 1. Test & Validate (HIGH PRIORITY)
-- [ ] Run with real prompts from md/example_prompts.md
+- [ ] Run with real prompts: `python3 test_local.py`
 - [ ] Test supplier creation (prompt #5: "Registrer leverandøren Bergvik AS")
 - [ ] Test payment registration (prompt #1, #3)
 - [ ] Test invoice sending (prompt #4: "Crea y envía una factura")
@@ -38,6 +39,11 @@
 - [ ] Ensure bulk /list endpoints are used for multiple creates
 - [ ] Minimize search calls by using specific filters
 
-### 6. Test Suite
-- [ ] Update test_local.py with real prompts from submissions
-- [ ] Add tests for each workflow recipe
+### 6. Autonomous Prompt Collection (TODO)
+Set up an autonomous workflow to extract real prompts from gcloud Cloud Run logs
+and append them to `md/test_prompts.json`. Workflow:
+1. `gcloud logging read` with filter for the `>>>PROMPT_START<<<` / `>>>PROMPT_END<<<` delimiters
+2. Parse each prompt, deduplicate against existing entries in test_prompts.json
+3. Auto-assign id, language (detect), category (classify), source="gcloud-log"
+4. Append to test_prompts.json
+5. Could run as a periodic script or Claude Code skill
