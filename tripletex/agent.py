@@ -21,6 +21,26 @@ log = get_logger("tripletex.agent")
 RETRYABLE_STATUS_CODES = {400, 422}
 
 
+def _extract_text(content) -> str:
+    """Extract plain text from LLM response content.
+
+    Gemini can return a list of content blocks like
+    [{'type': 'text', 'text': '...', 'extras': {...}}] instead of a string.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and "text" in block:
+                parts.append(block["text"])
+            elif isinstance(block, str):
+                parts.append(block)
+        if parts:
+            return "\n".join(parts)
+    return str(content)
+
+
 def build_agent():
     """Build the planner/executor StateGraph."""
     tools, tool_summaries = load_tools()
@@ -43,11 +63,7 @@ def build_agent():
         log.info("Planner invoked", prompt_length=len(prompt_text))
 
         response = llm.invoke([HumanMessage(content=prompt_text)])
-        raw = (
-            response.content
-            if isinstance(response.content, str)
-            else str(response.content)
-        )
+        raw = _extract_text(response.content)
 
         log.info("Planner raw output", output=raw[:2000])
 
@@ -282,7 +298,7 @@ def _ask_llm_to_fix_args(llm, original_args: dict, error_response: str) -> dict 
 
     try:
         resp = llm.invoke([HumanMessage(content=prompt)])
-        raw = resp.content if isinstance(resp.content, str) else str(resp.content)
+        raw = _extract_text(resp.content)
         fixed = _parse_json_object(raw)
         if fixed and isinstance(fixed, dict):
             log.info("LLM suggested fixed args", fixed_args=fixed)
@@ -453,11 +469,7 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
             description=f"Extract value for path: {path_str} (from placeholder {value})",
         )
         resp = llm.invoke([HumanMessage(content=fallback_prompt)])
-        extracted = (
-            resp.content.strip()
-            if isinstance(resp.content, str)
-            else str(resp.content).strip()
-        )
+        extracted = _extract_text(resp.content).strip()
         # Try to convert to int if it looks like an ID
         try:
             return int(extracted)
