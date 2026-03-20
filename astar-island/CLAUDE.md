@@ -131,8 +131,11 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 - Code kept for potential future use with better rate formulas
 
 **Known issues**:
-- Plains cells are largest error source (~55% of KL loss)
+- Plains cells are largest error source (~60% of KL loss)
+- R7 is 2.5x worse than any other round (KL 0.108) despite similar forward rates to R1
+- Within-bucket variance is the dominant remaining error source
 - Forward model doesn't improve on data-driven bucket model
+- Post-model adjustments have diminishing returns — need better features for next step change
 
 See `PLAN.md` for error analysis, improvement roadmap, and round-by-round changelog.
 

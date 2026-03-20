@@ -51,12 +51,13 @@
 - **Bayesian smoothing helps more than hard min-obs threshold** — prevents overfitting sparse buckets
 
 ### Scoring Context
-- Our round 5 score: 13.1/100 (naive predictor, submitted before model was ready)
-- Round 6 score: **78.5** (rank 28/186) — first real submission with spatial model
-- Round 7 score: **60.36** (rank 83/199) — 18-point drop, very harsh winter round (7% survival)
-- Round 8: submitted with Phase 4 improvements (score pending)
-- Top teams: ~115-119 weighted score → ~80-87+ raw per round
-- Gap to close: ~5-10 raw points per round
+- Round 5: 13.1 (rank 130/144) — naive predictor
+- Round 6: **78.5** (rank 28/186) — first spatial model
+- Round 7: **60.4** (rank 83/199) — harsh winter, high expansion
+- Round 8: **82.4** (rank 55/214) — best raw score, weighted=121.8
+- Round 9: submitted (score pending)
+- Leaderboard: **#55** with weighted=121.8. Top teams: ~140 weighted (~90 raw).
+- Gap to close: ~8 raw points. Weight system means R10+ at 82.4 → ~134 weighted (~rank 15).
 
 ---
 
