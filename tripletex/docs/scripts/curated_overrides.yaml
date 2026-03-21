@@ -200,28 +200,38 @@ product:
 
 travel-expense:
   notes:
-    - "costs and perDiemCompensations are SEPARATE sub-resources — NEVER inline them in POST /travelExpense body"
-    - "POST /travelExpense creates a SHELL only — then add costs and per diems via their own endpoints"
+    - "costs and perDiemCompensations CAN be inlined in POST /travelExpense for efficiency"
+    - "Each cost needs: category, amountCurrencyIncVat, date, paymentType ref"
+    - "Each perDiemCompensation needs: location, count, overnightAccommodation"
 
   "POST /travelExpense":
     send_exactly: |
       {
         "employee": {"id": <int>},
+        "title": "<string>",
         "travelDetails": {
           "departureDate": "YYYY-MM-DD",
           "returnDate": "YYYY-MM-DD",
           "destination": "<string>"
-        }
+        },
+        "costs": [
+          {
+            "category": "<FLIGHT|TAXI|FOOD|etc>",
+            "amountCurrencyIncVat": <number>,
+            "date": "YYYY-MM-DD",
+            "paymentType": {"id": <int>}
+          }
+        ],
+        "perDiemCompensations": [
+          {
+            "location": "<city>",
+            "count": <days>,
+            "overnightAccommodation": "HOTEL"
+          }
+        ]
       }
-    do_not_send:
-      - field: "costs"
-        reason: "MUST be created separately via POST /travelExpense/cost"
-      - field: "perDiemCompensations"
-        reason: "MUST be created separately via POST /travelExpense/perDiemCompensation"
-      - field: "mileageAllowances"
-        reason: "MUST be created separately via their own endpoint"
     response_capture:
-      - "value.id — the travel expense ID (needed for sub-resource creation)"
+      - "value.id — the travel expense ID"
 
 travel-expense-sub:
   "POST /travelExpense/cost":

@@ -58,7 +58,7 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - **Supplier**: POST /supplier {{"name": "..."}} — or POST /supplier/list for bulk
 - **Department**: POST /department {{"name": "..."}} — or POST /department/list for bulk
 - **Product**: POST /product {{"name": "...", "priceExcludingVatCurrency": N}} — omit "number" (auto-gen). NEVER send priceIncludingVatCurrency.
-- **Account starts empty** — always CREATE, never search for existing entities
+- **Employees referenced by email already exist** — use GET /employee?email=X to find them. For all other entities (customers, suppliers, products, orders, departments), always CREATE.
 
 ### Employees
 - **Create**: POST /employee {{"firstName": "...", "lastName": "...", "email": "...", "dateOfBirth": "YYYY-MM-DD", "userType": "STANDARD", "department": {{"id": N}}}}
@@ -90,13 +90,12 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 7. PUT /order/$step_6.value.id/:invoice query_params={{}} body=null
 
 ### Travel Expenses
-1. POST /department → {{"name": "..."}}
-2. POST /employee → {{"firstName": "...", "lastName": "...", "email": "...", "dateOfBirth": "1990-01-01", "userType": "STANDARD", "department": {{"id": "$step_1.value.id"}}}}
-3. GET /travelExpense/paymentType?showOnEmployeeExpenses=true&count=1
-4. POST /travelExpense → {{"employee": {{"id": "$step_2.value.id"}}, "travelDetails": {{"departureDate": "YYYY-MM-DD", "returnDate": "YYYY-MM-DD", "destination": "..."}}}} — SHELL only!
-5. POST /travelExpense/cost (per item) → {{"travelExpense": {{"id": "$step_4.value.id"}}, "category": "TAXI", "amountCurrencyIncVat": N, "date": "YYYY-MM-DD", "paymentType": {{"id": "$step_3.values[0].id"}}}}
-6. POST /travelExpense/perDiemCompensation → {{"travelExpense": {{"id": "$step_4.value.id"}}, "location": "<city>", "count": <days>, "overnightAccommodation": "HOTEL"}}
-- **NEVER** inline costs/perDiems in POST /travelExpense body — they are separate sub-resources
+1. GET /employee?email=X&count=1 → find existing employee
+2. GET /travelExpense/paymentType?showOnEmployeeExpenses=true&count=1 → get valid paymentType
+3. POST /travelExpense → include costs + perDiemCompensations INLINE in one call:
+   {{"employee": {{"id": "$step_1.values[0].id"}}, "title": "...", "travelDetails": {{"departureDate": "YYYY-MM-DD", "returnDate": "YYYY-MM-DD", "destination": "..."}}, "costs": [{{"category": "FLIGHT", "amountCurrencyIncVat": N, "date": "YYYY-MM-DD", "paymentType": {{"id": "$step_2.values[0].id"}}}}, {{"category": "TAXI", "amountCurrencyIncVat": N, "date": "YYYY-MM-DD", "paymentType": {{"id": "$step_2.values[0].id"}}}}], "perDiemCompensations": [{{"location": "<city>", "count": <days>, "overnightAccommodation": "HOTEL"}}]}}
+- Costs and perDiemCompensations CAN be inlined in POST /travelExpense — do it for efficiency
+- If employee doesn't exist, create department + employee first (adds 2 steps)
 
 ### Vouchers / Accounting
 1. GET /ledger/account?number=NNNN (one call per account number — numbers are NOT IDs!)
@@ -124,7 +123,7 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - **vatType**: Do NOT set vatType on order lines — Tripletex defaults to 25% output VAT. Only set vatType on voucher postings: use GET /ledger/vatType?number=N to look up the correct ID. For vouchers: debit line gets vatType, credit line does NOT.
 
 ## Rules
-1. **Minimize API calls — #1 scoring criterion.** Every call costs points. Every 4xx error costs double. A 3-step plan beats a 7-step plan. Never add "safety" steps. Never search for existing entities — the account starts empty, just CREATE.
+1. **Minimize API calls — #1 scoring criterion.** Every call costs points. Every 4xx error costs double. A 3-step plan beats a 7-step plan. Never add unnecessary steps. Employees referenced by email already exist — GET them. Other entities: CREATE directly.
 2. Use $step_N.value.id for POST results, $step_N.values[0].id for GET results. Never use ternary or conditionals or OR fallbacks.
 3. Bodies use **camelCase** field names. Reference fields use {{id: N}} format with integer IDs.
 4. Use bulk /list endpoints when creating 2+ entities of the same type (POST body = array). Available for: /customer/list, /supplier/list, /department/list, /product/list, /employee/list, /project/list, /order/list, /contact/list. Response: {{values: [...]}} not {{value: {{...}}}} — use $step_N.values[0].id, $step_N.values[1].id, etc.
@@ -168,13 +167,9 @@ Task: "Set a fixed price of 150000 NOK on project 'Data Migration' for customer 
 Task: "Register a travel expense for Arthur Robert (arthur.robert@example.org): trip to Paris, 2 days hotel, taxi 450 NOK, meals 800 NOK."
 ```json
 [
-  {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "POST", "path": "/department", "body": {{"name": "General"}}}}, "description": "Create department"}},
-  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "POST", "path": "/employee", "body": {{"firstName": "Arthur", "lastName": "Robert", "email": "arthur.robert@example.org", "dateOfBirth": "1990-01-01", "userType": "STANDARD", "department": {{"id": "$step_1.value.id"}}}}}}, "description": "Create employee"}},
-  {{"step_number": 3, "tool_name": "call_api", "args": {{"method": "GET", "path": "/travelExpense/paymentType", "query_params": {{"showOnEmployeeExpenses": true, "count": 1, "fields": "id"}}}}, "description": "Get payment type"}},
-  {{"step_number": 4, "tool_name": "call_api", "args": {{"method": "POST", "path": "/travelExpense", "body": {{"employee": {{"id": "$step_2.value.id"}}, "title": "Travel to Paris", "travelDetails": {{"departureDate": "{today}", "returnDate": "{today}", "destination": "Paris"}}}}}}, "description": "Create travel expense shell"}},
-  {{"step_number": 5, "tool_name": "call_api", "args": {{"method": "POST", "path": "/travelExpense/cost", "body": {{"travelExpense": {{"id": "$step_4.value.id"}}, "category": "TAXI", "amountCurrencyIncVat": 450, "date": "{today}", "paymentType": {{"id": "$step_3.values[0].id"}}}}}}, "description": "Add taxi cost"}},
-  {{"step_number": 6, "tool_name": "call_api", "args": {{"method": "POST", "path": "/travelExpense/cost", "body": {{"travelExpense": {{"id": "$step_4.value.id"}}, "category": "FOOD", "amountCurrencyIncVat": 800, "date": "{today}", "paymentType": {{"id": "$step_3.values[0].id"}}}}}}, "description": "Add meals cost"}},
-  {{"step_number": 7, "tool_name": "call_api", "args": {{"method": "POST", "path": "/travelExpense/perDiemCompensation", "body": {{"travelExpense": {{"id": "$step_4.value.id"}}, "location": "Paris", "count": 2, "overnightAccommodation": "HOTEL"}}}}, "description": "Add per diem compensation"}}
+  {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "GET", "path": "/employee", "query_params": {{"email": "arthur.robert@example.org", "count": 1}}}}, "description": "Find existing employee"}},
+  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "GET", "path": "/travelExpense/paymentType", "query_params": {{"showOnEmployeeExpenses": true, "count": 1, "fields": "id"}}}}, "description": "Get payment type"}},
+  {{"step_number": 3, "tool_name": "call_api", "args": {{"method": "POST", "path": "/travelExpense", "body": {{"employee": {{"id": "$step_1.values[0].id"}}, "title": "Travel to Paris", "travelDetails": {{"departureDate": "{today}", "returnDate": "{today}", "destination": "Paris"}}, "costs": [{{"category": "TAXI", "amountCurrencyIncVat": 450, "date": "{today}", "paymentType": {{"id": "$step_2.values[0].id"}}}}, {{"category": "FOOD", "amountCurrencyIncVat": 800, "date": "{today}", "paymentType": {{"id": "$step_2.values[0].id"}}}}], "perDiemCompensations": [{{"location": "Paris", "count": 2, "overnightAccommodation": "HOTEL"}}]}}}}, "description": "Create travel expense with costs and per diem inline"}}
 ]
 ```
 
@@ -192,13 +187,13 @@ Return ONLY a JSON array of steps, no other text:
 PLANNER_PROFILE = {
     "name": "efficient",
     "temperature": 0,
-    "prefix": "Every API call costs points — minimize total steps ruthlessly. Use bulk /list endpoints. The account starts empty — always CREATE, never search. Do NOT set vatType on order lines (defaults to 25%). NEVER combine payment into PUT /:invoice — invoice first, then pay separately with PUT /invoice/{id}/:payment using the exact amount from the invoice response. Always GET /invoice/paymentType first.",
+    "prefix": "Every API call costs points — minimize total steps ruthlessly. Use bulk /list endpoints. Employees referenced by email already exist — GET them, don't create. Other entities: CREATE directly. Do NOT set vatType on order lines (defaults to 25%). NEVER combine payment into PUT /:invoice — invoice first, then pay separately. Inline costs+perDiems in POST /travelExpense.",
 }
 
 CHALLENGER_PROFILE = {
     "name": "challenger",
     "temperature": 0.3,
-    "prefix": "You are a careful planner. Prioritize correctness over efficiency. Make sure every required field is included. Double-check reference IDs and date formats. Do NOT set vatType on order lines. The account starts empty — always CREATE, never search. NEVER combine payment into PUT /:invoice.",
+    "prefix": "You are a careful planner. Prioritize correctness over efficiency. Make sure every required field is included. Double-check reference IDs and date formats. Do NOT set vatType on order lines. Employees referenced by email exist — GET them. NEVER combine payment into PUT /:invoice. Inline costs+perDiems in POST /travelExpense.",
 }
 
 EXECUTOR_FALLBACK_PROMPT = """Given this API response, extract the requested value.

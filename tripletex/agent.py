@@ -116,75 +116,7 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             emp_body["division"] = {"id": f"$step_{div_step_number}.value.id"}
             log.info("Validation: prepended ensure_division step for employment plan")
 
-    # Check if plan has travel expense costs but no paymentType lookup
-    has_travel_cost = False
-    has_payment_type_lookup = False
-    for step in plan:
-        if step.get("tool_name") != "call_api":
-            continue
-        args = step.get("args", {})
-        path = args.get("path", "")
-        method = args.get("method", "")
-        if method == "POST" and "/travelExpense/cost" in path:
-            has_travel_cost = True
-        if method == "GET" and "/travelExpense/paymentType" in path:
-            has_payment_type_lookup = True
-
-    # Inject GET /travelExpense/paymentType before first travel cost if missing
-    if has_travel_cost and not has_payment_type_lookup:
-        # Find the first travel cost step
-        first_cost_idx = None
-        for i, step in enumerate(plan):
-            if step.get("tool_name") != "call_api":
-                continue
-            args = step.get("args", {})
-            if args.get("method") == "POST" and "/travelExpense/cost" in args.get(
-                "path", ""
-            ):
-                first_cost_idx = i
-                break
-
-        if first_cost_idx is not None:
-            # Insert a GET paymentType step right before the first cost step
-            pt_step_number = plan[first_cost_idx]["step_number"]
-            pt_step = {
-                "step_number": pt_step_number,
-                "tool_name": "call_api",
-                "args": {
-                    "method": "GET",
-                    "path": "/travelExpense/paymentType",
-                    "query_params": {
-                        "showOnEmployeeExpenses": True,
-                        "count": 1,
-                        "fields": "id",
-                    },
-                },
-                "description": "Get travel expense payment type (required for costs)",
-            }
-
-            # Renumber steps from first_cost_idx onward (only shift refs >= the insertion point)
-            for step in plan[first_cost_idx:]:
-                step["step_number"] += 1
-                _shift_step_refs(step, offset=1, min_step=pt_step_number)
-
-            plan.insert(first_cost_idx, pt_step)
-
-            # Inject/fix paymentType reference in all travel cost bodies
-            pt_ref = f"$step_{pt_step_number}.values[0].id"
-            for step in plan[first_cost_idx + 1 :]:
-                if step.get("tool_name") != "call_api":
-                    continue
-                args = step.get("args", {})
-                if args.get("method") == "POST" and "/travelExpense/cost" in args.get(
-                    "path", ""
-                ):
-                    body = args.get("body", {})
-                    if isinstance(body, dict):
-                        body["paymentType"] = {"id": pt_ref}  # Always set correct ref
-
-            log.info(
-                "Validation: injected GET /travelExpense/paymentType step and paymentType refs for travel costs"
-            )
+    # (Travel paymentType injection removed — costs are now inlined in POST /travelExpense)
 
     # (A3 removed: vatType ID mapping was wrong — always let agent GET /ledger/vatType)
 
