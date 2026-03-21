@@ -353,6 +353,52 @@ All 4 priority items implemented and submitted:
 
 **Combined improvements this session**: baseline 0.0603 → k-boost 0.0537 (-10.9%) → expansion fix 0.0504 (-6.1%) = **total -16.4% improvement**.
 
+### ML Model (2026-03-21 night) — CURRENT PRODUCTION MODEL
+
+**Replaced bucket model with PyTorch MLP trained on cross-round GT data.**
+
+The bucket model's fundamental limitation was within-bucket variance — it couldn't learn
+feature interactions (e.g., coastal AND near settlement AND near forest). An MLP trained
+on 985k GT cells from 17 rounds captures these interactions.
+
+**Architecture**: Input(18) → Linear(128) → ReLU → Dropout(0.1) → Linear(64) → ReLU → Dropout(0.1) → Linear(32) → ReLU → Linear(6) → Softmax. KL divergence loss, Adam optimizer, cosine annealing, early stopping.
+
+**Key innovation**: Noisy rate augmentation. Instead of using perfect GT rates during training,
+we simulate production noise by sampling discrete observations from GT and estimating rates
+from those (matching the 50-query viewport strategy). The model learns to be robust to 2-4x rate estimation noise.
+
+**Results (simulated-production, 3 runs, 17 rounds)**:
+| Metric | Bucket Model | ML Model | Improvement |
+|--------|-------------|----------|-------------|
+| Avg KL | 0.0494 | **0.0341** | **-31%** |
+| R3 (harsh) | 0.0524 | 0.0198 | -62% |
+| R7 (harsh) | 0.1028 | 0.0746 | -27% |
+| R10 | 0.0466 | 0.0192 | -59% |
+| R12 (harsh) | 0.1297 | 0.0856 | -34% |
+| R15 | 0.0334 | 0.0198 | -41% |
+
+Zero regressions across all 17 rounds.
+
+**R18 submitted** with ML model. First production test of the new approach.
+
+**Files**:
+- `ml_predictor.py`: Feature extraction (18 features) + numpy forward pass
+- `train_model.py`: GT data fetch, noisy augmentation, PyTorch training, LOOCV
+- `model_weights.npz`: Trained weights (53KB, committed)
+- `predictor.py`: Added `build_prediction_ml()` — ML base + per-cell blending + floor
+- `main.py`: Auto-loads ML weights at startup, falls back to bucket model
+
+**Retraining after new rounds**:
+```bash
+rm training_data.npz && python3 train_model.py --augmentations 10 --output model_weights.npz
+```
+
+**Improvement directions**:
+- More features: adj_mountain, distance_to_coast, settlement_count_in_radius
+- Architecture: wider layers, residual connections
+- Ensemble: alpha-blend ML + bucket predictions
+- Each new round adds ~5800 cells × 10 augmentations of training data
+
 ---
 
 ## Simulation Phase Summary (for modeling reference)
