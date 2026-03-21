@@ -407,7 +407,7 @@ customer:
         "name": "<string>"
       }
     notes:
-      - "Sandbox starts empty — always CREATE, never search for existing customers"
+      - "Production may have pre-existing data — search first (GET /customer?name=X), create only if not found"
     response_capture:
       - "value.id — the customer ID"
 
@@ -418,6 +418,6 @@ supplier:
         "name": "<string>"
       }
     notes:
-      - "Sandbox starts empty — always CREATE, never search for existing suppliers"
+      - "Production may have pre-existing data — search first (GET /supplier?name=X), create only if not found"
     response_capture:
       - "value.id — the supplier ID"

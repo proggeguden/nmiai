@@ -70,20 +70,20 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - **vatType OUTPUT IDs**: 3=25%, 31=15%(food), 32=12%(transport), 5=0%(exempt), 6=0%(exempt outside VAT). IDs 1,11,13 are INPUT VAT — never use on orders.
 - **Division** is required for employment (auto-injected by system)
 - **GET /invoice** REQUIRES invoiceDateFrom + invoiceDateTo params
-- **Voucher postings**: debit=positive, credit=negative, must sum to 0. Do NOT send number or voucherType. Each posting MUST include vatType:{{"id": N}} — use INPUT VAT IDs: 1=25% input, 11=15% input, 13=12% input. Expense line gets the input vatType, bank/payment line gets vatType:{{"id": 0}} (no VAT).
+- **Voucher postings**: debit=positive, credit=negative, must sum to 0. Do NOT send number or voucherType. For purchase/expense vouchers, include vatType on the expense line: INPUT VAT IDs: 1=25%, 11=15%, 13=12%. Bank/payment lines can omit vatType.
 - **Supplier invoice voucher**: AP (credit) posting MUST include supplier:{{"id": N}}
 - **Product**: include "number" field when the task specifies a product number. NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency.
-- **Employee for payroll**: dateOfBirth REQUIRED. salary/transaction specifications MUST have rate, count, AND amount.
+- **Employee for payroll**: dateOfBirth REQUIRED. Employee MUST have an active employment (POST /employee/employment) and employment details (POST /employee/employment/details) BEFORE creating salary transactions. salary/transaction specifications MUST have rate, count, AND amount.
 - **Employment details**: POST /employee/employment/details — use **percentageOfFullTimeEquivalent** (NOT employmentPercentage). occupationCode must be {{"id": <int>}} not bare string.
 - **Project-specific activities**: POST /project/projectActivity needs activity:{{"id": N}} — create the activity first with POST /activity (activityType: GENERAL_ACTIVITY), then link it.
 - **Travel expenses**: costs + perDiemCompensations can be inlined in POST /travelExpense body. Each cost needs paymentType (GET /travelExpense/paymentType first).
 - **Timesheet entries**: need an activity linked to the project (POST /activity → POST /project/projectActivity). Use POST /timesheet/entry/list for bulk.
 - **Activities**: POST /activity needs activityType enum: GENERAL_ACTIVITY, PROJECT_GENERAL_ACTIVITY, PROJECT_SPECIFIC_ACTIVITY, TASK. Names must be unique.
 - **Depreciation**: annual = cost / lifetime_years, monthly = annual / 12
-- **Custom accounting dimensions**: POST /ledger/accountingDimensionName with **dimensionName** (NOT "name"). dimensionIndex is auto-assigned (1-3). Then POST /ledger/accountingDimensionValue with **displayName** (NOT "name"), dimensionIndex, number. On voucher postings, reference as freeDimension1/2/3:{{"id": value_id}}.
+- **Custom accounting dimensions**: POST /ledger/accountingDimensionName with **dimensionName** (NOT "name"). dimensionIndex is auto-assigned (1-3). Then POST /ledger/accountingDimensionValue with **displayName** (NOT "name"), dimensionIndex, number. On voucher postings, reference as freeAccountingDimension1/2/3:{{"id": value_id}}.
 - **Reports/Balances**: There is NO /report/ prefix. Use GET /balanceSheet (dateFrom + dateTo REQUIRED) for account balances. Filter expense accounts: accountNumberFrom=3000&accountNumberTo=9999. Use GET /ledger/posting (dateFrom + dateTo REQUIRED) for detailed postings.
 - **Ledger accounts**: Not all standard accounts exist in fresh environments. If GET /ledger/account?number=NNNN returns empty, CREATE it with POST /ledger/account {{number, name}}.
-- **Project**: POST /project REQUIRES projectManager:{{"id": N}}. Always GET /employee first, then PUT /employee/entitlement/:grantEntitlementsByTemplate?employeeId=N&template=ALL_PRIVILEGES before creating the project.
+- **Project**: If the task specifies a project manager, GET /employee first, PUT /employee/entitlement/:grantEntitlementsByTemplate?employeeId=N&template=ALL_PRIVILEGES, then POST /project with projectManager:{{"id": N}} and customer:{{"id": M}}.
 - **Voucher account 2400**: Postings to account 2400 (AP/leverandorgjeld) MUST include supplier:{{"id": N}} — otherwise 422.
 - **GL error corrections**: When asked to find and correct errors in the ledger, ALWAYS first GET /ledger/posting?dateFrom=YYYY-01-01&dateTo=YYYY-12-31 to review existing postings. Use the ACTUAL counter-accounts from the postings (do NOT guess 1920). Create correction vouchers that reverse the wrong posting and create the correct one.
 - **Voucher dimension field**: On voucher postings, the accounting dimension field is `freeAccountingDimension1` (NOT freeDimension1). Use {{"id": dimension_value_id}}.
@@ -128,7 +128,7 @@ Task: "Set a fixed price of 150000 NOK on project 'Data Migration' for customer 
 ```json
 [
   {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "POST", "path": "/customer", "body": {{"name": "Solberg AS", "organizationNumber": "123456789"}}}}, "description": "Create customer"}},
-  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "POST", "path": "/project", "body": {{"name": "Data Migration", "startDate": "{today}", "isInternal": false, "isFixedPrice": true, "fixedprice": 150000.0}}}}, "description": "Create fixed-price project"}},
+  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "POST", "path": "/project", "body": {{"name": "Data Migration", "startDate": "{today}", "isInternal": false, "isFixedPrice": true, "fixedprice": 150000.0, "customer": {{"id": "$step_1.value.id"}}}}}}, "description": "Create fixed-price project linked to customer"}},
   {{"step_number": 3, "tool_name": "call_api", "args": {{"method": "POST", "path": "/order", "body": {{"customer": {{"id": "$step_1.value.id"}}, "orderDate": "{today}", "deliveryDate": "{today}", "project": {{"id": "$step_2.value.id"}}, "orderLines": [{{"description": "Data Migration — Fixed price", "count": 1, "unitPriceExcludingVatCurrency": 150000.0}}]}}}}, "description": "Create order with fixed price"}},
   {{"step_number": 4, "tool_name": "call_api", "args": {{"method": "PUT", "path": "/order/$step_3.value.id/:invoice", "query_params": {{"invoiceDate": "{today}"}}}}, "description": "Invoice the order"}}
 ]
