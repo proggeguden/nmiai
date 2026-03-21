@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import time
 from datetime import date
 from typing import Any
 
@@ -1849,7 +1850,6 @@ def build_agent():
 
     # --- Node: verifier (post-execution check) ---
     def verifier(state: AgentState) -> dict:
-        import time as _time
         verification_attempts = state.get("verification_attempts", 0)
 
         # Skip verification if all steps succeeded (no wasted LLM call)
@@ -1871,7 +1871,7 @@ def build_agent():
 
         # Skip verification if past deadline (save time for partial credit)
         deadline = state.get("deadline", 0)
-        if deadline and _time.monotonic() > deadline:
+        if deadline and time.monotonic() > deadline:
             log.warning("Past deadline — skipping verification to preserve partial credit")
             return {"verification_attempts": verification_attempts}
 
