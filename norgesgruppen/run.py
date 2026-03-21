@@ -8,8 +8,10 @@ Score = detection_confidence × classification_confidence^SCORE_CLS_POWER
 """
 
 import argparse
+import base64
 import json
 import re
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -31,8 +33,8 @@ NUM_CLASSES = 356
 
 # WBF ensemble settings
 USE_WBF = True
-WBF_TWO_STAGE_WEIGHT = 0.7
-WBF_MULTICLASS_WEIGHT = 0.3
+WBF_TWO_STAGE_WEIGHT = 0.8
+WBF_MULTICLASS_WEIGHT = 0.2
 WBF_IOU_THRESH = 0.5
 WBF_SKIP_BOX_THRESH = 0.01
 
@@ -53,7 +55,7 @@ ADAPTIVE_AR_THRESHOLD = 1.5     # aspect ratio threshold for adaptive letterbox
 
 # kNN settings
 KNN_K = 5
-KNN_WEIGHT = 0.4  # weight for kNN in ensemble (classifier gets 1 - KNN_WEIGHT)
+KNN_WEIGHT = 0.1
 
 # Soft-NMS settings (disabled — hurts on this dataset due to excess FPs)
 USE_SOFT_NMS = False
@@ -68,7 +70,7 @@ USE_TTA = True
 SCORE_CLS_POWER = 0.7
 
 # DINOv2 ensemble weight (if dual-backbone classifier)
-DINO_WEIGHT = 0.5
+DINO_WEIGHT = 0.3
 
 
 def create_session(path):
@@ -79,8 +81,40 @@ def create_session(path):
 def load_embeddings(path):
     """Load precomputed embeddings. Format: column 0 = label, rest = embedding."""
     packed = np.load(str(path))
+    packed = packed.astype(np.float32)  # handle float16 files
     labels = packed[:, 0].astype(np.int32)
     embeddings = packed[:, 1:]
+    return labels, embeddings
+
+
+def load_embedded_knn():
+    """Load kNN embeddings from compressed uint8-quantized base64 JSON file."""
+    blob_path = Path(__file__).parent / "_knn_data.json"
+    if not blob_path.exists():
+        return None, None
+
+    meta = json.load(open(blob_path))
+    n_samples, n_dim = meta["n"], meta["d"]
+    encoded = meta["data"]
+    raw = zlib.decompress(base64.b64decode(encoded))
+
+    offset = 0
+    # Labels: int16
+    labels = np.frombuffer(raw, dtype=np.int16, count=n_samples, offset=offset).astype(np.int32)
+    offset += n_samples * 2
+    # Meta: emb_min and emb_range (2 x n_dim float32)
+    meta = np.frombuffer(raw, dtype=np.float32, count=2 * n_dim, offset=offset).reshape(2, n_dim)
+    offset += 2 * n_dim * 4
+    emb_min, emb_range = meta[0], meta[1]
+    # Quantized embeddings: uint8
+    quantized = np.frombuffer(raw, dtype=np.uint8, count=n_samples * n_dim, offset=offset).reshape(n_samples, n_dim)
+
+    # Dequantize
+    embeddings = quantized.astype(np.float32) / 255.0 * emb_range + emb_min
+    # L2 normalize
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    embeddings = embeddings / (norms + 1e-8)
+
     return labels, embeddings
 
 
@@ -515,10 +549,17 @@ def main():
     has_features = len(cls_outputs) >= 2
     has_dino = len(cls_outputs) >= 4  # dual-backbone: effnet_logits, effnet_features, dino_logits, dino_features
 
-    # Load kNN embeddings if available
-    use_knn = EMBEDDINGS_PATH.exists() and has_features
-    if use_knn:
+    # Load kNN embeddings: try embedded data first, then external file
+    use_knn = False
+    use_dino_for_knn = False
+    ref_labels, ref_embeddings = load_embedded_knn()
+    if ref_labels is not None:
+        use_knn = True
+        use_dino_for_knn = has_dino  # embedded data uses DINOv2 features (384-dim)
+        num_classes = int(ref_labels.max()) + 1
+    elif EMBEDDINGS_PATH.exists() and has_features:
         ref_labels, ref_embeddings = load_embeddings(EMBEDDINGS_PATH)
+        use_knn = True
         num_classes = int(ref_labels.max()) + 1
     else:
         num_classes = NUM_CLASSES
@@ -581,7 +622,10 @@ def main():
             dino_probs = softmax(dino_logits, axis=1)
             cls_probs = (1 - DINO_WEIGHT) * cls_probs + DINO_WEIGHT * dino_probs
 
-        if has_features and all_features:
+        # Select features for kNN: DINOv2 (384-dim) if available, else EfficientNet (1408-dim)
+        if use_dino_for_knn and all_dino_features:
+            all_features_cat = np.concatenate(all_dino_features, axis=0)
+        elif has_features and all_features:
             all_features_cat = np.concatenate(all_features, axis=0)
         else:
             all_features_cat = None

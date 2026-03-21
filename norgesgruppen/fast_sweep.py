@@ -145,7 +145,7 @@ def run_config(name, config, original_content, coco_data, val_ids):
             ["python3", str(ROOT / "run.py"),
              "--input", str(tmp_input),
              "--output", str(tmp_output)],
-            capture_output=True, text=True, timeout=600
+            capture_output=True, text=True, timeout=1200
         )
         if result.returncode != 0:
             print(f"  FAILED: {result.stderr[-200:]}")
@@ -166,29 +166,26 @@ def main():
     run_py = ROOT / "run.py"
     original = run_py.read_text()
 
-    # Configs to sweep — grouped by what they change
+    # Configs to sweep — focused on highest-impact, skip already-tested
+    # Already tested: current(knn=0.4)=0.9550, knn=0.2=0.9554, knn=0.3=0.9553
     configs = [
         # Baseline
         ("current",    {}),
-        # DINO weight
+        # kNN=0.2 was best, try neighbors
+        ("knn_0.1",    {"KNN_WEIGHT": "0.1"}),
+        ("knn_0.15",   {"KNN_WEIGHT": "0.15"}),
+        # DINO weight (never swept — high priority)
         ("dino_0.3",   {"DINO_WEIGHT": "0.3"}),
-        ("dino_0.7",   {"DINO_WEIGHT": "0.7"}),
+        ("dino_0.6",   {"DINO_WEIGHT": "0.6"}),
+        # WBF weights
+        ("wbf_8_2",    {"WBF_TWO_STAGE_WEIGHT": "0.8", "WBF_MULTICLASS_WEIGHT": "0.2"}),
         # Score power
-        ("pow_0.5",    {"SCORE_CLS_POWER": "0.5"}),
         ("pow_0.6",    {"SCORE_CLS_POWER": "0.6"}),
         ("pow_0.8",    {"SCORE_CLS_POWER": "0.8"}),
-        ("pow_1.0",    {"SCORE_CLS_POWER": "1.0"}),
-        # WBF weights
-        ("wbf_6_4",    {"WBF_TWO_STAGE_WEIGHT": "0.6", "WBF_MULTICLASS_WEIGHT": "0.4"}),
-        ("wbf_7_3",    {"WBF_TWO_STAGE_WEIGHT": "0.7", "WBF_MULTICLASS_WEIGHT": "0.3"}),
-        # No WBF
-        ("no_wbf",     {"USE_WBF": "False"}),
-        # Det confidence
-        ("conf_0.05",  {"DET_CONF": "0.05"}),
-        ("conf_0.15",  {"DET_CONF": "0.15"}),
-        # Combos
-        ("best_combo", {"DINO_WEIGHT": "0.3", "SCORE_CLS_POWER": "0.6",
-                        "WBF_TWO_STAGE_WEIGHT": "0.6", "WBF_MULTICLASS_WEIGHT": "0.4"}),
+        # Best combo: knn=0.2 + best others
+        ("combo1",     {"KNN_WEIGHT": "0.2", "DINO_WEIGHT": "0.3"}),
+        ("combo2",     {"KNN_WEIGHT": "0.2", "WBF_TWO_STAGE_WEIGHT": "0.8", "WBF_MULTICLASS_WEIGHT": "0.2"}),
+        ("combo3",     {"KNN_WEIGHT": "0.2", "SCORE_CLS_POWER": "0.6"}),
     ]
 
     results = []

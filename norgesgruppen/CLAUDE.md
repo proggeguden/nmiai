@@ -105,7 +105,7 @@ gcloud compute instances delete nmiai-train-multiclass --zone=europe-west1-c --p
 ## Current Results
 | Metric | Value |
 |--------|-------|
-| **Competition score (test)** | **0.9199 (#7)** |
+| **Competition score (test)** | **0.9215 (#6/319)** |
 | **Competition score (local val)** | **0.9541** |
 | Detection mAP@0.5 (category-ignored) | 0.960 |
 | Classification mAP@0.5 (per-category) | 0.941 |
@@ -113,10 +113,12 @@ gcloud compute instances delete nmiai-train-multiclass --zone=europe-west1-c --p
 | Categories with NO val data | 134 |
 
 ### Known Weaknesses
-- **Egg products**: still confusable (6-pack vs 12-pack), though letterbox helped a lot
-- **10 categories with AP=0**: Jacobs Gårdsegg, Grissini, Lady Grey, Müsli Frukt, etc.
-- **134 categories unmeasurable**: no val annotations (10% image-level split too coarse for 356 classes)
-- **Soft-NMS hurts**: generates excess FPs on dense shelves, −0.003 score
+- **False positives**: 3116 predictions vs 2122 GT (+47% excess). Biggest issue.
+- **unknown_product over-predicted**: cat 355 gets 67 preds vs 9 GT (58 FPs, most low-conf)
+- **5 categories with AP=0**: GRISSINI, SMØR USALTET, 2× GRANOLA START!, WASA SANDWICH
+- **134 categories unmeasurable**: no val annotations (115 have ref images, 19 have none)
+- **Classification is near-perfect locally**: only 21/2122 misclassifications
+- **Soft-NMS hurts**: generates excess FPs on dense shelves
 
 ## Weight Budget
 | File | Size | Purpose |
@@ -124,7 +126,8 @@ gcloud compute instances delete nmiai-train-multiclass --zone=europe-west1-c --p
 | detector.onnx | 167MB | YOLOv8l single-class detection |
 | classifier.onnx | 115MB | Dual-backbone: EfficientNet-B2 + DINOv2-ViT-S (4 outputs) |
 | multiclass_detector.onnx | 100MB | YOLOv8m multi-class for WBF |
-| **Total** | **382MB** | < 420MB limit ✓ |
+| _knn_data.json | 11MB | DINOv2 kNN embeddings (uint8 quantized, zlib+base64) |
+| **Total** | **392MB** | < 420MB limit ✓ |
 
 ## Dependencies
 ```
