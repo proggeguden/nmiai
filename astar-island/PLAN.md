@@ -236,8 +236,51 @@ All 4 priority items implemented and submitted:
 **Remaining promising directions:**
 1. Better MC calibration → lower threshold to 0.40 to catch R7
 2. Ensemble of 2-3 model configurations
-3. Better production pipeline (already have focused queries)
-4. Participation in later rounds (weight compounds 5%/round)
+3. Participation in later rounds (weight compounds 5%/round)
+
+### Critical discovery: oracle backtest is misleading (2026-03-21 afternoon)
+
+**Built simulated-production backtest** (`--simulate-production` flag in test_backtest.py) that samples discrete terrain from GT, limits to 50 queries with actual viewport strategy, and runs full production pipeline.
+
+**Key finding: oracle backtest has rho=0.750 rank correlation with production scores, simulated-production has rho=0.964.** The oracle was systematically misleading us:
+- It trains on full GT probability vectors (production only sees discrete samples from 50 queries)
+- It covers 100% of cells (production covers ~70%)
+- It skips per-cell blending (production uses it)
+- It evaluates on the same data it trained from (no train/test split)
+
+**The oracle backtest was optimizing in the wrong direction.** Two changes improved oracle but hurt production:
+
+| Change | Oracle Impact | SimProd Impact | Root Cause |
+|--------|--------------|----------------|------------|
+| Focused query strategy (half coverage, half repeats) | Helped per-cell blending | **-5 to -23% worse** every round | Less spatial bucket coverage |
+| Extra bucket features (adj_sett Plains, cluster Forest) | -1.6% to -3.0% better | **-5 to -9% worse** every round | More buckets = less data per bucket with 50 queries |
+
+**R13 scored 73.2 (rank 126/186)** — oracle predicted it would be our 2nd best round (KL=0.024), but simulated-production correctly ranked it 5th (KL=0.107).
+
+**Fixes applied:**
+1. Reverted to full-coverage query strategy (removed focused/repeat logic)
+2. Removed adj_sett_level from Plains bucket key
+3. Removed is_clustered from Forest bucket key
+
+**Validation (simulated-production, 13 rounds, 5 runs each):**
+- SimProd avg KL: 0.1070 → 0.1027 (**-4.0%**, every round improved)
+- Oracle avg KL: 0.0420 → 0.0439 (**+4.7% regression** — confirming oracle was misleading)
+- Best improvements: R5 +7.0%, R10 +6.7%, R12 +6.2%, R7 +5.4%
+
+**Lesson: ALL future model changes must be validated with `--simulate-production`, not oracle backtest.** The oracle is useful as a ceiling (what's possible with perfect info) but cannot be used for A/B testing changes.
+
+### Production scores (updated 2026-03-21)
+| Round | Score | Rank | SimProd KL | Oracle KL |
+|-------|-------|------|------------|-----------|
+| R5 | 13.1 | 130/144 | 0.135 | 0.043 |
+| R6 | 78.5 | 28/186 | 0.085 | 0.037 |
+| R7 | 60.4 | 83/199 | 0.154 | 0.101 |
+| R8 | 82.4 | 55/214 | 0.062 | 0.016 |
+| R9 | 8.5 | 205/221 | 0.121 | 0.023 |
+| R10 | 82.0 | 60/238 | 0.073 | 0.033 |
+| R11 | 79.7 | 61/171 | 0.074 | 0.029 |
+| R12 | 59.4 | 38/146 | 0.165 | 0.112 |
+| R13 | 73.2 | 126/186 | 0.104 | 0.024 |
 
 ---
 

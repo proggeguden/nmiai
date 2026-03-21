@@ -25,11 +25,17 @@ import api_client
 from predictor import (
     build_prediction,
     compute_feature_map,
+    learn_spatial_transition_model,
+    estimate_survival_rate,
+    estimate_expansion_rate,
+    estimate_port_formation_rate,
+    estimate_all_rates,
     score_predictions,
     terrain_code_to_class,
     NUM_CLASSES,
     CLASS_NAMES,
     STATIC_CODES,
+    TERRAIN_TO_CLASS,
 )
 
 
@@ -348,6 +354,235 @@ def _compute_forward_rates(initial_states, all_gt, height, width, seeds_count):
     }
 
 
+# ---------------------------------------------------------------------------
+# Simulated-production backtest
+# ---------------------------------------------------------------------------
+
+# Reverse map: class index → terrain code used in grids
+CLASS_TO_TERRAIN_CODE = {0: 11, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5}
+
+
+def _sample_terrain_grid(gt, height, width, rng):
+    """Sample a discrete terrain grid from GT probability distributions.
+
+    For each cell, sample a class index from the GT distribution,
+    then convert to a terrain code (mimicking a single simulate query).
+    """
+    grid = []
+    for r in range(height):
+        row = []
+        for c in range(width):
+            probs = gt[r, c]
+            cls = rng.choice(NUM_CLASSES, p=probs)
+            code = CLASS_TO_TERRAIN_CODE.get(cls, 11)
+            row.append(code)
+        grid.append(row)
+    return grid
+
+
+def _tile_starts(grid_size, vp_size):
+    """Compute viewport start positions for full coverage (same as main.py)."""
+    starts = []
+    pos = 0
+    while pos < grid_size:
+        starts.append(pos)
+        pos += vp_size
+    if starts and starts[-1] + vp_size > grid_size:
+        starts[-1] = max(grid_size - vp_size, 0)
+    return list(dict.fromkeys(starts))
+
+
+def _simulate_observations(gt, initial_grid, height, width, n_queries, rng):
+    """Simulate production observation strategy for a single seed.
+
+    Mimics the observe_seed function from main.py:
+    - Phase 1: coverage of top-scoring tiles (settlement-heavy)
+    - Phase 2: repeat high-value tiles
+    Each query samples a fresh stochastic realization from GT.
+    """
+    vp_w, vp_h = 15, 15
+    x_starts = _tile_starts(width, vp_w)
+    y_starts = _tile_starts(height, vp_h)
+    positions = [(x, y) for y in y_starts for x in x_starts]
+
+    # Score tiles by dynamic cell count (same as main.py)
+    tile_scores = []
+    for tx, ty in positions:
+        dynamic = 0
+        settlements = 0
+        for r in range(ty, min(ty + vp_h, height)):
+            for c in range(tx, min(tx + vp_w, width)):
+                code = initial_grid[r][c]
+                if code not in STATIC_CODES:
+                    dynamic += 1
+                if code in (1, 2):
+                    settlements += 1
+        tile_scores.append(dynamic + settlements * 3)
+
+    scored_tiles = sorted(zip(tile_scores, positions), reverse=True)
+    coverage_tiles = [(s, pos) for s, pos in scored_tiles if s > 0]
+    coverage_count = min(len(coverage_tiles), max(n_queries // 2, 5))
+    repeat_count = n_queries - coverage_count
+
+    observations = []
+
+    # Phase 1: Coverage
+    for _, (x, y) in coverage_tiles[:coverage_count]:
+        sampled_grid = _sample_terrain_grid(gt, height, width, rng)
+        # Extract viewport region
+        vp_grid = []
+        for r in range(y, min(y + vp_h, height)):
+            row = []
+            for c in range(x, min(x + vp_w, width)):
+                row.append(sampled_grid[r][c])
+            vp_grid.append(row)
+        observations.append({
+            "viewport": {"x": x, "y": y, "w": len(vp_grid[0]) if vp_grid else 0,
+                          "h": len(vp_grid)},
+            "grid": vp_grid,
+            "settlements": [],
+        })
+
+    # Phase 2: Repeat high-value tiles
+    if coverage_tiles:
+        top_tiles = [pos for _, pos in coverage_tiles[:max(3, coverage_count // 2)]]
+        for i in range(repeat_count):
+            x, y = top_tiles[i % len(top_tiles)]
+            sampled_grid = _sample_terrain_grid(gt, height, width, rng)
+            vp_grid = []
+            for r in range(y, min(y + vp_h, height)):
+                row = []
+                for c in range(x, min(x + vp_w, width)):
+                    row.append(sampled_grid[r][c])
+                vp_grid.append(row)
+            observations.append({
+                "viewport": {"x": x, "y": y,
+                              "w": len(vp_grid[0]) if vp_grid else 0,
+                              "h": len(vp_grid)},
+                "grid": vp_grid,
+                "settlements": [],
+            })
+
+    return observations
+
+
+def backtest_round_simulated(round_id, n_runs=5, verbose=True):
+    """Backtest a round by simulating the full production pipeline.
+
+    Instead of using GT directly, samples discrete terrain from GT distributions
+    to mimic viewport queries, then runs the exact same pipeline as production.
+
+    Args:
+        round_id: Round to backtest
+        n_runs: Number of stochastic runs to average (each samples fresh observations)
+        verbose: Print progress
+
+    Returns dict with per-round results including mean/std of simulated KL.
+    """
+    detail = api_client.get_round_detail(round_id)
+    height, width = detail["map_height"], detail["map_width"]
+    seeds_count = detail["seeds_count"]
+    initial_states = detail["initial_states"]
+    round_number = detail.get("round_number", 0)
+    queries_max = 50
+
+    # Load GT for all seeds
+    all_gt = {}
+    for seed_idx in range(seeds_count):
+        all_gt[seed_idx] = np.array(
+            api_client.get_analysis(round_id, seed_idx)["ground_truth"]
+        )
+
+    run_kls = []
+    run_per_seed = []
+
+    for run_idx in range(n_runs):
+        rng = np.random.default_rng(seed=42 + run_idx)
+
+        # --- Simulate production query allocation (same as main.py) ---
+        seed_scores = []
+        for seed_idx in range(seeds_count):
+            grid = initial_states[seed_idx]["grid"]
+            settlements = sum(1 for row in grid for code in row if code in (1, 2, 3))
+            dynamic = sum(1 for row in grid for code in row if code not in (10, 5))
+            seed_scores.append(dynamic + settlements * 5)
+
+        total_score = sum(seed_scores) or 1
+        seed_query_alloc = [
+            max(5, round(queries_max * s / total_score)) for s in seed_scores
+        ]
+        while sum(seed_query_alloc) > queries_max:
+            seed_query_alloc[seed_query_alloc.index(max(seed_query_alloc))] -= 1
+        while sum(seed_query_alloc) < queries_max:
+            seed_query_alloc[seed_query_alloc.index(min(seed_query_alloc))] += 1
+
+        # --- Simulate observations for all seeds ---
+        all_observations = []
+        seed_observations = {}
+
+        for seed_idx in range(seeds_count):
+            obs = _simulate_observations(
+                all_gt[seed_idx], initial_states[seed_idx]["grid"],
+                height, width, seed_query_alloc[seed_idx], rng
+            )
+            for o in obs:
+                o["seed_index"] = seed_idx
+            seed_observations[seed_idx] = obs
+            all_observations.extend(obs)
+
+        # --- Run full production pipeline ---
+        initial_grids = [s["grid"] for s in initial_states]
+        global_model, spatial_model, spatial_obs = learn_spatial_transition_model(
+            initial_grids, all_observations
+        )
+        survival_rate = estimate_survival_rate(initial_grids, all_observations)
+        forward_rates = estimate_all_rates(initial_grids, all_observations)
+        expansion_rate = estimate_expansion_rate(initial_grids, all_observations)
+        port_formation_rate = estimate_port_formation_rate(initial_grids, all_observations)
+
+        # Predict and score each seed
+        seed_kls = []
+        for seed_idx in range(seeds_count):
+            gt = all_gt[seed_idx]
+            init_grid = initial_states[seed_idx]["grid"]
+            seed_obs = seed_observations.get(seed_idx, [])
+
+            pred = build_prediction(
+                height, width, init_grid, seed_obs,
+                transition_model=global_model,
+                spatial_model=spatial_model,
+                survival_rate=survival_rate,
+                spatial_obs=spatial_obs,
+                expansion_rate=expansion_rate,
+                port_formation_rate=port_formation_rate,
+                mc_rates=forward_rates,
+            )
+            wkl, _ = score_predictions(pred, gt)
+            seed_kls.append(float(wkl))
+
+        avg_kl = float(np.mean(seed_kls))
+        run_kls.append(avg_kl)
+        run_per_seed.append(seed_kls)
+
+    mean_kl = float(np.mean(run_kls))
+    std_kl = float(np.std(run_kls))
+
+    if verbose:
+        print(f"\n  Round {round_number} (simulated prod, {n_runs} runs):")
+        print(f"    Mean KL: {mean_kl:.4f} ± {std_kl:.4f}")
+        print(f"    Per-run: {', '.join(f'{k:.4f}' for k in run_kls)}")
+
+    return {
+        "round_id": round_id,
+        "round_number": round_number,
+        "sim_prod_mean_kl": mean_kl,
+        "sim_prod_std_kl": std_kl,
+        "sim_prod_runs": run_kls,
+        "sim_prod_per_seed": run_per_seed,
+        "n_runs": n_runs,
+    }
+
+
 def compare_baseline(results, baseline_path, threshold):
     """Compare results against a baseline. Returns regression info or None."""
     try:
@@ -403,6 +638,10 @@ def main():
     parser.add_argument("--baseline", type=str, help="Compare to baseline JSON")
     parser.add_argument("--threshold", type=float, default=0.10,
                         help="Regression threshold (relative, default 0.10)")
+    parser.add_argument("--simulate-production", action="store_true",
+                        help="Run simulated-production backtest (samples discrete obs from GT)")
+    parser.add_argument("--sim-runs", type=int, default=5,
+                        help="Number of stochastic runs per round in simulated-production mode")
     args = parser.parse_args()
 
     try:
@@ -417,6 +656,72 @@ def main():
         if not round_ids:
             print("No completed rounds to backtest.")
             sys.exit(2)
+
+        # --- Simulated-production mode ---
+        if args.simulate_production:
+            print(f"Simulated-production backtest: {len(round_ids)} round(s), "
+                  f"{args.sim_runs} runs each...")
+            sim_results = []
+            for rid in round_ids:
+                result = backtest_round_simulated(rid, n_runs=args.sim_runs)
+                sim_results.append(result)
+
+            # Also run oracle backtest for comparison
+            print(f"\nOracle backtest (GT) for comparison...")
+            oracle_results = []
+            for rid in round_ids:
+                result = backtest_round_enhanced(rid, verbose=False)
+                oracle_results.append(result)
+
+            # Print comparison table
+            print(f"\n{'='*70}")
+            print(f"{'Round':>6} {'Oracle KL':>10} {'SimProd KL':>10} {'±Std':>8} "
+                  f"{'Gap':>8} {'Gap%':>8}")
+            print(f"{'-'*6:>6} {'-'*10:>10} {'-'*10:>10} {'-'*8:>8} "
+                  f"{'-'*8:>8} {'-'*8:>8}")
+
+            oracle_kls = []
+            sim_kls = []
+            for sim, oracle in zip(sim_results, oracle_results):
+                rn = sim["round_number"]
+                okl = oracle["avg_weighted_kl"]
+                skl = sim["sim_prod_mean_kl"]
+                sstd = sim["sim_prod_std_kl"]
+                gap = skl - okl
+                gap_pct = gap / max(okl, 1e-6)
+                oracle_kls.append(okl)
+                sim_kls.append(skl)
+                print(f"  R{rn:>3} {okl:>10.4f} {skl:>10.4f} {sstd:>8.4f} "
+                      f"{gap:>8.4f} {gap_pct:>7.0%}")
+
+            avg_oracle = float(np.mean(oracle_kls))
+            avg_sim = float(np.mean(sim_kls))
+            avg_gap_pct = (avg_sim - avg_oracle) / max(avg_oracle, 1e-6)
+            print(f"  {'Avg':>4} {avg_oracle:>10.4f} {avg_sim:>10.4f} "
+                  f"{'':>8} {avg_sim - avg_oracle:>8.4f} {avg_gap_pct:>7.0%}")
+
+            # Write output
+            if args.output:
+                output_data = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "git_commit": get_git_commit(),
+                    "mode": "simulated_production",
+                    "n_runs": args.sim_runs,
+                    "overall": {
+                        "oracle_avg_kl": avg_oracle,
+                        "sim_prod_avg_kl": avg_sim,
+                        "gap_pct": float(avg_gap_pct),
+                    },
+                    "per_round": [
+                        {**sim, "oracle_kl": oracle["avg_weighted_kl"]}
+                        for sim, oracle in zip(sim_results, oracle_results)
+                    ],
+                }
+                with open(args.output, "w") as f:
+                    json.dump(output_data, f, indent=2)
+                print(f"\nResults written to {args.output}")
+
+            sys.exit(0)
 
         print(f"Backtesting {len(round_ids)} round(s)...")
         per_round = []

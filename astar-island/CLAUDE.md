@@ -90,12 +90,11 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 
 **Key spatial features (implemented)**:
 - Manhattan distance to nearest settlement: 3-level bucket (≤2, 3-4, 5+) with continuous interpolation
-- Settlement cluster density: binary `is_clustered` for Settlement, Plains, and Forest bucket keys
-- Binary forest adjacency for settlements, coastal-only for ports (~25-28 buckets)
+- Settlement cluster density: binary `is_clustered` for Settlement and Plains bucket keys
+- Binary forest adjacency for settlements, coastal-only for ports
 - Coastal adjacency for plains and settlements
 - Adjacent forest for plains, empty cells
 - 3-level adjacent settlement for forest (0/1/2+), interior flag (adj_forest≥4)
-- Adjacent settlement count for plains (0/1/2+)
 - Adjacent settlement for ruin cells
 - BFS-precomputed distances for efficiency
 - Bayesian smoothing towards global prior (K=3-10 per terrain)
@@ -109,7 +108,7 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 - Distance-based temperature scaling (Step 1.8): T=1.10 near settlements (spread), T=0.92 far (sharpen)
 - Monte Carlo blending (Step 2.5): on high-survival rounds (>50%), blend 5% MC simulation predictions. Captures spatial correlations missing from bucket model.
 
-**Query strategy**: Focused observation — uses half of queries for map coverage, half for repeating high-settlement tiles. Gives 2-3x observations per cell for high-entropy areas, improving per-cell blending.
+**Query strategy**: Full coverage — all queries go to unique tile positions sorted by dynamic cell count (settlement-heavy first). Maximizes spatial bucket coverage which matters more than per-cell observation count.
 
 **Adaptive smoothing**: Per-cell blending uses terrain-dependent k values:
 - Settlements/ports k=8 (high variance → trust model more)
@@ -121,19 +120,24 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 - Only activated when survival_rate > 0.50 (high-survival rounds with complex dynamics)
 - Blended at 5% weight with bucket model. R12 improved -7.4%.
 
-**Backtest performance** (weighted KL, lower is better):
-- Rounds 1–12 avg: **0.0435**
-- Best: 0.016 (R8), Worst: 0.112 (R12), 0.101 (R7)
-- Rounds 1–6 avg: ~0.035
+**Backtest performance** (simulated-production KL, lower is better):
+- Rounds 1–13 avg: **0.1027** (simulated production, 5 runs)
+- Best: 0.058 (R3), 0.062 (R8), Worst: 0.165 (R12), 0.154 (R7)
+- Oracle backtest avg: 0.044 (but misleading — see below)
 - Probability floor: 0.0005
+
+**CRITICAL: Use simulated-production backtest for validation, not oracle.**
+The oracle backtest trains on full GT distributions and evaluates on same data.
+Simulated-production (`--simulate-production`) has rho=0.964 rank correlation
+with actual production scores; oracle only has rho=0.750.
+Oracle improvements can be production regressions (confirmed empirically).
 
 **Known issues**:
 - Plains cells are largest error source (~60% of KL loss)
 - R7 and R12 are 2-3x worse than other rounds — high-survival, moderate expansion
 - Port under-prediction is the single biggest cell-level error (GT 20-45%, pred 1-2%)
-- Backtest→production gap is ~53% (KL 0.044 backtest vs ~0.066 production)
 - MC simulator helps only on highest-survival rounds due to uncalibrated mechanics
-- Gap to top teams: ~11 raw points (we score ~82, top teams ~93)
+- Gap to top teams: ~15+ raw points (we score ~73-82, top teams ~90-94)
 
 See `PLAN.md` for error analysis, improvement roadmap, and round-by-round changelog.
 
@@ -189,11 +193,23 @@ pytest test_predictor_unit.py test_predictor_integration.py -v
 - Integration tests verify end-to-end pipeline properties (sum-to-1, floor, shape, ordering)
 - Safe to run on every code change — deterministic and fast
 
-### Backtest with regression detection (requires API, ~30s)
+### Simulated-production backtest (requires API, ~5 min) — USE THIS FOR VALIDATION
+```bash
+python3 test_backtest.py --simulate-production --sim-runs 5 --output sim_results.json
+```
+- Samples discrete terrain from GT distributions, limits to 50 queries with viewport strategy
+- Runs the full production pipeline: learn_spatial_transition_model → build_prediction
+- **rho=0.964 rank correlation with actual production scores** (oracle only 0.750)
+- Outputs comparison table of oracle vs simulated-production KL per round
+- This is the ONLY reliable way to validate model changes before submission
+
+### Oracle backtest with regression detection (requires API, ~30s)
 ```bash
 python3 test_backtest.py --output results.json                      # generate baseline
 python3 test_backtest.py --output results.json --baseline baseline.json  # compare
 ```
+- Trains on full GT distributions — useful as ceiling but NOT for A/B testing changes
+- Oracle improvements can be production regressions (confirmed empirically)
 - Outputs machine-readable JSON with per-round, per-terrain, and per-cell diagnostics
 - `--baseline baseline.json` compares against saved results, fails (exit 1) on regression
 - `--threshold 0.10` controls per-round regression sensitivity (default 10% relative)
@@ -204,12 +220,12 @@ python3 test_backtest.py --output results.json --baseline baseline.json  # compa
 # 1. Make model change
 # 2. Fast gate (< 1s):
 pytest test_predictor_unit.py test_predictor_integration.py -x --tb=short
-# 3. Backtest gate (~30s):
-python3 test_backtest.py --output results.json --baseline baseline.json --threshold 0.10
-# 4. If improved: cp results.json baseline.json
+# 3. Simulated-production gate (~5 min):
+python3 test_backtest.py --simulate-production --sim-runs 3 --output sim_results.json
+# 4. If improved: cp sim_results.json sim_baseline.json
 # 5. If active round: python3 test_local.py --submit
 ```
-Key: step 2 catches broken logic instantly; step 3 catches regressions against real GT.
+Key: step 2 catches broken logic instantly; step 3 validates in realistic production conditions.
 The JSON output includes `per_terrain_kl` (which terrain types improved/regressed),
 `worst_cells` (top 10 worst-predicted cells with bucket keys), and `model_variants`
 (comparison of spatial vs spatial+forward). Parse these to guide the next hypothesis.

@@ -183,18 +183,15 @@ def compute_bucket_key(initial_grid, r, c, settlement_dists=None, cluster_densit
         return (1, has_adj_forest, has_adj_settlement, is_coastal, is_clustered)
     elif code == 2:  # Port — simplified to coastal only
         return (2, is_coastal)
-    elif code == 11: # Plains — 3-level forest adjacency + cluster density + adj settlement
+    elif code == 11: # Plains — 3-level forest adjacency + cluster density
         forest_level = 0 if adj_forest == 0 else (1 if adj_forest <= 2 else 2)
-        # Adjacent settlement count captures direct expansion pressure
-        adj_sett_level = min(adj_settlement, 2)  # 0, 1, or 2+
-        return (11, dist_bucket, is_coastal, forest_level, is_clustered, adj_sett_level)
+        return (11, dist_bucket, is_coastal, forest_level, is_clustered)
     elif code == 0:  # Empty
         return (0, dist_bucket, has_adj_forest)
-    elif code == 4:  # Forest — 3-level settlement adjacency + interior flag + cluster density
+    elif code == 4:  # Forest — 3-level settlement adjacency + interior flag
         adj_sett_level = 0 if adj_settlement == 0 else (1 if adj_settlement == 1 else 2)
         is_interior = adj_forest >= 4  # surrounded by 4+ forest neighbors = stable interior
-        # Forest near clustered settlements gets cleared more (higher food demand + expansion)
-        return (4, dist_bucket, adj_sett_level, is_coastal, is_interior, is_clustered)
+        return (4, dist_bucket, adj_sett_level, is_coastal, is_interior)
     elif code == 3:  # Ruin — dropped has_adj_forest
         return (3, dist_bucket, has_adj_settlement)
     else:
