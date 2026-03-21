@@ -199,6 +199,24 @@ def get_tier1_catalog() -> str:
     return TIER1_CATALOG
 
 
+def get_endpoint_card(method: str, path: str) -> dict | None:
+    """Get the rich endpoint card for a specific endpoint (for schema pre-validation).
+
+    Returns the card dict or None if not found.
+    """
+    # Try exact match first
+    key = f"{method.upper()} {path}"
+    card = ENDPOINT_CARDS.get(key)
+    if card:
+        return card
+
+    # Try template match: /customer/123 → /customer/{id}
+    import re
+    template = re.sub(r'/(\d+)', '/{id}', path)
+    key = f"{method.upper()} {template}"
+    return ENDPOINT_CARDS.get(key)
+
+
 def get_endpoint_schema(method: str, path: str) -> str:
     """Get the schema for a specific endpoint (for self-heal context).
 
