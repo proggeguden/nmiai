@@ -207,39 +207,33 @@ def observe_seed(round_id, seed_index, height, width, max_queries,
                  initial_grid=None):
     """Query viewports to observe the map for a given seed.
 
-    Strategy:
-    1. Score each tile by dynamic cell count (non-ocean, non-mountain)
-    2. Skip tiles that are mostly static (ocean/mountain)
-    3. Full coverage of dynamic tiles first
-    4. Repeat queries on most dynamic tiles (settlement-heavy areas)
+    Strategy: full coverage first, then repeat highest-value tiles.
+    All unique tile positions are queried first (sorted by settlement density),
+    then any remaining queries repeat the top tiles for extra observations.
+    Every allocated query MUST be used — wasting queries is never acceptable.
     """
+    import time as _time
     from predictor import STATIC_CODES
 
     observations = []
     vp_w, vp_h = 15, 15
 
     # Compute tile positions for full coverage
-    # Use overlapping positions so the last tile uses full viewport capacity.
-    # E.g., for a 40-wide grid with 15-wide viewports: [0, 15, 25] not [0, 15, 30].
-    # Position 25 covers cells 25-39 (full 15), while 30 would only cover 30-39 (10).
-    # Overlap cells (25-29) get double-observed for free.
     def _tile_starts(grid_size, vp_size):
         starts = []
         pos = 0
         while pos < grid_size:
             starts.append(pos)
             pos += vp_size
-        # Pull last position back so viewport doesn't extend past grid edge
         if starts and starts[-1] + vp_size > grid_size:
             starts[-1] = max(grid_size - vp_size, 0)
-        # Deduplicate (in case grid_size <= vp_size)
         return list(dict.fromkeys(starts))
 
     x_starts = _tile_starts(width, vp_w)
     y_starts = _tile_starts(height, vp_h)
     positions = [(x, y) for y in y_starts for x in x_starts]
 
-    # Score tiles by dynamic cell count if we have the initial grid
+    # Score tiles by dynamic cell count, prioritize settlement-heavy areas
     if initial_grid:
         tile_scores = []
         for tx, ty in positions:
@@ -250,55 +244,45 @@ def observe_seed(round_id, seed_index, height, width, max_queries,
                     code = initial_grid[r][c]
                     if code not in STATIC_CODES:
                         dynamic += 1
-                    if code in (1, 2):  # settlement or port
+                    if code in (1, 2):
                         settlements += 1
-            # Score: settlements count 3x (most valuable to observe)
             tile_scores.append(dynamic + settlements * 3)
 
-        # Sort tiles by score descending
         scored_tiles = sorted(zip(tile_scores, positions), reverse=True)
-
-        # Phase 1: Coverage of top half of tiles (highest settlement density)
-        # Phase 2: Repeat top tiles for multi-observation per-cell blending
-        # Rationale: multiple observations of high-entropy cells near settlements
-        # improves per-cell distributions more than single observation of low-entropy cells
         coverage_tiles = [(s, pos) for s, pos in scored_tiles if s > 0]
-        coverage_count = min(len(coverage_tiles), max(max_queries // 2, 5))
-        repeat_count = max_queries - coverage_count
-
-        print(f"  Tiles: {len(coverage_tiles)} dynamic (of {len(positions)}), "
-              f"using {coverage_count} coverage + {repeat_count} repeats")
     else:
         coverage_tiles = [(1, pos) for pos in positions]
-        coverage_count = max_queries
-        repeat_count = 0
 
-    # Phase 1: Coverage of top-scoring tiles
-    for _, (x, y) in coverage_tiles[:coverage_count]:
-        try:
-            result = api_client.query_seed(round_id, seed_index,
-                                           viewport_x=x, viewport_y=y,
-                                           viewport_w=vp_w, viewport_h=vp_h)
-            observations.append(result)
-        except Exception as e:
-            print(f"  Query error at ({x},{y}): {e}")
-            break
+    unique_count = min(len(coverage_tiles), max_queries)
+    repeat_count = max_queries - unique_count
+    print(f"  Tiles: {len(coverage_tiles)} dynamic (of {len(positions)}), "
+          f"using {unique_count} coverage + {repeat_count} repeats = {max_queries} total")
 
-    # Phase 2: Repeat high-value tiles for per-cell blending improvement
-    remaining = max_queries - len(observations)
-    if remaining > 0 and coverage_tiles:
-        # Repeat the top settlement-heavy tiles
-        top_tiles = [pos for _, pos in coverage_tiles[:max(3, coverage_count // 2)]]
-        for i in range(remaining):
-            x, y = top_tiles[i % len(top_tiles)]
+    # Build full query plan: unique tiles first, then repeats of top tiles
+    query_plan = [(x, y) for _, (x, y) in coverage_tiles[:unique_count]]
+    if repeat_count > 0 and coverage_tiles:
+        top_tiles = [pos for _, pos in coverage_tiles[:max(3, unique_count // 2)]]
+        for i in range(repeat_count):
+            query_plan.append(top_tiles[i % len(top_tiles)])
+
+    # Execute all queries with rate-limit retry
+    for qi, (x, y) in enumerate(query_plan):
+        for attempt in range(4):
             try:
                 result = api_client.query_seed(round_id, seed_index,
                                                viewport_x=x, viewport_y=y,
                                                viewport_w=vp_w, viewport_h=vp_h)
                 observations.append(result)
+                break
             except Exception as e:
-                print(f"  Query error repeat ({x},{y}): {e}")
-                break
-                break
+                if "429" in str(e) and attempt < 3:
+                    wait = 1.5 * (attempt + 1)
+                    print(f"  Rate limited ({qi+1}/{len(query_plan)}), "
+                          f"retrying in {wait:.0f}s...")
+                    _time.sleep(wait)
+                else:
+                    print(f"  Query error ({x},{y}): {e}")
+                    break
 
+    print(f"  Completed {len(observations)}/{len(query_plan)} queries")
     return observations

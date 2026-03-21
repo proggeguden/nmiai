@@ -39,7 +39,7 @@ PROB_FLOOR = 0.0005
 # Settlements/ports are highly variable (trust model), plains/forest are predictable (trust data)
 K_PER_CODE = {
     1: 8.0,   # Settlement — high variance, trust model
-    2: 8.0,   # Port — high variance, trust model
+    2: 15.0,  # Port — few observations per cell, trust model more
     3: 5.0,   # Ruin — moderate
     0: 3.0,   # Empty — predictable
     11: 3.0,  # Plains — predictable
@@ -183,18 +183,15 @@ def compute_bucket_key(initial_grid, r, c, settlement_dists=None, cluster_densit
         return (1, has_adj_forest, has_adj_settlement, is_coastal, is_clustered)
     elif code == 2:  # Port — simplified to coastal only
         return (2, is_coastal)
-    elif code == 11: # Plains — 3-level forest adjacency + cluster density + adj settlement
+    elif code == 11: # Plains — 3-level forest adjacency + cluster density
         forest_level = 0 if adj_forest == 0 else (1 if adj_forest <= 2 else 2)
-        # Adjacent settlement count captures direct expansion pressure
-        adj_sett_level = min(adj_settlement, 2)  # 0, 1, or 2+
-        return (11, dist_bucket, is_coastal, forest_level, is_clustered, adj_sett_level)
+        return (11, dist_bucket, is_coastal, forest_level, is_clustered)
     elif code == 0:  # Empty
         return (0, dist_bucket, has_adj_forest)
-    elif code == 4:  # Forest — 3-level settlement adjacency + interior flag + cluster density
+    elif code == 4:  # Forest — 3-level settlement adjacency + interior flag
         adj_sett_level = 0 if adj_settlement == 0 else (1 if adj_settlement == 1 else 2)
         is_interior = adj_forest >= 4  # surrounded by 4+ forest neighbors = stable interior
-        # Forest near clustered settlements gets cleared more (higher food demand + expansion)
-        return (4, dist_bucket, adj_sett_level, is_coastal, is_interior, is_clustered)
+        return (4, dist_bucket, adj_sett_level, is_coastal, is_interior)
     elif code == 3:  # Ruin — dropped has_adj_forest
         return (3, dist_bucket, has_adj_settlement)
     else:
@@ -1137,8 +1134,8 @@ def build_prediction(height, width, initial_grid, observations,
         # Determine minimum port probability based on observed rate
         if port_formation_rate is not None and port_formation_rate > 0.005:
             # Scale observed rate by distance: d≤1 gets full rate, d≤3 gets half
-            base_port_near = min(port_formation_rate * 1.5, 0.40)  # d≤1
-            base_port_mid = min(port_formation_rate * 0.8, 0.25)   # d=2-3
+            base_port_near = min(port_formation_rate * 1.0, 0.25)  # d≤1
+            base_port_mid = min(port_formation_rate * 0.5, 0.15)   # d=2-3
             base_port_far = min(port_formation_rate * 0.3, 0.10)   # d=4-5
         else:
             # Fallback: conservative fixed minimums
@@ -1240,8 +1237,11 @@ def build_prediction(height, width, initial_grid, observations,
         if exp_count > 0:
             model_avg = model_exp / exp_count
             if model_avg > 0.005:
-                scale = expansion_rate / model_avg
-                scale = max(0.3, min(scale, 3.5))  # wider clamp for extreme rounds
+                raw_scale = expansion_rate / model_avg
+                # Dampen: 30% correction, not full override. The spatial bucket model
+                # already encodes expansion rates from the same observations.
+                scale = 1.0 + 0.3 * (raw_scale - 1.0)
+                scale = max(0.7, min(scale, 1.5))
                 if abs(scale - 1.0) > 0.05:  # only adjust if meaningful difference
                     for r in range(height):
                         for c in range(width):
@@ -1378,22 +1378,20 @@ def build_prediction(height, width, initial_grid, observations,
                             + (1 - alpha[r, c, 0]) * predictions[r, c]
                         )
 
-    # Step 2.5: Monte Carlo blending (adaptive weight based on survival rate)
-    # MC captures spatial correlations missing from bucket model.
-    # Helps most on high-expansion rounds; hurts on harsh winter rounds.
-    if mc_rates is not None:
-        sr = mc_rates.get("survival") or 0.0
-        if sr > 0.50:
-            # Very high survival → complex dynamics, MC adds value
-            # Only for the hardest rounds (R12-type with 50%+ survival)
-            mc_weight = 0.05
-            mc_pred = monte_carlo_predict(initial_grid, mc_rates,
-                                          n_runs=80, n_years=50)
-            mc_pred = apply_floor(mc_pred, floor=0.001)
-            predictions = (1 - mc_weight) * predictions + mc_weight * mc_pred
-            # Re-normalize
-            sums = predictions.sum(axis=2, keepdims=True)
-            predictions = predictions / sums
+    # Step 2.5: Monte Carlo blending — DISABLED
+    # Simulated-production testing shows MC hurts by +1.1% avg (+3.7% on R12).
+    # The uncalibrated per-year rates add noise rather than correcting errors.
+    # Kept as dead code for potential future calibration improvement.
+    # if mc_rates is not None:
+    #     sr = mc_rates.get("survival") or 0.0
+    #     if sr > 0.50:
+    #         mc_weight = 0.05
+    #         mc_pred = monte_carlo_predict(initial_grid, mc_rates,
+    #                                       n_runs=80, n_years=50)
+    #         mc_pred = apply_floor(mc_pred, floor=0.001)
+    #         predictions = (1 - mc_weight) * predictions + mc_weight * mc_pred
+    #         sums = predictions.sum(axis=2, keepdims=True)
+    #         predictions = predictions / sums
 
     # Step 3: Apply probability floor
     predictions = apply_floor(predictions)
