@@ -183,6 +183,12 @@ All 4 priority items implemented and submitted:
 
 **Key lesson**: The temperature scaling parameters are already well-tuned. Post-model adjustments have diminishing returns. The remaining error is dominated by within-bucket variance (irreducible without better features).
 
+### Overnight iteration findings (2026-03-21)
+
+- **Adjacent settlement count for Plains** ✅: Added adj_sett_level (0/1/2+) to Plains bucket key. KL 0.0435→0.0428 (-1.6%). R7 -2.1%, R3 -6.9%. Cells adjacent to 2+ settlements have much higher expansion probability — this feature directly captures expansion pressure.
+- **Cluster density for Forest** ✅: Added is_clustered to Forest bucket key. KL 0.0428→0.0415 (-3.0%). All rounds improved, best R8 -4.0%, R9 -2.4%, R7 -1.9%. Forest near clustered settlements gets cleared more due to higher food demand.
+- **Cluster density for Ruin** ➖: Added is_clustered to Ruin bucket key. Zero effect — Ruin cells are too few (~200 per map) to benefit from additional bucket features with 5 seeds of GT data.
+
 **Promising directions not yet tried:**
 - Plains bucket refinement: split by distance + cluster density interaction
 - Ruin-to-forest transition: currently under-predicted, especially near forests in harsh winters
