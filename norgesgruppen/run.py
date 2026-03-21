@@ -72,6 +72,10 @@ SCORE_CLS_POWER = 0.7
 # DINOv2 ensemble weight (if dual-backbone classifier)
 DINO_WEIGHT = 0.3
 
+# FP reduction
+MIN_FINAL_SCORE = 0.0        # minimum final score to output (0.0 = disabled, tune via sweep)
+UNKNOWN_SCORE_BOOST = 0.0     # penalty subtracted from cat 355 scores (0.0 = disabled)
+
 
 def create_session(path):
     providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
@@ -685,6 +689,23 @@ def main():
             fused_boxes = ts_boxes_xyxy
             fused_scores = ts_scores
             fused_labels = ts_labels
+
+        # Filter low-confidence predictions
+        if MIN_FINAL_SCORE > 0:
+            mask = fused_scores >= MIN_FINAL_SCORE
+            fused_boxes = fused_boxes[mask]
+            fused_scores = fused_scores[mask]
+            fused_labels = fused_labels[mask]
+
+        # Suppress low-confidence unknown_product (cat 355)
+        if UNKNOWN_SCORE_BOOST > 0:
+            unknown_mask = fused_labels == 355
+            fused_scores[unknown_mask] = np.maximum(0, fused_scores[unknown_mask] - UNKNOWN_SCORE_BOOST)
+            # Re-filter after suppression
+            keep = fused_scores >= max(MIN_FINAL_SCORE, 0.01)
+            fused_boxes = fused_boxes[keep]
+            fused_scores = fused_scores[keep]
+            fused_labels = fused_labels[keep]
 
         # Build output predictions
         for j in range(len(fused_boxes)):
