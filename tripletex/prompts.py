@@ -64,16 +64,18 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - **deliveryDate** is REQUIRED on orders — use orderDate if not specified. Also set invoicesDueIn (e.g. 30) and invoicesDueInType ("DAYS") when payment terms are specified.
 - **amountGross + amountGrossCurrency** must be set to the same value on every voucher posting
 - **Action endpoints** (/:invoice, /:payment, /:send, /:createCreditNote): params go in query_params, NOT body
-- **paymentTypeId** must be looked up via GET /invoice/paymentType — do NOT hardcode 0
-- **Payment must be separate from /:invoice**: invoice first, then PUT /invoice/{{id}}/:payment with the real amount from the invoice response ($step_N.value.amount)
+- **paymentTypeId** must be looked up via GET /invoice/paymentType — do NOT hardcode 0. NEVER pass paymentTypeId=0.
+- **Payment must be separate from /:invoice**: Convert order to invoice first (PUT /order/ID/:invoice with ONLY invoiceDate — do NOT include paidAmount or paymentTypeId). Then GET /invoice/paymentType, then PUT /invoice/ID/:payment with paymentDate, paymentTypeId, paidAmount (use the real amount from the invoice response: $step_N.value.amount).
 - **nationalIdentityNumber**: exactly 11 digits, Norwegian format DDMMYYNNNNN
 - **vatType OUTPUT IDs**: 3=25%, 31=15%(food), 32=12%(transport), 5=0%(exempt), 6=0%(exempt outside VAT). IDs 1,11,13 are INPUT VAT — never use on orders.
 - **Division** is required for employment (auto-injected by system)
 - **GET /invoice** REQUIRES invoiceDateFrom + invoiceDateTo params
-- **Voucher postings**: debit=positive, credit=negative, must sum to 0. Do NOT send number, voucherType, or dueDate on postings. For purchase/expense vouchers, include vatType on the expense line: INPUT VAT IDs: 1=25%, 11=15%, 13=12%. Bank/payment lines can omit vatType.
-- **Supplier invoice voucher**: AP (credit) posting MUST include supplier:{{"id": N}}
+- **Voucher postings**: debit=positive, credit=negative, must sum to 0. Do NOT send number, voucherType, or dueDate on postings. **ALWAYS use amountGross and amountGrossCurrency** (set both to the same value) — the API ignores the `amount` field. For purchase/expense vouchers, include vatType on the expense line: INPUT VAT IDs: 1=25%, 11=15%, 13=12%. Bank/payment lines can omit vatType.
+- **Customer creation**: Include ALL fields from the task — name, organizationNumber, email, phone. For addresses, set BOTH postalAddress AND physicalAddress to the same value: {{"addressLine1": "...", "postalCode": "...", "city": "..."}}. This ensures the scoring system finds the address regardless of which field it checks.
+- **Supplier invoice voucher**: AP (credit) posting MUST include supplier:{{"id": N}}. Use **amountGross** and **amountGrossCurrency** on ALL postings. If invoice amount is TTC/incl. VAT: the AP posting (account 2400) gets the FULL amount as negative, the expense posting (e.g. 6500) gets the FULL amount as positive with vatType for INPUT VAT (id 1 for 25%). Tripletex auto-splits the VAT.
 - **Product**: include "number" field when task specifies it. NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency. Set vatType:{{"id": 3}} for 25% VAT (or other rate if specified). If a unit is mentioned (stk, timer, kg), look up with GET /product/unit then set productUnit:{{"id": N}}.
-- **Employee for payroll**: dateOfBirth REQUIRED. Employee MUST have an active employment (POST /employee/employment with startDate on or before the pay period) and employment details (POST /employee/employment/details with percentageOfFullTimeEquivalent) BEFORE creating salary transactions. salary/transaction specifications MUST have rate, count, AND amount. If employee already exists (GET found them), still check if they have employment (GET /employee/employment?employeeId=N) — create if missing.
+- **Employee creation** (even when NOT doing payroll): ALWAYS use the 3-step chain: 1) POST /employee (firstName, lastName, email, dateOfBirth, userType: "STANDARD"), 2) POST /employee/employment (employee:{{id}}, startDate), 3) POST /employee/employment/details (employment:{{id}}, date, employmentType: "ORDINARY", employmentForm: "PERMANENT", remunerationType: "MONTHLY_WAGE", workingHoursScheme: "NOT_SHIFT"). Do NOT try to inline employments in the POST /employee body — it will be ignored.
+- **Employee for payroll**: dateOfBirth REQUIRED. Employee MUST have the full 3-step chain BEFORE creating salary transactions. salary/transaction specifications MUST have rate, count, AND amount. If employee already exists (GET found them), still check if they have employment (GET /employee/employment?employeeId=N) — create if missing.
 - **Reminders**: Use PUT /invoice/{{id}}/:createReminder with query_params type=REMINDER, date=today, includeCharge=true, includeInterest=true. Do NOT create manual vouchers for reminder fees — Tripletex handles the accounting automatically.
 - **Employment details**: POST /employee/employment/details — use **percentageOfFullTimeEquivalent** (NOT employmentPercentage). occupationCode must be {{"id": <int>}} not bare string.
 - **Project-specific activities**: POST /project/projectActivity needs activity:{{"id": N}} — create the activity first with POST /activity (activityType: GENERAL_ACTIVITY), then link it.
@@ -144,6 +146,32 @@ Task: "Register a travel expense for Arthur Robert (arthur.robert@example.org): 
   {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "GET", "path": "/employee", "query_params": {{"email": "arthur.robert@example.org", "count": 1}}}}, "description": "Find existing employee"}},
   {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "GET", "path": "/travelExpense/paymentType", "query_params": {{"showOnEmployeeExpenses": true, "count": 1, "fields": "id"}}}}, "description": "Get payment type"}},
   {{"step_number": 3, "tool_name": "call_api", "args": {{"method": "POST", "path": "/travelExpense", "body": {{"employee": {{"id": "$step_1.values[0].id"}}, "title": "Travel to Paris", "travelDetails": {{"departureDate": "{today}", "returnDate": "{today}", "destination": "Paris"}}, "costs": [{{"category": "TAXI", "amountCurrencyIncVat": 450, "date": "{today}", "paymentType": {{"id": "$step_2.values[0].id"}}}}, {{"category": "FOOD", "amountCurrencyIncVat": 800, "date": "{today}", "paymentType": {{"id": "$step_2.values[0].id"}}}}], "perDiemCompensations": [{{"location": "Paris", "count": 2, "overnightAccommodation": "HOTEL"}}]}}}}, "description": "Create travel expense with costs and per diem inline"}}
+]
+```
+
+### Example 4: Custom accounting dimensions + voucher
+Task: "Create custom dimension 'Prosjekttype' with values 'Forskning' and 'Utvikling'. Post a voucher on account 7000 for 14550 NOK linked to 'Forskning'."
+```json
+[
+  {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "POST", "path": "/ledger/accountingDimensionName", "body": {{"dimensionName": "Prosjekttype"}}}}, "description": "Create custom dimension"}},
+  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "POST", "path": "/ledger/accountingDimensionValue", "body": {{"displayName": "Forskning", "dimensionName": {{"id": "$step_1.value.id"}}, "number": "1"}}}}, "description": "Create dimension value Forskning"}},
+  {{"step_number": 3, "tool_name": "call_api", "args": {{"method": "POST", "path": "/ledger/accountingDimensionValue", "body": {{"displayName": "Utvikling", "dimensionName": {{"id": "$step_1.value.id"}}, "number": "2"}}}}, "description": "Create dimension value Utvikling"}},
+  {{"step_number": 4, "tool_name": "call_api", "args": {{"method": "GET", "path": "/ledger/account", "query_params": {{"number": "7000", "fields": "id"}}}}, "description": "Find account 7000"}},
+  {{"step_number": 5, "tool_name": "call_api", "args": {{"method": "GET", "path": "/ledger/account", "query_params": {{"number": "1920", "fields": "id"}}}}, "description": "Find bank account for credit posting"}},
+  {{"step_number": 6, "tool_name": "call_api", "args": {{"method": "POST", "path": "/ledger/voucher", "body": {{"date": "{today}", "description": "Prosjekttype: Forskning", "postings": [{{"account": {{"id": "$step_4.values[0].id"}}, "amountGross": 14550, "amountGrossCurrency": 14550, "description": "Prosjekttype Forskning", "freeAccountingDimension1": {{"id": "$step_2.value.id"}}}}, {{"account": {{"id": "$step_5.values[0].id"}}, "amountGross": -14550, "amountGrossCurrency": -14550, "description": "Motpost"}}]}}}}, "description": "Post voucher linked to Forskning dimension"}}
+]
+```
+
+### Example 5: Order → Invoice → Full payment
+Task: "Create order for customer Fjord AS (org 987654321) with product Consulting (number 5001) at 25000 NOK. Convert to invoice and register full payment."
+```json
+[
+  {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "POST", "path": "/customer", "body": {{"name": "Fjord AS", "organizationNumber": "987654321"}}}}, "description": "Create customer"}},
+  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "POST", "path": "/product", "body": {{"name": "Consulting", "number": "5001", "priceExcludingVatCurrency": 25000.0, "vatType": {{"id": 3}}}}}}, "description": "Create product with number and vatType"}},
+  {{"step_number": 3, "tool_name": "call_api", "args": {{"method": "POST", "path": "/order", "body": {{"customer": {{"id": "$step_1.value.id"}}, "orderDate": "{today}", "deliveryDate": "{today}", "orderLines": [{{"product": {{"id": "$step_2.value.id"}}, "description": "Consulting", "count": 1, "unitPriceExcludingVatCurrency": 25000.0}}]}}}}, "description": "Create order"}},
+  {{"step_number": 4, "tool_name": "call_api", "args": {{"method": "PUT", "path": "/order/$step_3.value.id/:invoice", "query_params": {{"invoiceDate": "{today}"}}}}, "description": "Convert order to invoice (do NOT include paidAmount here)"}},
+  {{"step_number": 5, "tool_name": "call_api", "args": {{"method": "GET", "path": "/invoice/paymentType", "query_params": {{"count": 1, "fields": "id"}}}}, "description": "Get payment type (NEVER hardcode paymentTypeId)"}},
+  {{"step_number": 6, "tool_name": "call_api", "args": {{"method": "PUT", "path": "/invoice/$step_4.value.id/:payment", "query_params": {{"paymentDate": "{today}", "paymentTypeId": "$step_5.values[0].id", "paidAmount": "$step_4.value.amount", "paidAmountCurrency": "$step_4.value.amount"}}}}, "description": "Register full payment using real invoice amount"}}
 ]
 ```
 

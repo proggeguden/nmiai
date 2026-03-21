@@ -302,8 +302,23 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 log.info(
                     "Validation: converted null postings to empty array in POST /ledger/voucher"
                 )
-            # Add explicit row numbers starting from 1 (row 0 is reserved for system-generated VAT lines)
+            # Auto-inject amountGross/amountGrossCurrency from amount when missing
+            # The API says "Only the gross amounts will be used" — amount field is ignored
             postings = body.get("postings", [])
+            if isinstance(postings, list):
+                for posting in postings:
+                    if not isinstance(posting, dict):
+                        continue
+                    amt = posting.get("amount")
+                    if amt is not None and "amountGross" not in posting:
+                        posting["amountGross"] = amt
+                        posting["amountGrossCurrency"] = amt
+                        log.info(f"Validation: auto-set amountGross={amt} from amount on voucher posting")
+                    # Also ensure amountGrossCurrency matches amountGross
+                    if "amountGross" in posting and "amountGrossCurrency" not in posting:
+                        posting["amountGrossCurrency"] = posting["amountGross"]
+                        log.info("Validation: auto-set amountGrossCurrency=amountGross on voucher posting")
+            # Add explicit row numbers starting from 1 (row 0 is reserved for system-generated VAT lines)
             if isinstance(postings, list):
                 for idx, posting in enumerate(postings):
                     if isinstance(posting, dict) and "row" not in posting:
@@ -334,6 +349,19 @@ def validate_plan(plan: list[dict]) -> list[dict]:
 
         # NOTE: product "number" field is KEPT — the scoring system checks for it.
         # Only strip if we get a duplicate-number error at runtime (deterministic fix below).
+
+        # Auto-copy postalAddress ↔ physicalAddress on customer creation (scoring may check either)
+        if method == "POST" and path in ("/customer", "/customer/list") and isinstance(body, (dict, list)):
+            cust_bodies = body if isinstance(body, list) else [body]
+            for cb in cust_bodies:
+                if not isinstance(cb, dict):
+                    continue
+                if "postalAddress" in cb and "physicalAddress" not in cb:
+                    cb["physicalAddress"] = dict(cb["postalAddress"])
+                    log.info("Validation: copied postalAddress → physicalAddress on customer")
+                elif "physicalAddress" in cb and "postalAddress" not in cb:
+                    cb["postalAddress"] = dict(cb["physicalAddress"])
+                    log.info("Validation: copied physicalAddress → postalAddress on customer")
 
         # Fix fixedPrice → fixedprice on POST /project (API uses lowercase 'p')
         if method == "POST" and path in ("/project", "/project/list") and isinstance(body, dict):
