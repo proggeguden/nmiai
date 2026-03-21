@@ -1055,7 +1055,7 @@ def build_agent():
             "completed_steps": [],
             "error_count": state.get("error_count", 0),
             "replan_count": 0,
-            "messages": [AIMessage(content=f"Plan ({winner}): {json.dumps(best)}")],
+            "messages": [AIMessage(content=f"Plan ({len(best)} steps): {json.dumps(best)}")],
         }
 
     def _validate_step_against_schema(resolved_args: dict) -> dict:
