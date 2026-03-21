@@ -434,15 +434,20 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             args["path"] = "/company"
             log.info("Validation: fixed PUT /company/{id} → PUT /company (singleton)")
 
-        # Fix 3b: Auto-inject paymentTypeId when paidAmount present on /:invoice
+        # Fix 3b: Clean up /:invoice action endpoints
         if method == "PUT" and "/:invoice" in path:
             qp = args.get("query_params", {})
             if isinstance(qp, dict):
-                if "paidAmount" in qp and "paymentTypeId" not in qp:
-                    qp["paymentTypeId"] = 0
-                    log.info(
-                        "Validation: auto-injected paymentTypeId=0 for /:invoice (required with paidAmount)"
-                    )
+                # STRIP paidAmount and paymentTypeId from /:invoice — payment must be a SEPARATE call
+                # Combining payment with invoice conversion causes 422 when paymentTypeId is wrong
+                if "paidAmount" in qp:
+                    del qp["paidAmount"]
+                    log.info("Validation: stripped paidAmount from /:invoice (payment must be separate)")
+                if "paidAmountCurrency" in qp:
+                    del qp["paidAmountCurrency"]
+                if "paymentTypeId" in qp:
+                    del qp["paymentTypeId"]
+                    log.info("Validation: stripped paymentTypeId from /:invoice (payment must be separate)")
                 if "invoiceDate" not in qp:
                     qp["invoiceDate"] = date.today().isoformat()
                     log.info("Validation: auto-injected invoiceDate for /:invoice")
@@ -1555,6 +1560,41 @@ def build_agent():
                         }
                 except Exception:
                     pass
+
+        # ── Deterministic fix: duplicate ledger account number → GET existing account ──
+        if (
+            status_code in RETRYABLE_STATUS_CODES
+            and resolved_args.get("method") == "POST"
+            and resolved_args.get("path") == "/ledger/account"
+        ):
+            body = resolved_args.get("body")
+            acct_number = body.get("number") if isinstance(body, dict) else None
+            if acct_number:
+                call_api_tool = tool_map.get("call_api")
+                if call_api_tool:
+                    log.info(f"Deterministic fix: account {acct_number} may exist, searching via GET")
+                    search_result = call_api_tool.invoke({
+                        "method": "GET",
+                        "path": "/ledger/account",
+                        "query_params": {"number": str(acct_number), "count": 1},
+                    })
+                    try:
+                        search_parsed = json.loads(search_result)
+                        values = search_parsed.get("values", [])
+                        if values:
+                            results[f"step_{step['step_number']}"] = {"value": values[0]}
+                            completed.append(step["step_number"])
+                            log.info(f"Step {step['step_number']} resolved: found existing account {acct_number} (id={values[0].get('id')})")
+                            return {
+                                "current_step": step_idx + 1,
+                                "results": results,
+                                "completed_steps": completed,
+                                "error_count": error_count,
+                                "healed_steps": healed_steps,
+                                "messages": [AIMessage(content=f"Step {step['step_number']} done (found existing account {acct_number})")],
+                            }
+                    except (json.JSONDecodeError, TypeError):
+                        pass
 
         # ── Deterministic fix: duplicate product number → GET existing product ──
         if (
