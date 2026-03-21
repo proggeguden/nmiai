@@ -305,6 +305,22 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                         posting["row"] = idx + 1
                         log.info(f"Validation: added row={idx + 1} to voucher posting")
 
+        # Strip priceIncludingVatCurrency when priceExcludingVatCurrency also present (conflict)
+        if isinstance(body, (dict, list)):
+            items = body if isinstance(body, list) else [body]
+            for item in items:
+                if isinstance(item, dict):
+                    if "priceIncludingVatCurrency" in item and "priceExcludingVatCurrency" in item:
+                        del item["priceIncludingVatCurrency"]
+                        log.info("Validation: stripped priceIncludingVatCurrency (conflicts with excl)")
+                    # Also check nested arrays (e.g. orderLines)
+                    for v in list(item.values()):
+                        if isinstance(v, list):
+                            for sub in v:
+                                if isinstance(sub, dict) and "priceIncludingVatCurrency" in sub and "priceExcludingVatCurrency" in sub:
+                                    del sub["priceIncludingVatCurrency"]
+                                    log.info("Validation: stripped priceIncludingVatCurrency from nested item")
+
         # NOTE: product "number" field is KEPT — the scoring system checks for it.
         # Only strip if we get a duplicate-number error at runtime (deterministic fix below).
 
@@ -1065,7 +1081,7 @@ def build_agent():
     tools, tool_summaries = load_tools()
     tool_map = {t.name: t for t in tools}
 
-    planner_model = os.environ.get("GEMINI_PLANNER_MODEL", "gemini-3-flash-preview")
+    planner_model = os.environ.get("GEMINI_PLANNER_MODEL", "gemini-3.1-pro-preview")
     heal_model = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
     api_key = os.environ["GOOGLE_API_KEY"]
 
@@ -1459,186 +1475,27 @@ def build_agent():
         # API error — try deterministic fixes first, then LLM replan
         error_lower = result_str.lower() if result_str else ""
 
-        # Fatal: 403 expired/invalid proxy token — abort all remaining steps
-        if status_code == 403 and ("proxy token" in error_lower or "expired" in error_lower):
+        # ── 403: abort all remaining steps (wrong approach, not just expired token) ──
+        if status_code == 403:
             log.warning(
-                "FATAL: 403 expired proxy token — aborting all remaining steps to save API budget"
+                f"403 Forbidden — aborting remaining steps. Error: {result_str[:300]}"
             )
             error_count += 1
-            # Mark all remaining steps as done to stop the executor
             return {
-                "current_step": len(plan),  # skip to end
+                "current_step": len(plan),
                 "results": results,
                 "completed_steps": completed,
                 "error_count": error_count,
                 "healed_steps": healed_steps,
-                "messages": [
-                    AIMessage(
-                        content="ABORTED: proxy token expired/invalid, no further API calls possible"
-                    )
-                ],
+                "messages": [AIMessage(content=f"ABORTED: 403 on step {step['step_number']}")],
             }
 
-        # Deterministic fix: bank account not registered
+        # ── Deterministic fix: bank account not registered (KEEP — reliable) ──
         if status_code in RETRYABLE_STATUS_CODES and "bankkontonummer" in error_lower:
-            log.info(
-                "Deterministic fix: bank account missing, running ensure_bank_account and retrying"
-            )
+            log.info("Deterministic fix: bank account missing, ensuring and retrying")
             call_api_tool = tool_map.get("call_api")
             if call_api_tool:
                 _, _, error_count = _ensure_bank_account(call_api_tool, error_count)
-                try:
-                    retry_result_str = tool.invoke(resolved_args)
-                    retry_is_error, retry_status = _is_api_error(retry_result_str)
-                    if not retry_is_error:
-                        try:
-                            parsed = json.loads(retry_result_str)
-                        except (json.JSONDecodeError, TypeError):
-                            parsed = {"raw": retry_result_str}
-                        results[f"step_{step['step_number']}"] = parsed
-                        log.info(
-                            f"Step {step['step_number']} succeeded after bank account fix"
-                        )
-                        completed.append(step["step_number"])
-                        return {
-                            "current_step": step_idx + 1,
-                            "results": results,
-                            "completed_steps": completed,
-                            "error_count": error_count,
-                            "healed_steps": healed_steps,
-                            "messages": [
-                                AIMessage(
-                                    content=f"Step {step['step_number']} done (bank account fixed): {str(parsed)[:200]}"
-                                )
-                            ],
-                        }
-                except Exception:
-                    pass  # fall through to LLM replan
-
-        # Deterministic fix: missing department.id on employee
-        if (
-            status_code in RETRYABLE_STATUS_CODES
-            and "department" in error_lower
-            and "/employee" in resolved_args.get("path", "")
-        ):
-            log.info("Deterministic fix: missing department.id, fetching department")
-            call_api_tool = tool_map.get("call_api")
-            if call_api_tool:
-                dept_result = call_api_tool.invoke(
-                    {
-                        "method": "GET",
-                        "path": "/department",
-                        "query_params": {"from": 0, "count": 1, "fields": "id"},
-                    }
-                )
-                try:
-                    dept_parsed = json.loads(dept_result)
-                    dept_values = dept_parsed.get("values", [])
-                    if dept_values:
-                        dept_id = dept_values[0].get("id")
-                        if dept_id and isinstance(resolved_args.get("body"), dict):
-                            resolved_args["body"]["department"] = {"id": dept_id}
-                            retry_result_str = tool.invoke(resolved_args)
-                            retry_is_error, _ = _is_api_error(retry_result_str)
-                            if not retry_is_error:
-                                try:
-                                    parsed = json.loads(retry_result_str)
-                                except (json.JSONDecodeError, TypeError):
-                                    parsed = {"raw": retry_result_str}
-                                results[f"step_{step['step_number']}"] = parsed
-                                log.info(
-                                    f"Step {step['step_number']} succeeded after department fix"
-                                )
-                                completed.append(step["step_number"])
-                                return {
-                                    "current_step": step_idx + 1,
-                                    "results": results,
-                                    "completed_steps": completed,
-                                    "error_count": error_count,
-                                    "healed_steps": healed_steps,
-                                    "messages": [
-                                        AIMessage(
-                                            content=f"Step {step['step_number']} done (department fixed)"
-                                        )
-                                    ],
-                                }
-                except (json.JSONDecodeError, TypeError, Exception):
-                    pass  # fall through to LLM replan
-
-        # Deterministic fix: duplicate product number
-        if (
-            status_code in RETRYABLE_STATUS_CODES
-            and "produktnummeret" in error_lower
-            and "er i bruk" in error_lower
-        ):
-            log.info(
-                "Deterministic fix: duplicate product number, stripping number field"
-            )
-            body = resolved_args.get("body")
-            if isinstance(body, list):
-                for item in body:
-                    if isinstance(item, dict):
-                        item.pop("number", None)
-            elif isinstance(body, dict):
-                body.pop("number", None)
-            try:
-                retry_result_str = tool.invoke(resolved_args)
-                retry_is_error, _ = _is_api_error(retry_result_str)
-                if not retry_is_error:
-                    try:
-                        parsed = json.loads(retry_result_str)
-                    except (json.JSONDecodeError, TypeError):
-                        parsed = {"raw": retry_result_str}
-                    results[f"step_{step['step_number']}"] = parsed
-                    log.info(
-                        f"Step {step['step_number']} succeeded after product number fix"
-                    )
-                    completed.append(step["step_number"])
-                    return {
-                        "current_step": step_idx + 1,
-                        "results": results,
-                        "completed_steps": completed,
-                        "error_count": error_count,
-                        "healed_steps": healed_steps,
-                        "messages": [
-                            AIMessage(
-                                content=f"Step {step['step_number']} done (product number fixed)"
-                            )
-                        ],
-                    }
-            except Exception:
-                pass  # fall through to LLM replan
-
-        # (Duplicate email handler removed — executor-level employee dedup skip prevents this)
-
-        # Deterministic fix: price field conflict (priceIncludingVatCurrency vs priceExcludingVatCurrency)
-        if status_code in RETRYABLE_STATUS_CODES and (
-            "priceincludingvat" in error_lower or "price" in error_lower
-        ):
-            body = resolved_args.get("body")
-            fixed = False
-            items_to_check = []
-            if isinstance(body, list):
-                items_to_check = [item for item in body if isinstance(item, dict)]
-            elif isinstance(body, dict):
-                items_to_check = [body]
-                # Also check nested arrays like orderLines
-                for v in body.values():
-                    if isinstance(v, list):
-                        items_to_check.extend(
-                            item for item in v if isinstance(item, dict)
-                        )
-            for item in items_to_check:
-                if (
-                    "priceIncludingVatCurrency" in item
-                    and "priceExcludingVatCurrency" in item
-                ):
-                    del item["priceIncludingVatCurrency"]
-                    fixed = True
-                    log.info(
-                        "Deterministic fix: removed priceIncludingVatCurrency (conflicts with priceExcludingVatCurrency)"
-                    )
-            if fixed:
                 try:
                     retry_result_str = tool.invoke(resolved_args)
                     retry_is_error, _ = _is_api_error(retry_result_str)
@@ -1648,9 +1505,6 @@ def build_agent():
                         except (json.JSONDecodeError, TypeError):
                             parsed = {"raw": retry_result_str}
                         results[f"step_{step['step_number']}"] = parsed
-                        log.info(
-                            f"Step {step['step_number']} succeeded after price field conflict fix"
-                        )
                         completed.append(step["step_number"])
                         return {
                             "current_step": step_idx + 1,
@@ -1658,172 +1512,58 @@ def build_agent():
                             "completed_steps": completed,
                             "error_count": error_count,
                             "healed_steps": healed_steps,
-                            "messages": [
-                                AIMessage(
-                                    content=f"Step {step['step_number']} done (price conflict fixed)"
-                                )
-                            ],
+                            "messages": [AIMessage(content=f"Step {step['step_number']} done (bank account fixed)")],
                         }
                 except Exception:
                     pass
 
-        # Deterministic fix: voucher posting row numbering error
+        # ── Deterministic fix: duplicate product number → GET existing product ──
         if (
             status_code in RETRYABLE_STATUS_CODES
-            and (
-                "rad 0" in error_lower
-                or "guirow" in error_lower
-                or "row" in error_lower
-            )
-            and "/ledger/voucher" in resolved_args.get("path", "")
+            and "produktnummeret" in error_lower
+            and "er i bruk" in error_lower
         ):
+            # Product already exists — search for it by number (GET is free)
             body = resolved_args.get("body")
-            if isinstance(body, dict) and "postings" in body:
-                postings = body["postings"]
-                if isinstance(postings, list):
-                    for idx_p, posting in enumerate(postings):
-                        if isinstance(posting, dict):
-                            posting["row"] = idx_p + 1
-                    log.info(
-                        f"Deterministic fix: re-numbered {len(postings)} voucher postings from row 1"
-                    )
+            product_number = None
+            if isinstance(body, dict):
+                product_number = body.get("number")
+            elif isinstance(body, list) and body:
+                product_number = body[0].get("number") if isinstance(body[0], dict) else None
+
+            if product_number:
+                call_api_tool = tool_map.get("call_api")
+                if call_api_tool:
+                    log.info(f"Deterministic fix: product number {product_number} exists, searching via GET")
+                    search_result = call_api_tool.invoke({
+                        "method": "GET",
+                        "path": "/product",
+                        "query_params": {"number": str(product_number), "count": 1, "fields": "id,name,number"},
+                    })
                     try:
-                        retry_result_str = tool.invoke(resolved_args)
-                        retry_is_error, _ = _is_api_error(retry_result_str)
-                        if not retry_is_error:
-                            try:
-                                parsed = json.loads(retry_result_str)
-                            except (json.JSONDecodeError, TypeError):
-                                parsed = {"raw": retry_result_str}
-                            results[f"step_{step['step_number']}"] = parsed
-                            log.info(
-                                f"Step {step['step_number']} succeeded after row numbering fix"
-                            )
+                        search_parsed = json.loads(search_result)
+                        values = search_parsed.get("values", [])
+                        if values:
+                            # Found existing product — use it as the step result
+                            results[f"step_{step['step_number']}"] = {"value": values[0]}
                             completed.append(step["step_number"])
+                            log.info(f"Step {step['step_number']} resolved: found existing product {values[0].get('id')}")
                             return {
                                 "current_step": step_idx + 1,
                                 "results": results,
                                 "completed_steps": completed,
                                 "error_count": error_count,
                                 "healed_steps": healed_steps,
-                                "messages": [
-                                    AIMessage(
-                                        content=f"Step {step['step_number']} done (row numbering fixed)"
-                                    )
-                                ],
+                                "messages": [AIMessage(content=f"Step {step['step_number']} done (found existing product)")],
                             }
-                    except Exception:
+                    except (json.JSONDecodeError, TypeError):
                         pass
 
-        # Deterministic fix: displayName/dimensionName on accounting dimension endpoints
-        if (
-            status_code in RETRYABLE_STATUS_CODES
-            and "kan ikke" in error_lower
-            and "/ledger/accountingdimension" in resolved_args.get("path", "").lower()
-        ):
-            body = resolved_args.get("body")
-            fixed = False
-            if isinstance(body, dict) and "name" in body:
-                path_str = resolved_args.get("path", "")
-                if "Value" in path_str and "displayName" not in body:
-                    body["displayName"] = body.pop("name")
-                    fixed = True
-                    log.info("Deterministic fix: name → displayName on accountingDimensionValue")
-                elif "Name" in path_str and "dimensionName" not in body:
-                    body["dimensionName"] = body.pop("name")
-                    fixed = True
-                    log.info("Deterministic fix: name → dimensionName on accountingDimensionName")
-            if fixed:
-                try:
-                    retry_result_str = tool.invoke(resolved_args)
-                    retry_is_error, _ = _is_api_error(retry_result_str)
-                    if not retry_is_error:
-                        try:
-                            parsed = json.loads(retry_result_str)
-                        except (json.JSONDecodeError, TypeError):
-                            parsed = {"raw": retry_result_str}
-                        results[f"step_{step['step_number']}"] = parsed
-                        completed.append(step["step_number"])
-                        return {
-                            "current_step": step_idx + 1,
-                            "results": results,
-                            "completed_steps": completed,
-                            "error_count": error_count,
-                            "healed_steps": healed_steps,
-                            "messages": [AIMessage(content=f"Step {step['step_number']} done (dimension field fix)")],
-                        }
-                except Exception:
-                    pass
-
-        # Deterministic fix: projectManager lacks entitlements
-        if (
-            status_code in RETRYABLE_STATUS_CODES
-            and ("prosjektleder" in error_lower or "project manager" in error_lower or "rettigheter" in error_lower)
-            and "/project" in resolved_args.get("path", "")
-        ):
-            call_api_tool = tool_map.get("call_api")
-            pm = resolved_args.get("body", {})
-            if isinstance(pm, dict):
-                pm = pm.get("projectManager", {})
-            pm_id = pm.get("id") if isinstance(pm, dict) else None
-            if call_api_tool and pm_id and not isinstance(pm_id, str):
-                log.info(f"Deterministic fix: granting entitlements to projectManager {pm_id}")
-                call_api_tool.invoke({
-                    "method": "PUT",
-                    "path": "/employee/entitlement/:grantEntitlementsByTemplate",
-                    "query_params": {"employeeId": int(pm_id), "template": "ALL_PRIVILEGES"},
-                })
-                try:
-                    retry_result_str = tool.invoke(resolved_args)
-                    retry_is_error, _ = _is_api_error(retry_result_str)
-                    if not retry_is_error:
-                        try:
-                            parsed = json.loads(retry_result_str)
-                        except (json.JSONDecodeError, TypeError):
-                            parsed = {"raw": retry_result_str}
-                        results[f"step_{step['step_number']}"] = parsed
-                        completed.append(step["step_number"])
-                        return {
-                            "current_step": step_idx + 1,
-                            "results": results,
-                            "completed_steps": completed,
-                            "error_count": error_count,
-                            "healed_steps": healed_steps,
-                            "messages": [AIMessage(content=f"Step {step['step_number']} done (entitlements fixed)")],
-                        }
-                except Exception:
-                    pass
-
-        # ── Self-heal: FIX_ARGS only (1 attempt, no REPLAN) ──
-        if status_code in RETRYABLE_STATUS_CODES and step["step_number"] not in healed_steps:
-            log.warning(f"API error {status_code}, attempting FIX_ARGS")
-            fixed_args = _ask_llm_to_fix_args(heal_llm, resolved_args, result_str)
-            if fixed_args:
-                _log_self_heal(tool.name, resolved_args, result_str, fixed_args, retry_succeeded=True)
-                try:
-                    retry_result_str = tool.invoke(fixed_args)
-                except Exception as e:
-                    retry_result_str = json.dumps({"error": str(e)})
-
-                retry_is_error, retry_status = _is_api_error(retry_result_str)
-                if not retry_is_error:
-                    try:
-                        parsed = json.loads(retry_result_str)
-                    except (json.JSONDecodeError, TypeError):
-                        parsed = {"raw": retry_result_str}
-                    results[f"step_{step['step_number']}"] = parsed
-                    log.info(f"Step {step['step_number']} succeeded after FIX_ARGS")
-                    completed.append(step["step_number"])
-                    return {
-                        "current_step": step_idx + 1,
-                        "results": results,
-                        "completed_steps": completed,
-                        "error_count": error_count,
-                        "healed_steps": healed_steps + [step["step_number"]],
-                        "messages": [AIMessage(content=f"Step {step['step_number']} done (FIX_ARGS): {str(parsed)[:200]}")],
-                    }
-                else:
-                    log.warning(f"FIX_ARGS retry also failed with status {retry_status}")
+        # ── All other errors: fail fast, log for analysis ──
+        # No LLM self-heal, no retries, no data corruption.
+        # Removed: department inject (#2), price conflict retry (#4),
+        # voucher row renumber (#5), dimension name fix (#6), PM entitlements (#7)
+        # These are now handled in validate_plan() or prompt instructions.
                     _log_self_heal(tool.name, resolved_args, result_str, fixed_args, retry_succeeded=False)
 
         # Out of replans or non-retryable — record error and move on
@@ -1858,11 +1598,21 @@ def build_agent():
             return "verify"
         return "continue"
 
-    # --- Node: verifier (post-execution check) ---
+    # --- Node: verifier (DISABLED — fail fast, iterate from logs) ---
+    # Verifier disabled because:
+    # 1. Corrective steps often have corrupted $step_N refs
+    # 2. Uses expensive LLM call (10-30s) that could timeout
+    # 3. Masks real planning errors, making logs harder to analyze
+    # 4. Extra API calls from corrective steps hurt efficiency score
     def verifier(state: AgentState) -> dict:
         verification_attempts = state.get("verification_attempts", 0)
+        log.info("Verifier disabled — fail fast mode")
+        return {"verification_attempts": verification_attempts + 1}
 
-        # Skip verification if all steps succeeded (no wasted LLM call)
+    def _verifier_disabled_original(state: AgentState) -> dict:
+        """Original verifier kept for reference — not called."""
+        verification_attempts = state.get("verification_attempts", 0)
+
         results = state.get("results", {})
         plan = state.get("plan", [])
         has_failures = any(
@@ -1879,13 +1629,11 @@ def build_agent():
             log.info("All steps succeeded — skipping verification")
             return {"verification_attempts": verification_attempts}
 
-        # Skip verification if past deadline (save time for partial credit)
         deadline = state.get("deadline", 0)
         if deadline and time.monotonic() > deadline:
             log.warning("Past deadline — skipping verification to preserve partial credit")
             return {"verification_attempts": verification_attempts}
 
-        # Max 1 verification round
         if verification_attempts >= 1:
             log.info("Verification already attempted, finishing")
             return {"verification_attempts": verification_attempts}

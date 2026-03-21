@@ -13,16 +13,16 @@ Prompt + Files → Flash Planner (gemini-3-flash-preview) → validate_plan() �
                                                     isInternal=false, dateFrom injection
 ```
 
-### Key Design Decisions (Round 15-20)
-1. **gemini-3-flash-preview** for all LLM calls (planner + heal + verifier) — pro was 24-74s per plan, flash is 5-15s
-2. **concurrency=1, min-instances=3** — prevents queueing timeouts, no cold starts
-3. **250s deadline** — skip verifier when running low on time
-4. **Per-step self-heal** — each step gets its own FIX_ARGS attempt (was 1 global)
-5. **Search-before-create** — prompt rule #2, production accounts have pre-existing data
-6. **Unresolved refs don't count as errors** — prevents premature 3-error abort on cascade failures
-7. **Verifier corrective steps NOT re-validated** — prevents ensure_bank_account injection corrupting refs
-8. **File attachments reach planner** — multimodal content parts passed to LLM call
-9. **403 early abort** — saves API budget on expired tokens
+### Key Design Decisions (Round 15-21)
+1. **gemini-3.1-pro-preview** for planner — best plan quality. 3 warm instances prevent timeout.
+2. **concurrency=1, min-instances=3** — each request gets own instance, no queueing
+3. **Fail fast** — LLM self-heal and verifier DISABLED. Only 2 deterministic fixes kept: bank account + duplicate product GET.
+4. **Search-before-create** — prompt rule #2, production accounts have pre-existing data
+5. **Unresolved refs don't count as errors** — prevents premature 3-error abort on cascade failures
+6. **File attachments reach planner** — multimodal content parts passed to LLM call
+7. **403 abort** — 403 means wrong approach, abort immediately
+8. **Price conflict prevention** — validate_plan strips priceIncludingVat before API call
+9. **250s deadline** — safety net for timeout prevention
 
 ### Rounds 15-20 Production Fixes
 | Round | Key Fixes |

@@ -10,14 +10,18 @@ Scored on field-by-field correctness + API call efficiency.
 - Cloud Run (GCP project `ai-nm26osl-1788`, service `tripletex`, region `europe-west1`)
 - Cloud Run config: concurrency=1, min-instances=3, timeout=300s
 
-## Architecture: Planner → Executor → Self-Heal → Verifier
-1. **Planner** — gemini-3-flash-preview (t=0), ~15K char prompt with 3 few-shot examples. Receives file attachments (PDFs) as multimodal content.
+## Architecture: Planner → Executor → Fail Fast
+1. **Planner** — gemini-3.1-pro-preview (t=0), ~15K char prompt with 3 few-shot examples. Receives file attachments (PDFs) as multimodal content.
 2. **validate_plan()** — pre-flight fixes: POST→/list merge, bank account ensure, division ensure, field renames (fixedPrice→fixedprice, employmentPercentage→percentageOfFullTimeEquivalent, dimension name/displayName), /report/ path rewrites, isInternal=false on customer projects, dateFrom injection on GET /invoice and /balanceSheet
 3. **Schema pre-validation** — `_validate_step_against_schema()` checks required fields, do_not_send (preserves product number), reference format
 4. **Executor** — pure Python loop, resolves `$step_N` placeholders recursively. 250s deadline tracking.
-5. **Deterministic error handlers** — bank account, department, product number, duplicate email, price conflict, voucher rows, dimension field names, project manager entitlements — no LLM calls
-6. **Self-heal** — per-step FIX_ARGS (each step gets its own attempt). 403 expired token → immediate abort.
-7. **Verifier** — gemini-3-flash-preview check. Skipped if all steps succeeded or past deadline. Corrective steps NOT re-validated (prevents ref corruption).
+5. **Deterministic error handlers** (only 2 kept, both reliable):
+   - Bank account not registered → ensure_bank_account + retry
+   - Duplicate product number → GET existing product by number (free GET, no write)
+6. **Fail fast** — LLM self-heal (FIX_ARGS) DISABLED. Verifier DISABLED. All other errors fail immediately for clean logs.
+   - 403 → immediate abort (wrong approach, not expired token)
+   - Price conflict prevention moved to validate_plan (strip before API call)
+   - Removed: department inject, voucher row renumber, dimension name fix, PM entitlements (all moved to validate_plan or prompt)
 
 ## Key Files
 | File | Purpose |
@@ -37,8 +41,8 @@ Scored on field-by-field correctness + API call efficiency.
 | Var | Default | Purpose |
 |-----|---------|---------|
 | `GOOGLE_API_KEY` | (required) | Gemini API key |
-| `GEMINI_MODEL` | `gemini-3-flash-preview` | Model for self-heal |
-| `GEMINI_PLANNER_MODEL` | `gemini-3-flash-preview` | Model for planner + verifier |
+| `GEMINI_MODEL` | `gemini-3-flash-preview` | Model for fallback |
+| `GEMINI_PLANNER_MODEL` | `gemini-3.1-pro-preview` | Model for planner |
 
 ## Deploying to Cloud Run
 ```bash
