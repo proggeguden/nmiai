@@ -5,7 +5,7 @@ Run with: pytest test_ml_predictor.py -v
 import numpy as np
 import pytest
 
-from ml_predictor import extract_features, NUM_FEATURES, FEATURE_NAMES, RATE_KEYS
+from ml_predictor import extract_features, NUM_FEATURES, FEATURE_NAMES, RATE_KEYS, numpy_forward, save_model, load_model
 
 
 # ---------------------------------------------------------------------------
@@ -171,3 +171,47 @@ class TestExtractFeaturesNoneRates:
         # survival is None → 0.5, expansion → 0.4, rest → 0.5
         expected = np.array([0.5, 0.4, 0.5, 0.5, 0.5], dtype=np.float32)
         np.testing.assert_array_almost_equal(result[0, 0, 13:], expected)
+
+
+def test_numpy_forward_shape():
+    """Forward pass produces H×W×6 with valid probabilities."""
+    rng = np.random.default_rng(42)
+    weights = {
+        "fc1_w": rng.standard_normal((128, 18)).astype(np.float32) * 0.1,
+        "fc1_b": np.zeros(128, dtype=np.float32),
+        "fc2_w": rng.standard_normal((64, 128)).astype(np.float32) * 0.1,
+        "fc2_b": np.zeros(64, dtype=np.float32),
+        "fc3_w": rng.standard_normal((32, 64)).astype(np.float32) * 0.1,
+        "fc3_b": np.zeros(32, dtype=np.float32),
+        "fc4_w": rng.standard_normal((6, 32)).astype(np.float32) * 0.1,
+        "fc4_b": np.zeros(6, dtype=np.float32),
+        "feat_mean": np.zeros(18, dtype=np.float32),
+        "feat_std": np.ones(18, dtype=np.float32),
+    }
+    features = rng.standard_normal((5, 5, 18)).astype(np.float32)
+    preds = numpy_forward(features, weights)
+    assert preds.shape == (5, 5, 6)
+    sums = preds.sum(axis=2)
+    np.testing.assert_allclose(sums, 1.0, atol=1e-5)
+    assert (preds >= 0).all()
+
+
+def test_save_load_model_roundtrip(tmp_path):
+    """Weights survive save/load roundtrip."""
+    weights = {
+        "fc1_w": np.ones((128, 18), dtype=np.float32),
+        "fc1_b": np.zeros(128, dtype=np.float32),
+        "fc2_w": np.ones((64, 128), dtype=np.float32),
+        "fc2_b": np.zeros(64, dtype=np.float32),
+        "fc3_w": np.ones((32, 64), dtype=np.float32),
+        "fc3_b": np.zeros(32, dtype=np.float32),
+        "fc4_w": np.ones((6, 32), dtype=np.float32),
+        "fc4_b": np.zeros(6, dtype=np.float32),
+        "feat_mean": np.zeros(18, dtype=np.float32),
+        "feat_std": np.ones(18, dtype=np.float32),
+    }
+    path = str(tmp_path / "test_weights.npz")
+    save_model(weights, path)
+    loaded = load_model(path)
+    for key in weights:
+        np.testing.assert_array_equal(weights[key], loaded[key])

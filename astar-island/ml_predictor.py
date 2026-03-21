@@ -175,3 +175,48 @@ def _compute_cell_features(initial_grid, r, c, code, H, W,
     vec[13:18] = rate_values
 
     return vec
+
+
+# ---------------------------------------------------------------------------
+# Numpy inference: forward pass, save, load
+# ---------------------------------------------------------------------------
+
+def numpy_forward(features, weights):
+    """Numpy-only MLP forward pass: Input(18) → 128 → 64 → 32 → Softmax(6).
+
+    Args:
+        features: H×W×18 float32 array
+        weights: dict with fc*_w, fc*_b, feat_mean, feat_std
+    Returns:
+        H×W×6 float64 probability array
+    """
+    H, W, F = features.shape
+    x = features.reshape(-1, F).astype(np.float64)
+
+    # Z-score normalize
+    x = (x - weights["feat_mean"].astype(np.float64)) / (weights["feat_std"].astype(np.float64) + 1e-8)
+
+    # Layer 1-3: Linear + ReLU
+    x = x @ weights["fc1_w"].astype(np.float64).T + weights["fc1_b"].astype(np.float64)
+    x = np.maximum(x, 0)
+    x = x @ weights["fc2_w"].astype(np.float64).T + weights["fc2_b"].astype(np.float64)
+    x = np.maximum(x, 0)
+    x = x @ weights["fc3_w"].astype(np.float64).T + weights["fc3_b"].astype(np.float64)
+    x = np.maximum(x, 0)
+
+    # Layer 4: Linear + Softmax
+    x = x @ weights["fc4_w"].astype(np.float64).T + weights["fc4_b"].astype(np.float64)
+    x_max = x.max(axis=1, keepdims=True)
+    exp_x = np.exp(x - x_max)
+    x = exp_x / exp_x.sum(axis=1, keepdims=True)
+
+    return x.reshape(H, W, 6)
+
+
+def save_model(weights, path):
+    np.savez(path, **weights)
+
+
+def load_model(path):
+    data = np.load(path)
+    return {key: data[key] for key in data.files}
