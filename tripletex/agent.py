@@ -38,7 +38,6 @@ def validate_plan(plan: list[dict]) -> list[dict]:
     - Auto-injects paymentTypeId/invoiceDate for /:invoice steps
     - Adds missing required fields with defaults
     - Removes conflicting fields
-    - Strips product "number" field from POST /product/list
     - Prepends GET /travelExpense/paymentType when plan has travel costs without paymentType
     - Validates enum values
     """
@@ -289,18 +288,8 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                         posting["row"] = idx + 1
                         log.info(f"Validation: added row={idx + 1} to voucher posting")
 
-        # Quick fix: strip product "number" field from POST /product or /product/list
-        if method == "POST" and path in ("/product", "/product/list"):
-            if isinstance(body, list):
-                for item in body:
-                    if isinstance(item, dict) and "number" in item:
-                        del item["number"]
-                        log.info(
-                            "Validation: stripped 'number' from product in POST /product/list"
-                        )
-            elif isinstance(body, dict) and "number" in body:
-                del body["number"]
-                log.info("Validation: stripped 'number' from POST /product body")
+        # NOTE: product "number" field is KEPT — the scoring system checks for it.
+        # Only strip if we get a duplicate-number error at runtime (deterministic fix below).
 
         # Fix fixedPrice → fixedprice on POST /project (API uses lowercase 'p')
         if method == "POST" and path == "/project" and isinstance(body, dict):
@@ -940,11 +929,6 @@ def _score_plan(plan: list[dict], prompt: str) -> float:
             if not has_emp_get:
                 score -= 10
 
-        # Penalty: product "number" field
-        if path in ("/product", "/product/list"):
-            items = body if isinstance(body, list) else [body]
-            if any("number" in item for item in items if isinstance(item, dict)):
-                score -= 15
 
     # Penalty: consecutive same-path POSTs that could use /list
     try:
@@ -1024,10 +1008,17 @@ def build_agent():
         )
 
         full_prompt = PLANNER_PROFILE["prefix"] + "\n\n" + prompt_text
-        log.info("Planner invoked", model=planner_model, prompt_length=len(full_prompt))
+        file_parts = state.get("file_content_parts", [])
+        log.info("Planner invoked", model=planner_model, prompt_length=len(full_prompt), file_parts=len(file_parts))
+
+        # Build multimodal message if files are attached
+        if file_parts:
+            planner_content = [{"type": "text", "text": full_prompt}] + file_parts
+        else:
+            planner_content = full_prompt
 
         try:
-            response = planner_llm.invoke([HumanMessage(content=full_prompt)])
+            response = planner_llm.invoke([HumanMessage(content=planner_content)])
             raw = _extract_text(response.content)
             best = _parse_plan_json(raw)
             log.info(f"Planner returned {len(best)} steps")
@@ -1039,7 +1030,7 @@ def build_agent():
         if not best:
             log.warning("Empty plan from primary model — retrying with fallback model")
             try:
-                response = heal_llm.invoke([HumanMessage(content=full_prompt)])
+                response = heal_llm.invoke([HumanMessage(content=planner_content)])
                 raw = _extract_text(response.content)
                 best = _parse_plan_json(raw)
                 log.info(f"Fallback planner returned {len(best)} steps")
@@ -1852,22 +1843,20 @@ def run_agent(agent, prompt: str, file_attachments: list = None) -> None:
       - content_base64: str (for binary files — PDFs, images)
       - mime_type: str (for binary files)
     """
-    # Build multimodal message content
+    # Build multimodal file content parts (for planner LLM calls)
+    file_content_parts = []
     if file_attachments:
-        content_parts = [{"type": "text", "text": prompt}]
         for f in file_attachments:
             if f["type"] == "text":
-                content_parts.append({"type": "text", "text": f"\n[File: {f['filename']}]\n{f['text']}"})
+                file_content_parts.append({"type": "text", "text": f"\n[File: {f['filename']}]\n{f['text']}"})
             else:
                 # Binary file (PDF, image) — pass as inline data for Gemini
                 data_url = f"data:{f['mime_type']};base64,{f['content_base64']}"
-                content_parts.append({"type": "image_url", "image_url": {"url": data_url}})
-                content_parts.append({"type": "text", "text": f"[The above is file: {f['filename']}]"})
-        message = HumanMessage(content=content_parts)
-        original_prompt = prompt  # Keep clean prompt for replan/verify context
-    else:
-        message = HumanMessage(content=prompt)
-        original_prompt = prompt
+                file_content_parts.append({"type": "image_url", "image_url": {"url": data_url}})
+                file_content_parts.append({"type": "text", "text": f"[The above is file: {f['filename']}]"})
+
+    message = HumanMessage(content=prompt)
+    original_prompt = prompt
 
     log.info("Invoking agent", prompt_length=len(prompt), files=len(file_attachments or []))
 
@@ -1880,6 +1869,7 @@ def run_agent(agent, prompt: str, file_attachments: list = None) -> None:
         "error_count": 0,
         "healed_steps": [],
         "original_prompt": original_prompt,
+        "file_content_parts": file_content_parts,
         "verification_attempts": 0,
     }
 

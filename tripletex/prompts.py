@@ -70,9 +70,9 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - **vatType OUTPUT IDs**: 3=25%, 31=15%(food), 32=12%(transport), 5=0%(exempt), 6=0%(exempt outside VAT). IDs 1,11,13 are INPUT VAT — never use on orders.
 - **Division** is required for employment (auto-injected by system)
 - **GET /invoice** REQUIRES invoiceDateFrom + invoiceDateTo params
-- **Voucher postings**: debit=positive, credit=negative, must sum to 0. Do NOT send number or voucherType.
+- **Voucher postings**: debit=positive, credit=negative, must sum to 0. Do NOT send number or voucherType. Each posting MUST include vatType:{{"id": N}} — use INPUT VAT IDs: 1=25% input, 11=15% input, 13=12% input. Expense line gets the input vatType, bank/payment line gets vatType:{{"id": 0}} (no VAT).
 - **Supplier invoice voucher**: AP (credit) posting MUST include supplier:{{"id": N}}
-- **Product**: omit "number" field (auto-gen). NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency.
+- **Product**: include "number" field when the task specifies a product number. NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency.
 - **Employee for payroll**: dateOfBirth REQUIRED. salary/transaction specifications MUST have rate, count, AND amount.
 - **Travel expenses**: costs + perDiemCompensations can be inlined in POST /travelExpense body. Each cost needs paymentType (GET /travelExpense/paymentType first).
 - **Timesheet entries**: need an activity linked to the project (POST /activity → POST /project/projectActivity). Use POST /timesheet/entry/list for bulk.

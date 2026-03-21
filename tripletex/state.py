@@ -23,4 +23,5 @@ class AgentState(TypedDict):
     error_count: int
     healed_steps: list[int]  # step numbers that already used FIX_ARGS
     original_prompt: str
+    file_content_parts: list[dict]  # multimodal file parts for planner LLM calls
     verification_attempts: int
