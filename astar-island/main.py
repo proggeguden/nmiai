@@ -212,6 +212,7 @@ def observe_seed(round_id, seed_index, height, width, max_queries,
     then any remaining queries repeat the top tiles for extra observations.
     Every allocated query MUST be used — wasting queries is never acceptable.
     """
+    import time as _time
     from predictor import STATIC_CODES
 
     observations = []
@@ -257,30 +258,31 @@ def observe_seed(round_id, seed_index, height, width, max_queries,
     print(f"  Tiles: {len(coverage_tiles)} dynamic (of {len(positions)}), "
           f"using {unique_count} coverage + {repeat_count} repeats = {max_queries} total")
 
-    # Phase 1: Cover all unique tile positions
-    for _, (x, y) in coverage_tiles[:unique_count]:
-        try:
-            result = api_client.query_seed(round_id, seed_index,
-                                           viewport_x=x, viewport_y=y,
-                                           viewport_w=vp_w, viewport_h=vp_h)
-            observations.append(result)
-        except Exception as e:
-            print(f"  Query error at ({x},{y}): {e}")
-            break
-
-    # Phase 2: Use remaining queries on highest-value tiles (extra observations)
-    remaining = max_queries - len(observations)
-    if remaining > 0 and coverage_tiles:
+    # Build full query plan: unique tiles first, then repeats of top tiles
+    query_plan = [(x, y) for _, (x, y) in coverage_tiles[:unique_count]]
+    if repeat_count > 0 and coverage_tiles:
         top_tiles = [pos for _, pos in coverage_tiles[:max(3, unique_count // 2)]]
-        for i in range(remaining):
-            x, y = top_tiles[i % len(top_tiles)]
+        for i in range(repeat_count):
+            query_plan.append(top_tiles[i % len(top_tiles)])
+
+    # Execute all queries with rate-limit retry
+    for qi, (x, y) in enumerate(query_plan):
+        for attempt in range(4):
             try:
                 result = api_client.query_seed(round_id, seed_index,
                                                viewport_x=x, viewport_y=y,
                                                viewport_w=vp_w, viewport_h=vp_h)
                 observations.append(result)
-            except Exception as e:
-                print(f"  Query error repeat ({x},{y}): {e}")
                 break
+            except Exception as e:
+                if "429" in str(e) and attempt < 3:
+                    wait = 1.5 * (attempt + 1)
+                    print(f"  Rate limited ({qi+1}/{len(query_plan)}), "
+                          f"retrying in {wait:.0f}s...")
+                    _time.sleep(wait)
+                else:
+                    print(f"  Query error ({x},{y}): {e}")
+                    break
 
+    print(f"  Completed {len(observations)}/{len(query_plan)} queries")
     return observations
