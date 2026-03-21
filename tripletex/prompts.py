@@ -29,28 +29,12 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - Single-entity responses: {{"value": {{...}}}}
 - PUT action endpoints (/:invoice, /:payment, /:send): params go in **query_params**, not body
 
-## Vocabulary (multi-language)
-- "ansatt"/"tilsett"/"empleado"/"Mitarbeiter"/"employé"/"empregado" = employee
-- "kunde"/"client"/"Kunde"/"cliente" = customer
-- "leverandør"/"proveedor"/"Lieferant"/"fournisseur"/"fornecedor" = supplier
-- "faktura"/"factura"/"Rechnung"/"facture"/"fatura" = invoice
-- "reiseregning"/"gasto de viaje"/"Reisekostenabrechnung" = travel expense
-- "prosjekt"/"proyecto"/"Projekt"/"projet"/"projeto" = project
-- "avdeling"/"departamento"/"Abteilung"/"département" = department
-- "produkt"/"vare"/"producto"/"Produkt"/"produit"/"produto" = product
-- "betaling"/"pago"/"Zahlung"/"paiement"/"pagamento" = payment
-- "kontoadministrator"/"administrator" = admin → userType="EXTENDED"
-- "forfallsdato" = due date, "fakturadato" = invoice date
-- "ordrelinje"/"línea de pedido" = order line
-- "bestilling"/"ordre"/"pedido"/"Bestellung" = order
-- "bilag"/"Beleg" = voucher
-- "konto"/"cuenta"/"Konto"/"compte" = ledger account
-- "kreditnota"/"nota de crédito"/"Gutschrift"/"avoir" = credit note
-- "timeføring"/"registrer timer" = time entry / hour logging
-- "annuler"/"kanseller"/"stornieren" = cancel/reverse
-- "nómina"/"lønn"/"Gehalt"/"salaire"/"salário" = salary/payroll
-- "prima"/"Prämie"/"bonificación" = bonus
-- "lønnsslipp"/"Gehaltsabrechnung"/"bulletin de paie" = payslip
+## CRITICAL RULES (read these first!)
+1. **ALWAYS include action steps.** Your plan MUST contain the write operations (POST/PUT) that accomplish the task. A plan with only GET steps is USELESS.
+2. **Minimize write API calls.** GET is FREE. Every write call costs points. Every 4xx error costs double.
+3. **SEARCH BEFORE CREATE.** Production accounts have pre-existing data. ALWAYS search first: GET /employee?email=X, GET /customer?organizationNumber=X, GET /product?number=X. Only POST if GET returns empty.
+4. **Extract ALL values from the task.** Names, dates, amounts, emails, org numbers — use EXACTLY what the task says. NEVER use placeholder values like dateOfBirth=1990-01-01.
+5. **BULK /list endpoints for efficiency.** When creating 2+ entities: POST /department/list (body = array). Available: /customer/list, /supplier/list, /department/list, /product/list, /employee/list, /project/list, /order/list, /contact/list, /timesheet/entry/list
 
 ## Domain Knowledge (API constraints — NOT workflow prescriptions)
 
@@ -92,6 +76,10 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - **Voucher account 2400**: Postings to account 2400 (AP/leverandorgjeld) MUST include supplier:{{"id": N}} — otherwise 422.
 - **GL error corrections**: When asked to find and correct errors in the ledger, ALWAYS first GET /ledger/posting?dateFrom=YYYY-01-01&dateTo=YYYY-12-31 to review existing postings. Use the ACTUAL counter-accounts from the postings (do NOT guess 1920). Create correction vouchers that reverse the wrong posting and create the correct one.
 - **Voucher dimension field**: On voucher postings, the accounting dimension field is `freeAccountingDimension1` (NOT freeDimension1). Use {{"id": dimension_value_id}}.
+- **Cancel/reverse payment**: 1) GET /customer by org number or name, 2) GET /invoice?customerId=N&invoiceDateFrom=2000-01-01&invoiceDateTo=2099-12-31 to find the invoice, 3) GET /invoice/paymentType, 4) PUT /invoice/ID/:payment with **negative** paidAmount to reverse the payment. The negative amount un-pays the invoice.
+- **Credit note**: 1) GET /customer, 2) GET /invoice to find the original, 3) PUT /invoice/ID/:createCreditNote with query_params date={today}, comment="Credit note". The credit note automatically reverses the invoice.
+- **Multi-VAT invoice**: Create products with the correct vatType per product. OUTPUT vatType IDs: 3=25%, 31=15%(food), 32=12%(transport), 5=0%(exempt). Set vatType on each order line matching the product's rate.
+- **Register payment on existing invoice**: 1) GET /customer by org number, 2) GET /invoice?customerId=N to find the unpaid invoice, 3) GET /invoice/paymentType, 4) PUT /invoice/ID/:payment with the invoice amount.
 
 ## ID Resolution
 - POST creates → use $step_N.value.id
@@ -100,28 +88,31 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - POST /X/list creates bulk → use $step_N.values[0].id, $step_N.values[1].id (ordered same as input array)
 - **vatType**: Order lines default to 25% output VAT. Set vatType only if the task requires a different rate. Known OUTPUT IDs: 3=25%, 31=15%, 32=12%, 5=0%, 6=0%.
 
-## Rules
-1. **ALWAYS include action steps.** Your plan MUST contain the write operations (POST/PUT) that accomplish the task. A plan with only GET steps is USELESS. If you need to discover data first, include BOTH the discovery GETs AND the action steps that use the results in a SINGLE plan.
-2. **Minimize write API calls.** GET is FREE. Every write call (POST/PUT/DELETE) costs points. Every 4xx error costs double. Plan correctly the first time.
-3. **SEARCH BEFORE CREATE.** Production accounts may have pre-existing data. ALWAYS search first: GET /employee?email=X, GET /product?number=X. Only POST if the GET returns empty.
-4. **BULK /list endpoints for efficiency.** When creating 2+ entities: POST /department/list (body = array), NOT 3× POST /department.
-   - Available: /customer/list, /supplier/list, /department/list, /product/list, /employee/list, /project/list, /order/list, /contact/list, /timesheet/entry/list
+## Additional Rules
 5. Use $step_N.value.id for POST results, $step_N.values[0].id for GET results.
 6. Bodies use **camelCase**. Reference fields: {{id: N}}. Dates: YYYY-MM-DD.
 7. POST responses contain the created object — never follow up with a GET.
 8. Paths must NOT include /v2 prefix. Use /order, not /v2/order.
 9. Use `lookup_endpoint` if you need an endpoint not listed in the catalog.
-10. **If accounts might not exist** (1209, 6700, 7798, 8700 etc.), plan a GET first and a POST /ledger/account to create it if empty.
+10. **If accounts might not exist** (1209, 6700, 7798, 8700 etc.), GET first, POST /ledger/account only if empty.
 11. **Always GET /invoice/paymentType** before any /:payment call — never hardcode paymentTypeId.
+
+## Vocabulary (multi-language)
+- "ansatt"/"tilsett"/"empleado"/"Mitarbeiter"/"employé"/"empregado" = employee
+- "kunde"/"client"/"Kunde"/"cliente" = customer / "leverandør"/"proveedor"/"Lieferant"/"fournisseur" = supplier
+- "faktura"/"factura"/"Rechnung"/"facture" = invoice / "bilag"/"Beleg" = voucher
+- "reiseregning"/"gasto de viaje" = travel expense / "prosjekt"/"proyecto"/"Projekt" = project
+- "kontoadministrator" = admin → userType="EXTENDED" / "annuler"/"kanseller"/"stornieren" = cancel/reverse
+- "nómina"/"lønn"/"Gehalt"/"salaire" = salary/payroll / "kreditnota"/"nota de crédito"/"Gutschrift" = credit note
 
 ## Solved Examples
 
 ### Example 1: Payroll
-Task: "Run payroll for Lucy Walker (lucy.walker@example.org) for this month. Base salary 480000 NOK/year, bonus 12000 NOK."
+Task: "Run payroll for Lucy Walker (lucy.walker@example.org, born 15 March 1985) for this month. Base salary 480000 NOK/year, bonus 12000 NOK."
 ```json
 [
-  {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "POST", "path": "/department", "body": {{"name": "General"}}}}, "description": "Create department"}},
-  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "POST", "path": "/employee", "body": {{"firstName": "Lucy", "lastName": "Walker", "email": "lucy.walker@example.org", "dateOfBirth": "1990-01-01", "userType": "STANDARD", "department": {{"id": "$step_1.value.id"}}}}}}, "description": "Create employee"}},
+  {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "GET", "path": "/employee", "query_params": {{"email": "lucy.walker@example.org", "count": 1}}}}, "description": "Search for existing employee by email"}},
+  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "POST", "path": "/employee", "body": {{"firstName": "Lucy", "lastName": "Walker", "email": "lucy.walker@example.org", "dateOfBirth": "1985-03-15", "userType": "STANDARD"}}}}, "description": "Create employee (use DOB from task, never placeholder)"}},
   {{"step_number": 3, "tool_name": "call_api", "args": {{"method": "POST", "path": "/employee/employment", "body": {{"employee": {{"id": "$step_2.value.id"}}, "startDate": "{today}"}}}}, "description": "Create employment"}},
   {{"step_number": 4, "tool_name": "call_api", "args": {{"method": "POST", "path": "/employee/employment/details", "body": {{"employment": {{"id": "$step_3.value.id"}}, "date": "{today}", "employmentType": "ORDINARY", "employmentForm": "PERMANENT", "remunerationType": "MONTHLY_WAGE", "workingHoursScheme": "NOT_SHIFT", "annualSalary": 480000}}}}, "description": "Set employment details"}},
   {{"step_number": 5, "tool_name": "call_api", "args": {{"method": "GET", "path": "/salary/type", "query_params": {{"number": "1000", "count": 1}}}}, "description": "Get base salary type"}},
