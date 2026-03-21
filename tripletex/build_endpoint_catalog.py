@@ -682,6 +682,68 @@ def _compact_send_exactly(send_exactly_str):
     return s
 
 
+def build_slim_catalog(spec, overrides):
+    """Build a compact catalog of only curated endpoints (~5-8K tokens).
+
+    Used in the planner prompt instead of the full TIER1_CATALOG (53K tokens).
+    Only includes endpoints from curated_overrides.yaml with their Send Exactly
+    bodies, notes, and query params. The planner uses lookup_endpoint for anything else.
+    """
+    lines = []
+    lines.append("## Curated Endpoints (use lookup_endpoint for anything not listed here)\n")
+
+    for ep_key, ep_val in overrides.items():
+        # Parse method and path
+        parts = ep_key.split(" ", 1)
+        if len(parts) != 2:
+            continue
+        method, path = parts
+
+        # Get summary from spec if available
+        summary = ""
+        method_lower = method.lower()
+        if path in spec.get("paths", {}) and method_lower in spec["paths"][path]:
+            op = spec["paths"][path][method_lower]
+            summary = op.get("summary", "").replace("\n", " ").strip()[:80]
+
+        line = f"{method} {path}"
+        if summary:
+            line += f" — {summary}"
+
+        # Send Exactly body (compact)
+        if ep_val.get("send_exactly"):
+            compact = _compact_send_exactly(ep_val["send_exactly"])
+            line += f"\n  Send: {compact}"
+
+        # Query params from spec
+        if path in spec.get("paths", {}) and method_lower in spec["paths"][path]:
+            op = spec["paths"][path][method_lower]
+            params = [p for p in op.get("parameters", []) if p.get("in") == "query"]
+            if params:
+                param_parts = []
+                for p in params[:8]:  # Limit to 8 most important params
+                    name = p["name"]
+                    req = ",REQ" if p.get("required") else ""
+                    param_parts.append(f"{name}{req}")
+                line += f"\n  Params: {', '.join(param_parts)}"
+
+        # Do not send
+        for dns in ep_val.get("do_not_send", []):
+            line += f"\n  ⊘ {dns['field']} — {dns['reason']}"
+
+        # Notes (max 2)
+        for note in ep_val.get("notes", [])[:2]:
+            line += f"\n  ! {note}"
+
+        # Prerequisites
+        for prereq in ep_val.get("prerequisites", []):
+            line += f"\n  Requires: {prereq}"
+
+        lines.append(line)
+
+    return "\n\n".join(lines)
+
+
 def build_endpoint_schemas(spec, overrides=None):
     """Build per-endpoint schema dict for self-heal context.
 
@@ -781,10 +843,14 @@ def generate_output(spec, overrides=None):
     output = '"""Auto-generated endpoint catalog from swagger.json.\n\n'
     output += 'Do not edit manually. Regenerate with: python3 build_endpoint_catalog.py\n"""\n\n'
 
-    # TIER1_CATALOG
+    # SLIM_CATALOG (curated endpoints only — for planner prompt, ~5-8K tokens)
+    slim_text = build_slim_catalog(spec, overrides)
+    output += "SLIM_CATALOG = " + repr(slim_text) + "\n\n"
+
+    # TIER1_CATALOG (kept for lookup_endpoint searches)
     output += "TIER1_CATALOG = " + repr(tier1_text) + "\n\n"
 
-    # FULL_CATALOG (tier1 + tier2)
+    # FULL_CATALOG (tier1 + tier2, for lookup_endpoint)
     output += "FULL_CATALOG = " + repr(full_text) + "\n\n"
 
     # ENDPOINT_SCHEMAS dict

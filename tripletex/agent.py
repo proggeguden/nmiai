@@ -3,7 +3,6 @@
 import json
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from typing import Any
 
@@ -1010,13 +1009,7 @@ def build_agent():
     planner_llm = ChatGoogleGenerativeAI(
         model=planner_model,
         google_api_key=api_key,
-        temperature=PLANNER_PROFILE["temperature"],
-    )
-
-    challenger_llm = ChatGoogleGenerativeAI(
-        model=heal_model,
-        google_api_key=api_key,
-        temperature=CHALLENGER_PROFILE["temperature"],
+        temperature=0,
     )
 
     heal_llm = ChatGoogleGenerativeAI(
@@ -1025,10 +1018,9 @@ def build_agent():
         temperature=0,
     )
 
-    # Legacy alias — used by placeholder resolution (no LLM needed there anymore)
     llm = heal_llm
 
-    # --- Node: planner (best-of-2 multi-agent) ---
+    # --- Node: planner (single model) ---
     def planner(state: AgentState) -> dict:
         prompt_text = PLANNER_PROMPT.format(
             today=date.today().isoformat(),
@@ -1036,50 +1028,18 @@ def build_agent():
             task=state["original_prompt"],
         )
 
-        pro_prompt = PLANNER_PROFILE["prefix"] + "\n\n" + prompt_text
-        challenger_prompt = CHALLENGER_PROFILE["prefix"] + "\n\n" + prompt_text
-        log.info("Planner invoked (best-of-2)", prompt_length=len(pro_prompt))
+        full_prompt = PLANNER_PROFILE["prefix"] + "\n\n" + prompt_text
+        log.info("Planner invoked", model=planner_model, prompt_length=len(full_prompt))
 
-        def _generate_plan(llm_instance, prompt, label):
-            try:
-                response = llm_instance.invoke([HumanMessage(content=prompt)])
-                raw = _extract_text(response.content)
-                plan = _parse_plan_json(raw)
-                log.info(f"  {label} returned {len(plan)} steps", output=raw[:500])
-                return plan
-            except Exception as e:
-                log.warning(f"  {label} failed: {e}")
-                return []
+        try:
+            response = planner_llm.invoke([HumanMessage(content=full_prompt)])
+            raw = _extract_text(response.content)
+            best = _parse_plan_json(raw)
+            log.info(f"Planner returned {len(best)} steps")
+        except Exception as e:
+            log.warning(f"Planner failed: {e}")
+            best = []
 
-        # Generate plans in parallel
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            pro_future = pool.submit(
-                _generate_plan, planner_llm, pro_prompt, f"Plan-A ({planner_model})"
-            )
-            challenger_future = pool.submit(
-                _generate_plan,
-                challenger_llm,
-                challenger_prompt,
-                f"Plan-B ({heal_model})",
-            )
-            plan_a = pro_future.result()
-            plan_b = challenger_future.result()
-
-        score_a = _score_plan(plan_a, state["original_prompt"])
-        score_b = _score_plan(plan_b, state["original_prompt"])
-        log.info(
-            f"Plan scores: A={score_a:.1f} ({len(plan_a)} steps), B={score_b:.1f} ({len(plan_b)} steps)"
-        )
-
-        # Pick winner: prefer pro plan if within 5 points
-        if score_b > score_a + 5:
-            best = plan_b
-            winner = "B (challenger)"
-        else:
-            best = plan_a
-            winner = "A (pro)"
-
-        log.info(f"Selected plan {winner}")
         best = validate_plan(best)
 
         log.info(

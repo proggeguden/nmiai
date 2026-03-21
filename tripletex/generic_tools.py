@@ -11,6 +11,7 @@ from endpoint_catalog import (
     ENDPOINT_INDEX,
     ENDPOINT_SCHEMAS,
     FULL_CATALOG,
+    SLIM_CATALOG,
     TIER1_CATALOG,
 )
 
@@ -201,8 +202,8 @@ def build_generic_tools(make_request_fn):
 
 
 def get_tier1_catalog() -> str:
-    """Get the Tier 1 endpoint catalog for the planner prompt."""
-    return TIER1_CATALOG
+    """Get the slim curated endpoint catalog for the planner prompt."""
+    return SLIM_CATALOG
 
 
 def get_endpoint_card(method: str, path: str) -> dict | None:
