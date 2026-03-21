@@ -119,7 +119,7 @@ def validate_plan(plan: list[dict]) -> list[dict]:
 
     # (A3 removed: vatType ID mapping was wrong — always let agent GET /ledger/vatType)
 
-    # ── B4: Auto-inject department for POST /employee ──
+    # ── B4: Auto-inject ensure_department for POST /employee ──
     has_employee_post = False
     employee_post_idx = None
     has_department_in_plan = False
@@ -135,7 +135,7 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             employee_post_idx = i
             if "department" in body:
                 has_department_in_plan = True
-        if method == "POST" and path == "/department":
+        if method == "POST" and ("/department" in path):
             has_department_in_plan = True
 
     if (
@@ -143,31 +143,27 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         and not has_department_in_plan
         and employee_post_idx is not None
     ):
-        # Prepend GET /department?count=1 before the employee POST
+        # Prepend ensure_department meta-step (searches first, creates if empty — never fails)
         dept_step_number = plan[employee_post_idx]["step_number"]
-        dept_step = {
-            "step_number": dept_step_number,
-            "tool_name": "call_api",
-            "args": {
-                "method": "GET",
-                "path": "/department",
-                "query_params": {"count": 1, "fields": "id"},
-            },
-            "description": "Get department for employee (required)",
-        }
-        # Renumber from employee_post_idx onward (only shift refs >= insertion point)
         for step in plan[employee_post_idx:]:
             step["step_number"] += 1
             _shift_step_refs(step, offset=1, min_step=dept_step_number)
-        plan.insert(employee_post_idx, dept_step)
-
+        plan.insert(
+            employee_post_idx,
+            {
+                "step_number": dept_step_number,
+                "tool_name": "ensure_department",
+                "args": {},
+                "description": "Ensure a department exists (required for employee)",
+            },
+        )
         # Inject department ref into employee body
         emp_step = plan[employee_post_idx + 1]
         emp_body = emp_step.get("args", {}).get("body", {})
         if isinstance(emp_body, dict) and "department" not in emp_body:
-            emp_body["department"] = {"id": f"$step_{dept_step_number}.values[0].id"}
+            emp_body["department"] = {"id": f"$step_{dept_step_number}.value.id"}
         log.info(
-            "Validation: injected GET /department step and department ref for POST /employee"
+            "Validation: injected ensure_department step for POST /employee"
         )
 
     for step in plan:
@@ -438,16 +434,13 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         if method == "PUT" and "/:invoice" in path:
             qp = args.get("query_params", {})
             if isinstance(qp, dict):
-                # STRIP paidAmount and paymentTypeId from /:invoice — payment must be a SEPARATE call
-                # Combining payment with invoice conversion causes 422 when paymentTypeId is wrong
-                if "paidAmount" in qp:
-                    del qp["paidAmount"]
-                    log.info("Validation: stripped paidAmount from /:invoice (payment must be separate)")
-                if "paidAmountCurrency" in qp:
-                    del qp["paidAmountCurrency"]
-                if "paymentTypeId" in qp:
-                    del qp["paymentTypeId"]
-                    log.info("Validation: stripped paymentTypeId from /:invoice (payment must be separate)")
+                # Strip paymentTypeId=0 (invalid) but allow valid combined invoice+payment
+                pt_id = qp.get("paymentTypeId")
+                if pt_id == 0 or pt_id == "0":
+                    # paymentTypeId=0 is invalid — strip payment fields, force separate call
+                    for f in ("paidAmount", "paidAmountCurrency", "paymentTypeId"):
+                        qp.pop(f, None)
+                    log.info("Validation: stripped paymentTypeId=0 from /:invoice (invalid, payment must be separate)")
                 if "invoiceDate" not in qp:
                     qp["invoiceDate"] = date.today().isoformat()
                     log.info("Validation: auto-injected invoiceDate for /:invoice")
@@ -865,6 +858,55 @@ def _ensure_division(call_api_tool, error_count: int) -> tuple[str, dict, int]:
             log.info(
                 f"Division created successfully (id={parsed.get('value', {}).get('id')})"
             )
+    except (json.JSONDecodeError, TypeError):
+        parsed = {"raw": create_result}
+
+    return create_result, parsed, error_count
+
+
+def _ensure_department(call_api_tool, error_count: int) -> tuple[str, dict, int]:
+    """Ensure a department exists (required for employee creation).
+
+    Searches for existing departments first; creates one if none found.
+    Returns (result_str, parsed, error_count) where parsed has {value: {id: N}}.
+    """
+    search_result = call_api_tool.invoke(
+        {
+            "method": "GET",
+            "path": "/department",
+            "query_params": {"from": 0, "count": 1, "fields": "id,name"},
+        }
+    )
+
+    try:
+        parsed = json.loads(search_result)
+        values = parsed.get("values", [])
+        if values:
+            log.info(
+                f"Department already exists: {values[0].get('name', '?')} (id={values[0].get('id')})"
+            )
+            return search_result, {"value": values[0]}, error_count
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # No departments found — create a default one
+    log.info("No departments found, creating default department")
+    create_result = call_api_tool.invoke(
+        {
+            "method": "POST",
+            "path": "/department",
+            "body": {"name": "Avdeling"},
+        }
+    )
+
+    try:
+        parsed = json.loads(create_result)
+        status = parsed.get("status", 0)
+        if isinstance(status, int) and status >= 400:
+            log.warning(f"Failed to create department: {create_result[:500]}")
+            error_count += 1
+        else:
+            log.info(f"Department created (id={parsed.get('value', {}).get('id')})")
     except (json.JSONDecodeError, TypeError):
         parsed = {"raw": create_result}
 
@@ -1349,6 +1391,29 @@ def build_agent():
                     "messages": [
                         AIMessage(
                             content=f"Step {step['step_number']} done: bank account ensured"
+                        )
+                    ],
+                }
+
+        # Handle ensure_department meta-step
+        if tool_name == "ensure_department":
+            call_api_tool = tool_map.get("call_api")
+            if call_api_tool:
+                result_str, parsed, error_count = _ensure_department(
+                    call_api_tool, error_count
+                )
+                results[f"step_{step['step_number']}"] = parsed
+                log.info(f"Step {step['step_number']} completed: department ensured")
+                completed.append(step["step_number"])
+                return {
+                    "current_step": step_idx + 1,
+                    "results": results,
+                    "completed_steps": completed,
+                    "error_count": error_count,
+                    "healed_steps": healed_steps,
+                    "messages": [
+                        AIMessage(
+                            content=f"Step {step['step_number']} done: department ensured"
                         )
                     ],
                 }
