@@ -77,6 +77,7 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - **Travel expenses**: costs + perDiemCompensations can be inlined in POST /travelExpense body. Each cost needs paymentType (GET /travelExpense/paymentType first).
 - **Timesheet entries**: need an activity linked to the project (POST /activity → POST /project/projectActivity). Use POST /timesheet/entry/list for bulk.
 - **Depreciation**: annual = cost / lifetime_years, monthly = annual / 12
+- **Custom accounting dimensions**: POST /ledger/accountingDimensionName to create dimension (e.g. "Kostsenter"). dimensionIndex is auto-assigned (1-3). Then POST /ledger/accountingDimensionValue for each value (use dimensionIndex from step response). On voucher postings, reference as freeDimension1/2/3:{{"id": value_id}}.
 
 ## ID Resolution
 - POST creates → use $step_N.value.id
