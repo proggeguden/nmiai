@@ -39,7 +39,6 @@ def validate_plan(plan: list[dict]) -> list[dict]:
     - Adds missing required fields with defaults
     - Removes conflicting fields
     - Strips product "number" field from POST /product/list
-    - Strips inline costs/perDiems from POST /travelExpense
     - Prepends GET /travelExpense/paymentType when plan has travel costs without paymentType
     - Validates enum values
     """
@@ -303,14 +302,15 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 del body["number"]
                 log.info("Validation: stripped 'number' from POST /product body")
 
-        # Quick fix: strip inline costs/perDiems from POST /travelExpense
-        if method == "POST" and path == "/travelExpense" and isinstance(body, dict):
-            for inline_field in ("costs", "perDiemCompensations"):
-                if inline_field in body:
-                    del body[inline_field]
-                    log.info(
-                        f"Validation: stripped inline '{inline_field}' from POST /travelExpense"
-                    )
+        # Fix fixedPrice → fixedprice on POST /project (API uses lowercase 'p')
+        if method == "POST" and path == "/project" and isinstance(body, dict):
+            if "fixedPrice" in body:
+                body["fixedprice"] = body.pop("fixedPrice")
+                log.info("Validation: fixed fixedPrice → fixedprice on POST /project")
+            # Ensure isFixedPrice=true when fixedprice amount is set
+            if "fixedprice" in body and not body.get("isFixedPrice"):
+                body["isFixedPrice"] = True
+                log.info("Validation: set isFixedPrice=true on POST /project")
 
         # Fix PUT /company/{id} → PUT /company (singleton endpoint, no ID in path)
         if method == "PUT" and re.match(r"^/company/\d+$", path):
@@ -946,11 +946,6 @@ def _score_plan(plan: list[dict], prompt: str) -> float:
             if any("number" in item for item in items if isinstance(item, dict)):
                 score -= 15
 
-        # Penalty: travel expense with inline costs
-        if isinstance(body, dict) and path == "/travelExpense":
-            if "costs" in body or "perDiemCompensations" in body:
-                score -= 20
-
     # Penalty: consecutive same-path POSTs that could use /list
     try:
         from endpoint_catalog import ENDPOINT_CARDS
@@ -1040,6 +1035,18 @@ def build_agent():
             log.warning(f"Planner failed: {e}")
             best = []
 
+        # Retry with fallback model if planner returned empty plan
+        if not best:
+            log.warning("Empty plan from primary model — retrying with fallback model")
+            try:
+                response = heal_llm.invoke([HumanMessage(content=full_prompt)])
+                raw = _extract_text(response.content)
+                best = _parse_plan_json(raw)
+                log.info(f"Fallback planner returned {len(best)} steps")
+            except Exception as e:
+                log.warning(f"Fallback planner also failed: {e}")
+                best = []
+
         best = validate_plan(best)
 
         log.info(
@@ -1054,7 +1061,7 @@ def build_agent():
             "results": {},
             "completed_steps": [],
             "error_count": state.get("error_count", 0),
-            "replan_count": 0,
+            "healed_steps": [],
             "messages": [AIMessage(content=f"Plan ({len(best)} steps): {json.dumps(best)}")],
         }
 
@@ -1167,7 +1174,7 @@ def build_agent():
         step_idx = state["current_step"]
         results = dict(state.get("results", {}))
         error_count = state.get("error_count", 0)
-        replan_count = state.get("replan_count", 0)
+        healed_steps = list(state.get("healed_steps", []))
         completed = list(state.get("completed_steps", []))
 
         if step_idx >= len(plan):
@@ -1199,7 +1206,7 @@ def build_agent():
                     "results": results,
                     "completed_steps": completed,
                     "error_count": error_count,
-                    "replan_count": replan_count,
+                    "healed_steps": healed_steps,
                     "messages": [
                         AIMessage(
                             content=f"Step {step['step_number']} done: bank account ensured"
@@ -1222,7 +1229,7 @@ def build_agent():
                     "results": results,
                     "completed_steps": completed,
                     "error_count": error_count,
-                    "replan_count": replan_count,
+                    "healed_steps": healed_steps,
                     "messages": [
                         AIMessage(
                             content=f"Step {step['step_number']} done: division ensured"
@@ -1251,7 +1258,7 @@ def build_agent():
                 "current_step": step_idx + 1,
                 "results": results,
                 "error_count": error_count,
-                "replan_count": replan_count,
+                "healed_steps": healed_steps,
                 "completed_steps": completed,
                 "messages": [
                     AIMessage(
@@ -1293,7 +1300,7 @@ def build_agent():
                                     "results": results,
                                     "completed_steps": completed,
                                     "error_count": error_count,
-                                    "replan_count": replan_count,
+                                    "healed_steps": healed_steps,
                                     "messages": [
                                         AIMessage(
                                             content=f"Step {step['step_number']} skipped: employee {emp_email} already exists (id={v.get('id')})"
@@ -1312,7 +1319,7 @@ def build_agent():
                 "current_step": step_idx + 1,
                 "results": results,
                 "error_count": error_count,
-                "replan_count": replan_count,
+                "healed_steps": healed_steps,
                 "completed_steps": completed,
                 "messages": [AIMessage(content=f"Error: {error_msg}")],
             }
@@ -1336,7 +1343,7 @@ def build_agent():
                 "current_step": step_idx + 1,
                 "results": results,
                 "error_count": error_count,
-                "replan_count": replan_count,
+                "healed_steps": healed_steps,
                 "completed_steps": completed,
                 "messages": [AIMessage(content=f"Error: {error_msg}")],
             }
@@ -1360,7 +1367,7 @@ def build_agent():
                 "results": results,
                 "completed_steps": completed,
                 "error_count": error_count,
-                "replan_count": replan_count,
+                "healed_steps": healed_steps,
                 "messages": [
                     AIMessage(
                         content=f"Step {step['step_number']} done: {str(parsed)[:200]}"
@@ -1370,6 +1377,26 @@ def build_agent():
 
         # API error — try deterministic fixes first, then LLM replan
         error_lower = result_str.lower() if result_str else ""
+
+        # Fatal: 403 expired/invalid proxy token — abort all remaining steps
+        if status_code == 403 and ("proxy token" in error_lower or "expired" in error_lower):
+            log.warning(
+                "FATAL: 403 expired proxy token — aborting all remaining steps to save API budget"
+            )
+            error_count += 1
+            # Mark all remaining steps as done to stop the executor
+            return {
+                "current_step": len(plan),  # skip to end
+                "results": results,
+                "completed_steps": completed,
+                "error_count": error_count,
+                "healed_steps": healed_steps,
+                "messages": [
+                    AIMessage(
+                        content="ABORTED: proxy token expired/invalid, no further API calls possible"
+                    )
+                ],
+            }
 
         # Deterministic fix: bank account not registered
         if status_code in RETRYABLE_STATUS_CODES and "bankkontonummer" in error_lower:
@@ -1397,7 +1424,7 @@ def build_agent():
                             "results": results,
                             "completed_steps": completed,
                             "error_count": error_count,
-                            "replan_count": replan_count,
+                            "healed_steps": healed_steps,
                             "messages": [
                                 AIMessage(
                                     content=f"Step {step['step_number']} done (bank account fixed): {str(parsed)[:200]}"
@@ -1447,7 +1474,7 @@ def build_agent():
                                     "results": results,
                                     "completed_steps": completed,
                                     "error_count": error_count,
-                                    "replan_count": replan_count,
+                                    "healed_steps": healed_steps,
                                     "messages": [
                                         AIMessage(
                                             content=f"Step {step['step_number']} done (department fixed)"
@@ -1491,7 +1518,7 @@ def build_agent():
                         "results": results,
                         "completed_steps": completed,
                         "error_count": error_count,
-                        "replan_count": replan_count,
+                        "healed_steps": healed_steps,
                         "messages": [
                             AIMessage(
                                 content=f"Step {step['step_number']} done (product number fixed)"
@@ -1549,7 +1576,7 @@ def build_agent():
                             "results": results,
                             "completed_steps": completed,
                             "error_count": error_count,
-                            "replan_count": replan_count,
+                            "healed_steps": healed_steps,
                             "messages": [
                                 AIMessage(
                                     content=f"Step {step['step_number']} done (price conflict fixed)"
@@ -1597,7 +1624,7 @@ def build_agent():
                                 "results": results,
                                 "completed_steps": completed,
                                 "error_count": error_count,
-                                "replan_count": replan_count,
+                                "healed_steps": healed_steps,
                                 "messages": [
                                     AIMessage(
                                         content=f"Step {step['step_number']} done (row numbering fixed)"
@@ -1608,7 +1635,7 @@ def build_agent():
                         pass
 
         # ── Self-heal: FIX_ARGS only (1 attempt, no REPLAN) ──
-        if status_code in RETRYABLE_STATUS_CODES and replan_count == 0:
+        if status_code in RETRYABLE_STATUS_CODES and step["step_number"] not in healed_steps:
             log.warning(f"API error {status_code}, attempting FIX_ARGS")
             fixed_args = _ask_llm_to_fix_args(heal_llm, resolved_args, result_str)
             if fixed_args:
@@ -1632,7 +1659,7 @@ def build_agent():
                         "results": results,
                         "completed_steps": completed,
                         "error_count": error_count,
-                        "replan_count": 1,
+                        "healed_steps": healed_steps + [step["step_number"]],
                         "messages": [AIMessage(content=f"Step {step['step_number']} done (FIX_ARGS): {str(parsed)[:200]}")],
                     }
                 else:
@@ -1653,7 +1680,7 @@ def build_agent():
             "results": results,
             "completed_steps": completed,
             "error_count": error_count,
-            "replan_count": replan_count,
+            "healed_steps": healed_steps,
             "messages": [
                 AIMessage(
                     content=f"Step {step['step_number']} failed: {str(parsed)[:200]}"
@@ -1851,7 +1878,7 @@ def run_agent(agent, prompt: str, file_attachments: list = None) -> None:
         "results": {},
         "completed_steps": [],
         "error_count": 0,
-        "replan_count": 0,
+        "healed_steps": [],
         "original_prompt": original_prompt,
         "verification_attempts": 0,
     }
@@ -1861,13 +1888,13 @@ def run_agent(agent, prompt: str, file_attachments: list = None) -> None:
     # Log final state
     completed = result.get("completed_steps", [])
     errors = result.get("error_count", 0)
-    replans = result.get("replan_count", 0)
+    healed = result.get("healed_steps", [])
     log.info(
         "Agent finished",
         completed_steps=len(completed),
         total_steps=len(result.get("plan", [])),
         errors=errors,
-        replans=replans,
+        healed_steps=len(healed),
     )
 
 
@@ -2203,8 +2230,8 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
             if isinstance(obj, list) and idx < len(obj):
                 obj = obj[idx]
             else:
-                log.debug(
-                    f"Index [{idx}] out of bounds (list length {len(obj) if isinstance(obj, list) else 'N/A'})"
+                log.warning(
+                    f"Placeholder index [{idx}] out of bounds (list has {len(obj) if isinstance(obj, list) else 0} items) for {value}"
                 )
                 return _UNRESOLVED
 

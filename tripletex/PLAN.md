@@ -1,6 +1,6 @@
 # Tripletex — Road to Perfect Score
 
-**Goal:** World-class score (correctness × efficiency). Current baseline: 26 local test prompts, efficiency-optimized planner.
+**Goal:** World-class score (correctness × efficiency). Testing via production submissions + gcloud logs.
 
 ## Status: Round 14 In Progress (2026-03-21)
 
@@ -37,31 +37,27 @@ Prompt → Best-of-2 Planner (pro t=0 vs flash t=0.3) → validate_plan() → Ex
 10. **Sandbox starts empty**: Cancel-payment tasks must create the full chain first (customer → order → invoice → pay → cancel).
 
 **Testing infrastructure:**
-11. SKIP_SELF_HEAL env var for fast local iteration (fail fast, no LLM replan)
-12. LOG_FILE captures all levels, truncated per request
-13. test_local.py randomizes emails/org numbers to avoid sandbox collisions
+11. Production-first testing via submissions + `/harvest-logs` for Cloud Run log analysis
 
 ---
 
 ## Next Steps (Priority Order)
 
 1. **TODO: ensure_vat_registered** — Add deterministic step to register company for VAT (PUT /ledger/vatSettings) when plan needs non-default vatType. Fresh accounts may be VAT_NOT_REGISTERED.
-2. **Continue local test iteration** — remaining tests: #11 (cancel payment), #19 (partial invoice), #25 (custom dimension + voucher)
-3. **Deploy and submit** — measure real scores with Round 14 fixes
-4. **Harvest logs** — analyze production errors, iterate
+2. **Deploy and submit** — measure real scores with Round 14 fixes
+3. **Harvest logs** — analyze production errors, iterate on remaining failures (#11 cancel payment, #19 partial invoice, #25 custom dimension + voucher)
 
 ---
 
-## Iteration Protocol
+## Iteration Protocol (Production-First)
 
-1. **Start server**: `LOG_FILE=test_run.log SKIP_SELF_HEAL=1 python3 -m uvicorn main:app --reload --port 8080`
-2. **Run one test**: `python3 test_local.py <ID>`
-3. **Read log**: every WARNING is an error to fix
+1. **Deploy**: `gcloud builds submit` + `gcloud run deploy`
+2. **Submit** at https://app.ainm.no/submit/tripletex
+3. **Harvest logs**: `/harvest-logs` — pull prompts + errors from Cloud Run
 4. **Fix root cause**: update curated_overrides.yaml → regenerate, or fix prompts.py/agent.py
-5. **Re-run** until clean, then move to next test
-6. **Deploy** when all tests pass
+5. **Re-deploy and re-submit** until scores improve
 
-## Test Status (Round 14)
+## Task Status (Round 14)
 
 | ID | Category | Status | Notes |
 |----|----------|--------|-------|
@@ -90,4 +86,4 @@ Prompt → Best-of-2 Planner (pro t=0 vs flash t=0.3) → validate_plan() → Ex
 | Date | Round | Correctness | Efficiency | Notes |
 |------|-------|-------------|------------|-------|
 | | R11 | | | Docs-driven prompt rewrite + deterministic error handlers |
-| 2026-03-21 | R14 | | | Curated docs integration + 15 tests passing locally |
+| 2026-03-21 | R14 | | | Curated docs integration, production-first testing |

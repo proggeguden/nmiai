@@ -33,7 +33,7 @@ Scored on field-by-field correctness + API call efficiency.
 | `prompts.py` | `PLANNER_PROMPT` (with few-shot examples), `FIX_ARGS_PROMPT`, `REPLAN_PROMPT`, `VERIFY_PROMPT`, challenger profile |
 | `swagger.json` | OpenAPI 3.0 spec (3.6MB, used by build script) |
 | `md/` | `test_prompts.json` (real prompts), `api_errors.md` (known errors) |
-| `test_local.py` | Local test harness — runs real prompts against local server |
+| `test_local.py` | Local test harness (backup — primary testing is via production submissions) |
 
 ## Tool System (generic_tools.py)
 **Two tools only:**
@@ -103,16 +103,17 @@ Submit endpoint URL at: https://app.ainm.no/submit/tripletex
 - GET fields must use parentheses not dots — validate_plan auto-fixes
 - `PUT /company` is a singleton — NO ID in path. validate_plan auto-fixes PUT /company/{id}
 
-## Iteration Workflow
-1. Run a test: `LOG_FILE=test_run.log SKIP_SELF_HEAL=1 python3 -m uvicorn main:app --reload --port 8080`, then `python3 test_local.py <ID>`
-2. Read `test_run.log` — every WARNING is an error to fix
-3. Fix root cause:
+## Iteration Workflow (Production-First)
+Testing is done through real submissions — the sandbox and production behave differently.
+
+1. **Deploy**: `gcloud builds submit --tag gcr.io/ai-nm26osl-1788/tripletex && gcloud run deploy tripletex --image gcr.io/ai-nm26osl-1788/tripletex --platform managed --region europe-west1 --allow-unauthenticated --set-env-vars GOOGLE_API_KEY=...,GEMINI_MODEL=gemini-2.5-pro`
+2. **Submit** at https://app.ainm.no/submit/tripletex
+3. **Harvest production logs**: `/harvest-logs` skill — pull prompts + errors from Cloud Run logs
+4. **Fix root cause**:
    - **API knowledge issues** → update `docs/scripts/curated_overrides.yaml`, then `python3 build_endpoint_catalog.py`
    - **Planning logic** → update playbooks in `prompts.py`
    - **Execution/validation** → update `agent.py` (validate_plan, validate_step, deterministic handlers)
-4. Re-run test until clean, move to next test
-5. Deploy: `gcloud builds submit` + `gcloud run deploy` (remove SKIP_SELF_HEAL for production)
-6. Harvest production logs: `/harvest-logs` skill
+5. **Re-deploy and re-submit** until scores improve
 
 ## Curated API Docs (integrated in Round 14)
 
@@ -132,5 +133,5 @@ All docs live in `docs/` — the external repo is no longer needed.
 - **ensure_vat_registered**: Add deterministic step to PUT /ledger/vatSettings with vatRegistrationStatus=VAT_REGISTERED when plan uses non-default vatType IDs. Fresh accounts may be VAT_NOT_REGISTERED.
 
 ## Status (Round 14, 2026-03-21)
-See `PLAN.md` for full test status and roadmap. 15/26 tests passing locally.
+See `PLAN.md` for full roadmap. Testing via production submissions + gcloud logs.
 Key Round 14 fixes: curated docs integration, separate payment from /:invoice, division ensure for payroll, correct vatType OUTPUT IDs, amountGrossCurrency on vouchers, supplier ref on AP postings.

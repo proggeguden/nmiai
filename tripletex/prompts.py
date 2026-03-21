@@ -120,7 +120,7 @@ Task: "Set a fixed price of 150000 NOK on project 'Data Migration' for customer 
 ```json
 [
   {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "POST", "path": "/customer", "body": {{"name": "Solberg AS", "organizationNumber": "123456789"}}}}, "description": "Create customer"}},
-  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "POST", "path": "/project", "body": {{"name": "Data Migration", "startDate": "{today}", "isInternal": false}}}}, "description": "Create project"}},
+  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "POST", "path": "/project", "body": {{"name": "Data Migration", "startDate": "{today}", "isInternal": false, "isFixedPrice": true, "fixedprice": 150000.0}}}}, "description": "Create fixed-price project"}},
   {{"step_number": 3, "tool_name": "call_api", "args": {{"method": "POST", "path": "/order", "body": {{"customer": {{"id": "$step_1.value.id"}}, "orderDate": "{today}", "deliveryDate": "{today}", "project": {{"id": "$step_2.value.id"}}, "orderLines": [{{"description": "Data Migration — Fixed price", "count": 1, "unitPriceExcludingVatCurrency": 150000.0}}]}}}}, "description": "Create order with fixed price"}},
   {{"step_number": 4, "tool_name": "call_api", "args": {{"method": "PUT", "path": "/order/$step_3.value.id/:invoice", "query_params": {{"invoiceDate": "{today}"}}}}, "description": "Invoice the order"}}
 ]
