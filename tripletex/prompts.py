@@ -17,10 +17,15 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 ## API Reference (common endpoints)
 {tool_summaries}
 
+## Scoring Rules
+- **GET requests are completely FREE** — they NEVER cost efficiency points. Use GET liberally to search, validate, and look up data before writing.
+- Only **write calls** (POST/PUT/DELETE) cost efficiency points.
+- Every **4xx error on a write call costs DOUBLE**. Plan writes carefully — verify with GET first.
+- Perfect correctness (all fields correct) unlocks an efficiency bonus.
+
 ## Planning Principles
-1. **Include write operations.** A plan with only GETs is useless. You MUST include POST/PUT steps that accomplish the task.
-2. **GET is free, writes cost points, errors cost double.** Minimize writes. Plan correctly the first time.
-3. **SEARCH BEFORE CREATE.** Production has pre-existing data. GET /employee?email=X, GET /customer?organizationNumber=X, GET /product?number=X first. Only POST if not found.
+1. **Include write operations.** Your plan MUST include POST/PUT steps that accomplish the task. But use as many GETs as needed — they're free.
+2. **SEARCH BEFORE CREATE.** Production has pre-existing data. GET /employee?email=X, GET /customer?organizationNumber=X, GET /product?number=X first. Only POST if not found. GETs are free, duplicate POSTs cost double.
 4. **Use bulk /list endpoints** for 2+ entities: POST /department/list, /product/list, /customer/list, etc.
 5. **Use values from the task, not defaults.** If the task says "born 13 September 1993", use "1993-09-13". If it says "hourly wage", use remunerationType "HOURLY_WAGE". If it says "admin", use userType "EXTENDED".
 6. **Use lookup_endpoint for unfamiliar endpoints** and **analyze_response** when you need to compute values from API data (e.g. "find top 3 accounts").
@@ -76,17 +81,17 @@ PLANNER_PROFILES = [
     {
         "name": "precise",
         "temperature": 0,
-        "prefix": "You are a PRECISE planner. Extract ALL values from the task — names, dates of birth, amounts, emails, org numbers, addresses. Use EXACTLY what the task says, never invent defaults. Search before creating. Minimize write calls.",
+        "prefix": "You are a PRECISE planner. GET is FREE — use it liberally to search and validate. Extract ALL values from the task — names, dates of birth, amounts, emails, org numbers, addresses. Use EXACTLY what the task says, never invent defaults. Search before creating. Minimize write calls (POST/PUT cost points, GET does not).",
     },
     {
         "name": "thorough",
         "temperature": 0.3,
-        "prefix": "You are a THOROUGH planner. Prioritize correctness over efficiency. Include EVERY field mentioned in the task. Double-check that all required API fields are set. Search before creating. Use lookup_endpoint for any endpoint you're unsure about.",
+        "prefix": "You are a THOROUGH planner. GET is FREE — add extra validation GETs for correctness. Prioritize correctness over efficiency. Include EVERY field mentioned in the task. Double-check that all required API fields are set. Search before creating. Use lookup_endpoint for any endpoint you're unsure about.",
     },
     {
         "name": "creative",
         "temperature": 0.7,
-        "prefix": "You are a CREATIVE planner. Think carefully about the best approach for this specific task. Consider alternative workflows. Use lookup_endpoint freely to discover the right endpoints. Search before creating. Don't be afraid to use more steps if it improves correctness.",
+        "prefix": "You are a CREATIVE planner. GET is FREE — search broadly before writing. Think carefully about the best approach for this specific task. Consider alternative workflows. Use lookup_endpoint freely to discover the right endpoints. Search before creating. Don't be afraid to use more GET steps to gather data.",
     },
 ]
 

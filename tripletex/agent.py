@@ -1736,13 +1736,16 @@ def build_agent():
         # ── All other errors: fail fast, log for analysis ──
 
         # Out of replans or non-retryable — record error and move on
-        log.warning(f"Step {step['step_number']} failed with status {status_code}")
+        is_get = resolved_args.get("method", "").upper() == "GET"
+        log.warning(f"Step {step['step_number']} failed with status {status_code}" + (" (GET — free, not counted)" if is_get else ""))
         try:
             parsed = json.loads(result_str)
         except (json.JSONDecodeError, TypeError):
             parsed = {"raw": result_str}
         results[f"step_{step['step_number']}"] = parsed
-        error_count += 1
+        # GET errors are FREE — don't count toward 3-error abort
+        if not is_get:
+            error_count += 1
         completed.append(step["step_number"])
         return {
             "current_step": step_idx + 1,
