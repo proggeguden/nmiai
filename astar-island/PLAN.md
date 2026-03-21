@@ -54,10 +54,14 @@
 - Round 5: 13.1 (rank 130/144) — naive predictor
 - Round 6: **78.5** (rank 28/186) — first spatial model
 - Round 7: **60.4** (rank 83/199) — harsh winter, high expansion
-- Round 8: **82.4** (rank 55/214) — best raw score, weighted=121.8
-- Round 9: submitted (score pending)
-- Leaderboard: **#55** with weighted=121.8. Top teams: ~140 weighted (~90 raw).
-- Gap to close: ~8 raw points. Weight system means R10+ at 82.4 → ~134 weighted (~rank 15).
+- Round 8: **82.4** (rank 55/214) — best raw score
+- Round 9: 8.5 (rank 205/221) — broken submission, model would have scored ~80-83
+- Round 10: **82.0** (rank 60/238) — best weighted=133.6
+- Round 11: **79.7** (rank 61/171)
+- Round 12: **59.4** (rank 38/146) — tough round (KL=0.1239 in backtest)
+- Round 13: submitted, pending score (20% survival, harsh)
+- Leaderboard: best weighted=133.6. Top teams: ~158 weighted (~87 raw on R13).
+- Gap to close: ~11 raw points. Need ~93 raw on later rounds to compete.
 
 ---
 

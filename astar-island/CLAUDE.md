@@ -111,12 +111,13 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 - Plains/forest/empty k=3 (predictable → trust observations more)
 
 **Backtest performance** (weighted KL, lower is better):
-- Rounds 1–8 avg: ~0.0457 (5-seed spatial model + temperature scaling)
-- Best: 0.022 (round 8), Worst: 0.108 (round 7, harsh winter)
-- Rounds 1–6 avg: ~0.039
+- Rounds 1–12 avg: ~0.0446
+- Best: 0.018 (R8), Worst: 0.121 (R12), 0.101 (R7)
+- Rounds 1–6 avg: ~0.038
+- Probability floor: 0.001 (optimized down from 0.003)
 
 **Settlement cluster density** (Phase 4f):
-- Binary `is_clustered` (≥2 settlements within Manhattan d≤5) added to Settlement and Plains bucket keys
+- Binary `is_clustered` (≥2 settlements within Manhattan d≤5) added to Settlement, Plains, and Forest bucket keys
 - Helps most on harsh winter rounds (R7: 0.147→0.142)
 
 **Settlement stats extraction** (Phase 4g):
@@ -132,10 +133,11 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 
 **Known issues**:
 - Plains cells are largest error source (~60% of KL loss)
-- R7 is 2.5x worse than any other round (KL 0.108) despite similar forward rates to R1
+- R7 and R12 are 2-3x worse than other rounds (KL ~0.10-0.12) — moderate expansion rounds
 - Within-bucket variance is the dominant remaining error source
 - Forward model doesn't improve on data-driven bucket model
 - Post-model adjustments have diminishing returns — need better features for next step change
+- Gap to top teams: ~11 raw points (we score ~82, top teams ~93)
 
 See `PLAN.md` for error analysis, improvement roadmap, and round-by-round changelog.
 
