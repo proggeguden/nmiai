@@ -54,14 +54,17 @@
 - Round 5: 13.1 (rank 130/144) — naive predictor
 - Round 6: **78.5** (rank 28/186) — first spatial model
 - Round 7: **60.4** (rank 83/199) — harsh winter, high expansion
-- Round 8: **82.4** (rank 55/214) — best raw score
-- Round 9: 8.5 (rank 205/221) — broken submission, model would have scored ~80-83
-- Round 10: **82.0** (rank 60/238) — best weighted=133.6
+- Round 8: **82.4** (rank 55/214)
+- Round 9: 8.5 (rank 205/221) — broken submission
+- Round 10: **82.0** (rank 60/238)
 - Round 11: **79.7** (rank 61/171)
-- Round 12: **59.4** (rank 38/146) — tough round (KL=0.1239 in backtest)
-- Round 13: submitted, pending score (20% survival, harsh)
-- Leaderboard: best weighted=133.6. Top teams: ~158 weighted (~87 raw on R13).
-- Gap to close: ~11 raw points. Need ~93 raw on later rounds to compete.
+- Round 12: **59.4** (rank 38/146) — tough round
+- Round 13: **73.2** (rank 126/186)
+- Round 14: **74.1** (rank 71/244) — degraded by accidental resubmission
+- Round 15: **86.1** (rank 97/262) — best raw score ever, weighted=179.0
+- Round 16: submitted with k-boost fix, pending score
+- Leaderboard: best weighted=179.0. Top teams: ~196 weighted.
+- Gap to close: ~6-8 raw points. Need ~90 raw on later rounds to compete.
 
 ---
 
@@ -282,7 +285,8 @@ All 4 priority items implemented and submitted:
 | R12 | 59.4 | 38/146 | 0.165 | 0.112 |
 | R13 | 73.2 | 126/186 | 0.104 | 0.024 |
 | R14 | 74.1 | 71/244 | 0.082 | 0.047 |
-| R15 | pending | — | — | — |
+| R15 | 86.1 | 97/262 | 0.050 | 0.022 |
+| R16 | pending | — | — | — |
 
 ### R14 analysis and expansion modulation fix (2026-03-21 afternoon)
 
@@ -310,6 +314,44 @@ All 4 priority items implemented and submitted:
 **Query bug fixed:** observe_seed now uses ALL allocated queries (coverage + repeats of top tiles) with rate-limit retry on 429 errors. Never waste queries.
 
 **R15 submitted** with all fixes. Survival=34.6%, 60 spatial buckets, 50/50 queries used.
+
+### R15 scored 86.1 (rank 97/262) — best raw score ever (2026-03-21)
+
+**R15 analysis revealed per-cell blending as dominant error source:**
+- Ruin over-predicted by 20pp on Plains near settlements (pred 21% vs GT 0.5%)
+- Settlement over-predicted by 30pp on Forest near settlements (pred 49% vs GT 18%)
+- Root cause: with 50 queries, most cells get 1-2 observations. Per-cell blending with k=3 gives a single outlier 25% weight → wildly inflated rare-class predictions.
+- Survival/expansion rate estimates too noisy from 50 queries (estimated 33% survival vs 9.4% GT) — rate-dependent fixes don't trigger.
+
+**Fix: sparse observation k-boost**
+- For Plains/Forest/Empty cells with ≤2 observations: k *= 3.0 (k=3→9)
+- Trusts the bucket model more when per-cell data is unreliable
+- SimProd backtest (5 runs, 15 rounds): **-10.9% avg KL, 15/15 rounds improved, zero regressions**
+
+**R16 submitted** with k-boost fix. Survival=30.8%, 58 spatial buckets, 50/50 queries used.
+
+**Further iteration (2026-03-21 evening):**
+- Graduated k-boost (k*4/n continuous) ➖: Marginal (<0.5%) improvement, within noise. Current k*3 binary threshold is already near-optimal.
+- Skip-1-obs blending ➖: Marginal on most rounds, regressed on R14. Single obs still provides some signal via blending.
+- Viewport size tuning: Analysis showed 15×15 (max) is optimal — smaller viewports need more tiles than 10-query budget allows.
+- **Conclusion**: Per-cell blending is now well-tuned. Remaining oracle→sim-prod gap (26%) comes from spatial bucket coverage limits with 50 queries.
+
+### Deep research sprint (2026-03-21 evening)
+
+**Gap analysis** identified 3 mechanisms driving the 26% oracle→sim-prod gap:
+1. Discrete sampling noise in bucket distributions (63.3%) — structural, hard to fix
+2. **Expansion rate estimator broken** (36.7%) — estimate_expansion_rate() divided by obs_count not cell_count, hit 0.50 clamp on every round (true rates: 0.13-0.28)
+3. Per-cell blending noise (7.8%) — partially fixed by k-boost
+
+**Expansion rate fix**: Changed `new_settlements / obs_count / avg_initial` to `new_settlements / observed_non_settlement`. SimProd -6.1% avg KL. 13/15 rounds improved, R7/R12 regressed (extreme rounds where accidental over-boost helped).
+
+**Tested and rejected:**
+- Ensemble predictions (3 k-configs averaged) ➖: Zero effect — configs too similar, bucket model dominates
+- Adaptive two-phase queries ❌: 60/40 split reduced coverage, KL regressed -19% on R15
+- Historical round prior ❌: Cross-round averaging adds noise since hidden params differ per round
+- Neural network predictor: NO-GO — only 16 independent rounds, bucket model already captures what NN would learn, hidden param variation makes generalization unreliable
+
+**Combined improvements this session**: baseline 0.0603 → k-boost 0.0537 (-10.9%) → expansion fix 0.0504 (-6.1%) = **total -16.4% improvement**.
 
 ---
 
