@@ -282,7 +282,8 @@ All 4 priority items implemented and submitted:
 | R12 | 59.4 | 38/146 | 0.165 | 0.112 |
 | R13 | 73.2 | 126/186 | 0.104 | 0.024 |
 | R14 | 74.1 | 71/244 | 0.082 | 0.047 |
-| R15 | pending | — | — | — |
+| R15 | 86.1 | 97/262 | 0.050 | 0.022 |
+| R16 | pending | — | — | — |
 
 ### R14 analysis and expansion modulation fix (2026-03-21 afternoon)
 
@@ -310,6 +311,21 @@ All 4 priority items implemented and submitted:
 **Query bug fixed:** observe_seed now uses ALL allocated queries (coverage + repeats of top tiles) with rate-limit retry on 429 errors. Never waste queries.
 
 **R15 submitted** with all fixes. Survival=34.6%, 60 spatial buckets, 50/50 queries used.
+
+### R15 scored 86.1 (rank 97/262) — best raw score ever (2026-03-21)
+
+**R15 analysis revealed per-cell blending as dominant error source:**
+- Ruin over-predicted by 20pp on Plains near settlements (pred 21% vs GT 0.5%)
+- Settlement over-predicted by 30pp on Forest near settlements (pred 49% vs GT 18%)
+- Root cause: with 50 queries, most cells get 1-2 observations. Per-cell blending with k=3 gives a single outlier 25% weight → wildly inflated rare-class predictions.
+- Survival/expansion rate estimates too noisy from 50 queries (estimated 33% survival vs 9.4% GT) — rate-dependent fixes don't trigger.
+
+**Fix: sparse observation k-boost**
+- For Plains/Forest/Empty cells with ≤2 observations: k *= 3.0 (k=3→9)
+- Trusts the bucket model more when per-cell data is unreliable
+- SimProd backtest (5 runs, 15 rounds): **-10.9% avg KL, 15/15 rounds improved, zero regressions**
+
+**R16 submitted** with k-boost fix. Survival=30.8%, 58 spatial buckets, 50/50 queries used.
 
 ---
 
