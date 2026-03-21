@@ -253,7 +253,18 @@ def main():
                         help="Use ArcFace angular margin loss instead of softmax CE")
     parser.add_argument("--aggressive-aug", action="store_true",
                         help="Use aggressive domain augmentation for robustness to store variation")
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="Override number of training epochs (default: 80)")
+    parser.add_argument("--model", type=str, default="efficientnet_b2",
+                        help="timm model name (default: efficientnet_b2)")
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Override batch size (default: 192)")
     args = parser.parse_args()
+
+    if args.epochs is not None:
+        NUM_EPOCHS = args.epochs
+    if args.batch_size is not None:
+        BATCH_SIZE = args.batch_size
 
     manifest_path = CROPS_DIR / "manifest.json"
     if not manifest_path.exists():
@@ -329,15 +340,18 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_arcface = args.arcface
 
+    model_name = args.model
+    print(f"Using model: {model_name}")
+
     if use_arcface:
         print(f"Using ArcFace loss (margin={ARCFACE_MARGIN}, scale={ARCFACE_SCALE}, "
               f"embedding_dim={ARCFACE_EMBEDDING_DIM})")
-        backbone = timm.create_model("efficientnet_b2", pretrained=True, num_classes=num_classes)
+        backbone = timm.create_model(model_name, pretrained=True, num_classes=num_classes)
         model = ArcFaceModel(backbone, num_classes, embedding_dim=ARCFACE_EMBEDDING_DIM)
         model = model.to(device)
         criterion = nn.CrossEntropyLoss(label_smoothing=LABEL_SMOOTHING)
     else:
-        model = timm.create_model("efficientnet_b2", pretrained=True, num_classes=num_classes)
+        model = timm.create_model(model_name, pretrained=True, num_classes=num_classes)
         model = model.to(device)
         criterion = nn.CrossEntropyLoss(label_smoothing=LABEL_SMOOTHING)
 

@@ -105,11 +105,11 @@ gcloud compute instances delete nmiai-train-multiclass --zone=europe-west1-c --p
 ## Current Results
 | Metric | Value |
 |--------|-------|
-| **Competition score (test)** | **0.9143 (#13)** |
-| **Competition score (local val)** | **0.9408** |
-| Detection mAP@0.5 (category-ignored) | 0.949 |
-| Classification mAP@0.5 (per-category) | 0.922 |
-| Categories with AP=0 in val | 10 |
+| **Competition score (test)** | **0.9199 (#7)** |
+| **Competition score (local val)** | **0.9541** |
+| Detection mAP@0.5 (category-ignored) | 0.960 |
+| Classification mAP@0.5 (per-category) | 0.941 |
+| Categories with AP=0 in val | 5 |
 | Categories with NO val data | 134 |
 
 ### Known Weaknesses
@@ -122,9 +122,9 @@ gcloud compute instances delete nmiai-train-multiclass --zone=europe-west1-c --p
 | File | Size | Purpose |
 |------|------|---------|
 | detector.onnx | 167MB | YOLOv8l single-class detection |
-| classifier.onnx | 31MB | EfficientNet-B2 letterbox, dual-output (logits + features) |
+| classifier.onnx | 115MB | Dual-backbone: EfficientNet-B2 + DINOv2-ViT-S (4 outputs) |
 | multiclass_detector.onnx | 100MB | YOLOv8m multi-class for WBF |
-| **Total** | **298MB** | < 420MB limit ✓ |
+| **Total** | **382MB** | < 420MB limit ✓ |
 
 ## Dependencies
 ```

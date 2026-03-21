@@ -11,14 +11,27 @@ ROOT = Path(__file__).parent
 RUN_PY = ROOT / "run.py"
 
 CONFIGS = [
-    ("baseline",       {"USE_SOFT_NMS": "False", "USE_TTA": "False", "SCORE_CLS_POWER": "1.0"}),
-    ("tta_only",       {"USE_SOFT_NMS": "False", "USE_TTA": "True",  "SCORE_CLS_POWER": "1.0"}),
-    ("tta+sqrt",       {"USE_SOFT_NMS": "False", "USE_TTA": "True",  "SCORE_CLS_POWER": "0.5"}),
-    ("tta+pow07",      {"USE_SOFT_NMS": "False", "USE_TTA": "True",  "SCORE_CLS_POWER": "0.7"}),
-    ("softnms_only",   {"USE_SOFT_NMS": "True",  "USE_TTA": "False", "SCORE_CLS_POWER": "1.0",
-                        "SOFT_NMS_THRESH": "0.05"}),
-    ("softnms+tta",    {"USE_SOFT_NMS": "True",  "USE_TTA": "True",  "SCORE_CLS_POWER": "1.0",
-                        "SOFT_NMS_THRESH": "0.05"}),
+    # Baseline: current best config
+    ("current",        {"SCORE_CLS_POWER": "0.7", "DINO_WEIGHT": "0.5",
+                        "WBF_TWO_STAGE_WEIGHT": "0.5", "WBF_MULTICLASS_WEIGHT": "0.5",
+                        "DET_CONF": "0.10"}),
+    # DINOv2 weight sweep
+    ("dino_0.3",       {"DINO_WEIGHT": "0.3"}),
+    ("dino_0.7",       {"DINO_WEIGHT": "0.7"}),
+    # WBF weight sweep (favor two-stage)
+    ("wbf_6_4",        {"WBF_TWO_STAGE_WEIGHT": "0.6", "WBF_MULTICLASS_WEIGHT": "0.4"}),
+    ("wbf_7_3",        {"WBF_TWO_STAGE_WEIGHT": "0.7", "WBF_MULTICLASS_WEIGHT": "0.3"}),
+    # Score power sweep
+    ("pow_0.5",        {"SCORE_CLS_POWER": "0.5"}),
+    ("pow_0.6",        {"SCORE_CLS_POWER": "0.6"}),
+    ("pow_0.8",        {"SCORE_CLS_POWER": "0.8"}),
+    ("pow_0.9",        {"SCORE_CLS_POWER": "0.9"}),
+    # Detection confidence
+    ("conf_0.05",      {"DET_CONF": "0.05"}),
+    ("conf_0.15",      {"DET_CONF": "0.15"}),
+    ("conf_0.20",      {"DET_CONF": "0.20"}),
+    # No WBF (two-stage only)
+    ("no_wbf",         {"USE_WBF": "False"}),
 ]
 
 

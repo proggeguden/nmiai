@@ -32,14 +32,19 @@ MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
 
 
+DINO_IMG_SIZE = 252  # DINOv2 needs input divisible by 14 (patch size)
+
+
 class DualBackboneClassifier(nn.Module):
     """Combined EfficientNet-B2 + DINOv2-ViT-S classifier.
 
-    Single input → four outputs:
+    Single input (260×260) → four outputs:
       - effnet_logits: EfficientNet classification logits
       - effnet_features: EfficientNet penultimate features (for kNN)
       - dino_logits: DINOv2 classification logits
       - dino_features: DINOv2 features (for kNN)
+
+    DINOv2 internally resizes 260→252 (must be divisible by patch size 14).
     """
     def __init__(self, effnet_model, dino_model):
         super().__init__()
@@ -51,7 +56,7 @@ class DualBackboneClassifier(nn.Module):
         self.effnet_feat_dim = effnet_model.classifier.in_features
 
     def forward(self, x):
-        # EfficientNet path
+        # EfficientNet path (260×260)
         eff_features = self.effnet.forward_features(x)
         eff_features = self.effnet.global_pool(eff_features)
         if isinstance(eff_features, tuple):
@@ -59,8 +64,11 @@ class DualBackboneClassifier(nn.Module):
         eff_features = eff_features.view(eff_features.size(0), -1)
         eff_logits = self.effnet.classifier(eff_features)
 
-        # DINOv2 path
-        dino_features = self.dino_backbone(x)
+        # DINOv2 path (resize 260→252 for patch size compatibility)
+        x_dino = torch.nn.functional.interpolate(
+            x, size=(DINO_IMG_SIZE, DINO_IMG_SIZE), mode="bilinear", align_corners=False
+        )
+        dino_features = self.dino_backbone(x_dino)
         dino_logits = self.dino_head(dino_features)
 
         return eff_logits, eff_features, dino_logits, dino_features
@@ -81,10 +89,15 @@ def load_dino_model(num_classes, device):
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Get num_classes from manifest
-    with open(CROPS_DIR / "manifest.json") as f:
-        manifest = json.load(f)
-    num_classes = manifest["num_categories"]
+    # Get num_classes from manifest (or default to 356)
+    manifest_path = CROPS_DIR / "manifest.json"
+    if manifest_path.exists():
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+        num_classes = manifest["num_categories"]
+    else:
+        num_classes = 356
+        manifest = None
     print(f"Classes: {num_classes}")
 
     # Load EfficientNet-B2
@@ -129,53 +142,57 @@ def main():
     onnx_mb = onnx_path.stat().st_size / (1024 * 1024)
     print(f"Exported to {onnx_path} ({onnx_mb:.1f} MB)")
 
-    # Also precompute DINOv2 embeddings for kNN
-    print("\nPrecomputing DINOv2 embeddings...")
-    from torchvision import transforms
-    from PIL import Image
+    # Precompute DINOv2 embeddings for kNN (only if crops data available)
+    emb_mb = 0
+    if manifest is not None and CROPS_DIR.exists():
+        print("\nPrecomputing DINOv2 embeddings...")
+        from torchvision import transforms
+        from PIL import Image
 
-    transform = transforms.Compose([
-        transforms.Resize(int(IMG_SIZE * 1.1)),
-        transforms.CenterCrop(IMG_SIZE),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=MEAN, std=STD),
-    ])
+        transform = transforms.Compose([
+            transforms.Resize(int(IMG_SIZE * 1.1)),
+            transforms.CenterCrop(IMG_SIZE),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=MEAN, std=STD),
+        ])
 
-    all_embeddings = []
-    all_labels = []
-    batch_imgs = []
-    batch_labels = []
+        all_embeddings = []
+        all_labels = []
+        batch_imgs = []
+        batch_labels = []
 
-    for i, crop in enumerate(manifest["crops"]):
-        img_path = CROPS_DIR / crop["path"]
-        if not img_path.exists():
-            continue
-        img = Image.open(img_path).convert("RGB")
-        tensor = transform(img)
-        batch_imgs.append(tensor)
-        batch_labels.append(crop["category_id"])
+        for i, crop in enumerate(manifest["crops"]):
+            img_path = CROPS_DIR / crop["path"]
+            if not img_path.exists():
+                continue
+            img = Image.open(img_path).convert("RGB")
+            tensor = transform(img)
+            batch_imgs.append(tensor)
+            batch_labels.append(crop["category_id"])
 
-        if len(batch_imgs) >= 128 or i == len(manifest["crops"]) - 1:
-            batch = torch.stack(batch_imgs).to(device)
-            with torch.no_grad():
-                _, _, _, dino_feats = dual(batch)
-            all_embeddings.append(dino_feats.cpu().numpy())
-            all_labels.extend(batch_labels)
-            batch_imgs = []
-            batch_labels = []
+            if len(batch_imgs) >= 128 or i == len(manifest["crops"]) - 1:
+                batch = torch.stack(batch_imgs).to(device)
+                with torch.no_grad():
+                    _, _, _, dino_feats = dual(batch)
+                all_embeddings.append(dino_feats.cpu().numpy())
+                all_labels.extend(batch_labels)
+                batch_imgs = []
+                batch_labels = []
 
-    embeddings = np.concatenate(all_embeddings, axis=0)
-    labels = np.array(all_labels, dtype=np.float32)
+        embeddings = np.concatenate(all_embeddings, axis=0)
+        labels = np.array(all_labels, dtype=np.float32)
 
-    # L2 normalize
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    embeddings = embeddings / (norms + 1e-8)
+        # L2 normalize
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        embeddings = embeddings / (norms + 1e-8)
 
-    packed = np.concatenate([labels.reshape(-1, 1), embeddings], axis=1).astype(np.float32)
-    emb_path = SAVE_DIR / "embeddings.npy"
-    np.save(emb_path, packed)
-    emb_mb = emb_path.stat().st_size / (1024 * 1024)
-    print(f"Saved embeddings to {emb_path} ({emb_mb:.1f} MB)")
+        packed = np.concatenate([labels.reshape(-1, 1), embeddings], axis=1).astype(np.float32)
+        emb_path = SAVE_DIR / "embeddings.npy"
+        np.save(emb_path, packed)
+        emb_mb = emb_path.stat().st_size / (1024 * 1024)
+        print(f"Saved embeddings to {emb_path} ({emb_mb:.1f} MB)")
+    else:
+        print("\nSkipping embeddings (no crops data available)")
 
     # Summary
     total = onnx_mb + emb_mb + 167 + 100  # detector + multiclass

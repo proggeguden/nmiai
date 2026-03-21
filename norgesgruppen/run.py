@@ -30,9 +30,9 @@ DET_MAX_DET = 500
 NUM_CLASSES = 356
 
 # WBF ensemble settings
-USE_WBF = True            # fuse two-stage + multi-class predictions
-WBF_TWO_STAGE_WEIGHT = 0.5
-WBF_MULTICLASS_WEIGHT = 0.5
+USE_WBF = True
+WBF_TWO_STAGE_WEIGHT = 0.7
+WBF_MULTICLASS_WEIGHT = 0.3
 WBF_IOU_THRESH = 0.5
 WBF_SKIP_BOX_THRESH = 0.01
 
@@ -66,6 +66,9 @@ USE_TTA = True
 # Score formula: final_score = det_conf * cls_conf^SCORE_CLS_POWER
 # 1.0 = original multiplicative, 0.7 = best from sweep
 SCORE_CLS_POWER = 0.7
+
+# DINOv2 ensemble weight (if dual-backbone classifier)
+DINO_WEIGHT = 0.5
 
 
 def create_session(path):
@@ -576,7 +579,7 @@ def main():
         if has_dino and all_dino_logits:
             dino_logits = np.concatenate(all_dino_logits, axis=0)
             dino_probs = softmax(dino_logits, axis=1)
-            cls_probs = 0.5 * cls_probs + 0.5 * dino_probs
+            cls_probs = (1 - DINO_WEIGHT) * cls_probs + DINO_WEIGHT * dino_probs
 
         if has_features and all_features:
             all_features_cat = np.concatenate(all_features, axis=0)
