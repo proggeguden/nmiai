@@ -1394,6 +1394,116 @@ def build_prediction(height, width, initial_grid, observations,
     return predictions
 
 
+def build_prediction_ml(height, width, initial_grid, observations,
+                        ml_weights, rates=None,
+                        spatial_obs=None):
+    """Build a H×W×6 probability tensor using an ML model for base predictions.
+
+    Uses extract_features() + numpy_forward() from ml_predictor for base
+    predictions instead of the bucket spatial model, then applies the same
+    per-cell observation blending and probability floor as build_prediction().
+
+    Parameters
+    ----------
+    height, width : int
+        Grid dimensions.
+    initial_grid : list[list[int]]
+        H×W initial terrain codes.
+    observations : list[dict]
+        Viewport observations from simulate queries.
+    ml_weights : dict
+        Loaded ML model weights (from ml_predictor.load_model).
+    rates : dict | None
+        Round-level rate estimates with keys: survival, expansion,
+        port_formation, forest_reclamation, ruin.  None → default 0.5.
+    spatial_obs : dict | None
+        Bucket → observation count mapping from learn_spatial_transition_model.
+        Used only for k-confidence scaling in per-cell blending.
+    """
+    from ml_predictor import extract_features, numpy_forward
+
+    # Step 1: Base predictions from ML model
+    features = extract_features(initial_grid, rates=rates)
+    predictions = numpy_forward(features, ml_weights)  # H×W×6 float64
+
+    # Override static cells with deterministic predictions
+    # Ocean (code 10) → Empty class (0), Mountain (code 5) → Mountain class (5)
+    for r in range(height):
+        for c in range(width):
+            code = initial_grid[r][c]
+            if code in STATIC_CODES:
+                predictions[r, c] = 0.0
+                predictions[r, c, terrain_code_to_class(code)] = 1.0
+
+    # Step 1b: Compute feature map only if needed for k-confidence scaling
+    fmap = None
+    if spatial_obs:
+        fmap, _, _ = compute_feature_map(initial_grid)
+
+    # Step 2: Blend per-cell observations (for directly observed cells)
+    if observations:
+        cell_counts = np.zeros((height, width, NUM_CLASSES), dtype=np.float64)
+        cell_obs_count = np.zeros((height, width), dtype=np.float64)
+
+        for obs in observations:
+            vp = obs["viewport"]
+            grid = obs["grid"]
+            vp_x, vp_y = vp["x"], vp["y"]
+            vp_h = len(grid)
+            vp_w = len(grid[0]) if vp_h > 0 else 0
+
+            for dr in range(vp_h):
+                for dc in range(vp_w):
+                    r = vp_y + dr
+                    c = vp_x + dc
+                    if 0 <= r < height and 0 <= c < width:
+                        cls = terrain_code_to_class(grid[dr][dc])
+                        cell_counts[r, c, cls] += 1
+                        cell_obs_count[r, c] += 1
+
+        observed_mask = cell_obs_count > 0
+        if observed_mask.any():
+            cell_totals = cell_obs_count[..., np.newaxis]
+            cell_probs = np.zeros_like(cell_counts)
+            np.divide(cell_counts, cell_totals, out=cell_probs,
+                      where=(cell_totals > 0))
+
+            # Adaptive k per terrain type, scaled by spatial model confidence
+            # and observation sparsity (prevent single-outlier distortion)
+            k_grid = np.full((height, width), K_DEFAULT)
+            for r in range(height):
+                for c in range(width):
+                    base_k = K_PER_CODE.get(initial_grid[r][c], K_DEFAULT)
+                    # Scale k up when spatial model has many observations (trust model more)
+                    if spatial_obs and fmap and fmap[r][c] in spatial_obs:
+                        bucket_n = spatial_obs[fmap[r][c]]
+                        confidence_scale = 1.0 + 0.5 * min(bucket_n / 100.0, 3.0)
+                        base_k *= confidence_scale
+                    # Boost k for sparsely-observed non-settlement cells.
+                    # With 1-2 observations, a single outlier (e.g., Ruin on Plains)
+                    # gets 25% weight → wildly inflated rare-class predictions.
+                    # Higher k trusts the ML model more for these cells.
+                    n_obs = cell_obs_count[r, c]
+                    if n_obs <= 2 and initial_grid[r][c] in (0, 11, 4):
+                        base_k *= 3.0  # k=9 for Plains/Forest/Empty with ≤2 obs
+                    k_grid[r, c] = base_k
+
+            alpha = cell_obs_count / (cell_obs_count + k_grid)
+            alpha = alpha[..., np.newaxis]
+
+            for r in range(height):
+                for c in range(width):
+                    if observed_mask[r, c] and initial_grid[r][c] not in STATIC_CODES:
+                        predictions[r, c] = (
+                            alpha[r, c, 0] * cell_probs[r, c]
+                            + (1 - alpha[r, c, 0]) * predictions[r, c]
+                        )
+
+    # Step 3: Apply probability floor
+    predictions = apply_floor(predictions)
+    return predictions
+
+
 def apply_floor(predictions, floor=PROB_FLOOR):
     """Enforce minimum probability floor and renormalize."""
     for _ in range(5):

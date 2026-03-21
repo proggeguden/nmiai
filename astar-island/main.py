@@ -16,12 +16,25 @@ from typing import Optional
 
 load_dotenv()
 
+import os
+
 import api_client
 from predictor import (
-    build_prediction, predictions_to_list, validate_predictions,
+    build_prediction, build_prediction_ml,
+    predictions_to_list, validate_predictions,
     learn_spatial_transition_model, estimate_survival_rate, estimate_all_rates,
     extract_settlement_stats, estimate_expansion_rate, estimate_port_formation_rate,
 )
+
+# ML model: load weights at startup if available
+ML_WEIGHTS = None
+ML_WEIGHTS_PATH = os.path.join(os.path.dirname(__file__), "model_weights.npz")
+if os.path.exists(ML_WEIGHTS_PATH):
+    from ml_predictor import load_model
+    ML_WEIGHTS = load_model(ML_WEIGHTS_PATH)
+    print(f"ML model loaded from {ML_WEIGHTS_PATH}")
+else:
+    print(f"ML model not found at {ML_WEIGHTS_PATH}, using bucket model")
 
 app = FastAPI()
 
@@ -163,6 +176,9 @@ def run_pipeline(round_id):
         print(f"  {bucket}: {top_str}")
 
     # 4. Predict and submit for all seeds
+    use_ml = ML_WEIGHTS is not None
+    print(f"\nPrediction model: {'ML' if use_ml else 'bucket'}")
+
     results = []
     for seed_idx in range(seeds_count):
         print(f"\n--- Predicting seed {seed_idx} ---")
@@ -171,15 +187,23 @@ def run_pipeline(round_id):
         # Pass this seed's observations for per-cell blending
         seed_obs = seed_observations.get(seed_idx, [])
 
-        pred = build_prediction(height, width, initial_grid, seed_obs,
-                                transition_model=global_model,
-                                spatial_model=spatial_model,
-                                survival_rate=survival_rate,
-                                settlement_stats=settlement_stats,
-                                spatial_obs=spatial_obs,
-                                expansion_rate=expansion_rate,
-                                port_formation_rate=port_formation_rate,
-                                mc_rates=forward_rates)
+        if use_ml:
+            pred = build_prediction_ml(
+                height, width, initial_grid, seed_obs,
+                ml_weights=ML_WEIGHTS,
+                rates=forward_rates,
+                spatial_obs=spatial_obs,
+            )
+        else:
+            pred = build_prediction(height, width, initial_grid, seed_obs,
+                                    transition_model=global_model,
+                                    spatial_model=spatial_model,
+                                    survival_rate=survival_rate,
+                                    settlement_stats=settlement_stats,
+                                    spatial_obs=spatial_obs,
+                                    expansion_rate=expansion_rate,
+                                    port_formation_rate=port_formation_rate,
+                                    mc_rates=forward_rates)
         pred_list = predictions_to_list(pred)
         validate_predictions(pred_list, height, width)
 
