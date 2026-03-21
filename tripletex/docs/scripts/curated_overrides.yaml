@@ -1,0 +1,409 @@
+# Curated overrides for cheat sheet generation.
+# Everything here is human/agent knowledge that can't be derived from the OpenAPI spec.
+# This file survives spec regeneration.
+#
+# send_exactly: A JSON string showing the MINIMAL correct body to send.
+#               When present, this replaces the spec-derived "Send Exactly" section.
+
+order:
+  "POST /order":
+    prerequisites:
+      - "Customer must exist (need customer.id)"
+    send_exactly: |
+      {
+        "customer": {"id": <int>},
+        "orderDate": "YYYY-MM-DD",
+        "deliveryDate": "YYYY-MM-DD",
+        "orderLines": [
+          {
+            "description": "<string>",
+            "count": <number>,
+            "unitPriceExcludingVatCurrency": <number>
+          }
+        ]
+      }
+    do_not_send:
+      - field: "unitPriceIncludingVatCurrency on orderLines"
+        reason: "conflicts with unitPriceExcludingVatCurrency — send only ONE"
+      - field: "number"
+        reason: "auto-generated, omit to let system assign"
+    common_errors:
+      - symptom: "422 deliveryDate required"
+        fix: "Always include deliveryDate on the order — use orderDate value if not specified"
+      - symptom: "422 price conflict"
+        fix: "Send only unitPriceExcludingVatCurrency on orderLines, never both price fields"
+    response_capture:
+      - "value.id — the order ID (needed for PUT /:invoice)"
+    notes:
+      - "deliveryDate is REQUIRED even though spec does not mark it as such"
+      - "orderLines can be nested in the order body on creation"
+
+order-invoice:
+  "PUT /order/{id}/:invoice":
+    prerequisites:
+      - "Order must exist with orderLines"
+      - "Company must have a registered bank account (account 1920)"
+    do_not_send:
+      - field: "request body"
+        reason: "ALL params go in query_params, not body. Body must be empty/null."
+    common_errors:
+      - symptom: "422 bankkontonummer ikke registrert"
+        fix: "Register bank account on the company first (account 1920)"
+      - symptom: "Params ignored"
+        fix: "Use query_params, NOT body — this is an action endpoint"
+      - symptom: "422 Betaling: ugyldig beløp"
+        fix: "NEVER combine paidAmount with /:invoice. Invoice first (no payment), then use PUT /invoice/{id}/:payment with the exact amount from the invoice response."
+    response_capture:
+      - "value.id — the created invoice ID"
+      - "value.amount — the exact invoice total (use this for payment, never calculate yourself)"
+    notes:
+      - "NEVER pass paidAmount to PUT /:invoice — always pay separately via PUT /invoice/{id}/:payment"
+      - "For send: query_params={sendToCustomer: true} on /:invoice is OK"
+      - "paymentTypeId 0 is INVALID — always GET /invoice/paymentType?count=1 first"
+      - "Action endpoints (prefixed with :) take params in query string, not request body"
+
+invoice-actions:
+  "PUT /invoice/{id}/:createCreditNote":
+    do_not_send:
+      - field: "request body"
+        reason: "ALL params go in query_params. Body must be empty/null."
+    common_errors:
+      - symptom: "Params ignored / 400"
+        fix: "Put date and comment in query_params, not body"
+    notes:
+      - "Action endpoint — all params in query_params, not body"
+
+  "PUT /invoice/{id}/:payment":
+    do_not_send:
+      - field: "request body"
+        reason: "ALL params go in query_params. Body must be empty/null."
+    notes:
+      - "To reverse/cancel a payment: use negative paidAmount"
+      - "paymentTypeId 0 = default payment type"
+
+  "PUT /invoice/{id}/:send":
+    do_not_send:
+      - field: "request body"
+        reason: "ALL params go in query_params. Body must be empty/null."
+
+  "GET /invoice":
+    common_errors:
+      - symptom: "422 'From' >= 'To' in filter"
+        fix: "invoiceDateTo must be strictly greater than invoiceDateFrom (add 1 day)"
+
+employee:
+  "POST /employee":
+    prerequisites:
+      - "Department must exist (need department.id)"
+    send_exactly: |
+      {
+        "firstName": "<string>",
+        "lastName": "<string>",
+        "email": "<string>",
+        "dateOfBirth": "YYYY-MM-DD",
+        "userType": "STANDARD",
+        "department": {"id": <int>}
+      }
+    do_not_send:
+      - field: "id, version"
+        reason: "auto-generated on create"
+    common_errors:
+      - symptom: "422 missing department"
+        fix: "department with {id} is required — create department first"
+      - symptom: "422 duplicate email"
+        fix: "Employee already exists — GET /employee?email=X to find them first"
+    response_capture:
+      - "value.id — the employee ID"
+    notes:
+      - "userType is REQUIRED: 'STANDARD' or 'EXTENDED'"
+      - "dateOfBirth is REQUIRED for payroll — if not given in task, use 1990-01-01"
+      - "Always dedup by email first: GET /employee?email=X — employees persist across sandbox resets"
+      - "department is REQUIRED even though spec may not mark it"
+
+employee-entitlement:
+  "PUT /employee/entitlement/:grantEntitlementsByTemplate":
+    do_not_send:
+      - field: "request body"
+        reason: "Uses query_params only: employeeId and template"
+    notes:
+      - "Required before an employee can be assigned as projectManager"
+      - "template: 'ALL_PRIVILEGES' grants full access"
+      - "Action endpoint — params in query_params, not body"
+
+employee-employment:
+  "POST /employee/employment":
+    prerequisites:
+      - "Employee must exist (need employee.id)"
+      - "Employee MUST have dateOfBirth set — if not provided in task, use a reasonable default like 1990-01-01"
+      - "A division must exist (POST /division first) and be linked via division.id"
+    send_exactly: |
+      {
+        "employee": {"id": <int>},
+        "division": {"id": <int>},
+        "startDate": "YYYY-MM-DD"
+      }
+    common_errors:
+      - symptom: "422 employee.dateOfBirth Feltet må fylles ut"
+        fix: "The employee must have dateOfBirth set BEFORE creating employment. Update the POST /employee step to include dateOfBirth."
+      - symptom: "422 Arbeidsforholdet er ikke knyttet mot en virksomhet"
+        fix: "Employment must have a division. Create one first with POST /division {name, startDate} and pass division:{id} in the employment body."
+    response_capture:
+      - "value.id — the employment ID (needed for employment/details)"
+
+  "POST /employee/employment/details":
+    prerequisites:
+      - "Employment must exist (need employment.id)"
+    send_exactly: |
+      {
+        "employment": {"id": <int>},
+        "date": "YYYY-MM-DD",
+        "employmentType": "ORDINARY",
+        "employmentForm": "PERMANENT",
+        "remunerationType": "MONTHLY_WAGE",
+        "workingHoursScheme": "NOT_SHIFT",
+        "annualSalary": <number>
+      }
+    notes:
+      - "annualSalary = baseMonthlySalary * 12"
+
+product:
+  "POST /product":
+    send_exactly: |
+      {
+        "name": "<string>",
+        "priceExcludingVatCurrency": <number>
+      }
+    do_not_send:
+      - field: "number"
+        reason: "auto-generated — omit to avoid 422 duplicate number errors"
+      - field: "priceIncludingVatCurrency"
+        reason: "conflicts with priceExcludingVatCurrency — send only ONE"
+    common_errors:
+      - symptom: "422 duplicate product number"
+        fix: "Omit the 'number' field entirely — let system auto-generate"
+      - symptom: "422 price conflict"
+        fix: "Send only priceExcludingVatCurrency, never both price fields"
+    response_capture:
+      - "value.id — the product ID"
+
+  "POST /product/list":
+    do_not_send:
+      - field: "number on each item"
+        reason: "auto-generated — omit to avoid duplicates"
+    notes:
+      - "Body is an array of product objects for bulk creation"
+
+travel-expense:
+  notes:
+    - "costs and perDiemCompensations are SEPARATE sub-resources — NEVER inline them in POST /travelExpense body"
+    - "POST /travelExpense creates a SHELL only — then add costs and per diems via their own endpoints"
+
+  "POST /travelExpense":
+    send_exactly: |
+      {
+        "employee": {"id": <int>},
+        "travelDetails": {
+          "departureDate": "YYYY-MM-DD",
+          "returnDate": "YYYY-MM-DD",
+          "destination": "<string>"
+        }
+      }
+    do_not_send:
+      - field: "costs"
+        reason: "MUST be created separately via POST /travelExpense/cost"
+      - field: "perDiemCompensations"
+        reason: "MUST be created separately via POST /travelExpense/perDiemCompensation"
+      - field: "mileageAllowances"
+        reason: "MUST be created separately via their own endpoint"
+    response_capture:
+      - "value.id — the travel expense ID (needed for sub-resource creation)"
+
+travel-expense-sub:
+  "POST /travelExpense/cost":
+    prerequisites:
+      - "Travel expense must exist (need travelExpense.id)"
+      - "Payment type must be fetched first: GET /travelExpense/paymentType?showOnEmployeeExpenses=true&count=1"
+    send_exactly: |
+      {
+        "travelExpense": {"id": <int>},
+        "category": "<string>",
+        "amountCurrencyIncVat": <number>,
+        "date": "YYYY-MM-DD",
+        "paymentType": {"id": <int>}
+      }
+    common_errors:
+      - symptom: "422 missing paymentType"
+        fix: "paymentType is required — GET /travelExpense/paymentType first"
+    response_capture:
+      - "value.id — the cost ID"
+
+  "POST /travelExpense/perDiemCompensation":
+    prerequisites:
+      - "Travel expense must exist (need travelExpense.id)"
+    send_exactly: |
+      {
+        "travelExpense": {"id": <int>},
+        "location": "<city name>",
+        "count": <number_of_days>,
+        "overnightAccommodation": "HOTEL"
+      }
+    notes:
+      - "overnightAccommodation enum: NONE, HOTEL, BOARDING_HOUSE_WITHOUT_COOKING, BOARDING_HOUSE_WITH_COOKING"
+
+voucher:
+  "POST /ledger/voucher":
+    prerequisites:
+      - "Look up account IDs first: GET /ledger/account?number=NNNN (account numbers are NOT IDs)"
+    send_exactly: |
+      {
+        "date": "YYYY-MM-DD",
+        "description": "<string>",
+        "postings": [
+          {
+            "account": {"id": <int>},
+            "amountGross": <positive_for_debit>,
+            "amountGrossCurrency": <same_as_amountGross>
+          },
+          {
+            "account": {"id": <int>},
+            "amountGross": <negative_for_credit>,
+            "amountGrossCurrency": <same_as_amountGross>
+          }
+        ]
+      }
+    do_not_send:
+      - field: "number"
+        reason: "auto-generated by system"
+      - field: "voucherType"
+        reason: "do NOT send — system determines type"
+    common_errors:
+      - symptom: "422 null postings"
+        fix: "postings array is REQUIRED and must contain at least 2 entries"
+      - symptom: "422 postings don't balance"
+        fix: "Debit = positive amount, credit = negative amount. Sum must be 0."
+      - symptom: "422 VAT amount mismatch"
+        fix: "When posting has vatType, use GROSS amount — Tripletex auto-generates the VAT line"
+      - symptom: "422 amountGross må være det samme som amountGrossCurrency"
+        fix: "BOTH amountGross AND amountGrossCurrency must be set to the same value on every posting"
+      - symptom: "422 Leverandør mangler"
+        fix: "For supplier invoices, the AP (credit) posting MUST include supplier:{id: <supplier_id>}"
+    notes:
+      - "Account numbers (e.g. 1920, 2400) are NOT the same as account IDs — always GET /ledger/account?number=X first"
+      - "Debit = positive amountGross, credit = negative amountGross"
+      - "If posting includes vatType, Tripletex auto-generates the corresponding VAT posting"
+      - "Known OUTPUT vatType IDs: 3=25%, 31=15%(food), 32=12%(transport), 5=0%(exempt). IDs 1,11,13 are INPUT VAT — never use on sales/order lines."
+
+ledger-lookup:
+  "GET /ledger/account":
+    notes:
+      - "Use query_params {number: 'NNNN'} to look up by account number"
+      - "Account numbers (1920, 2400, etc.) are NOT the same as the id field"
+    response_capture:
+      - "values[0].id — the account ID (use this in voucher postings, NOT the account number)"
+
+  "GET /ledger/vatType":
+    notes:
+      - "Known OUTPUT vatType IDs: 3=25%, 31=15%(food/medium), 32=12%(transport/low), 5=0%(exempt within VAT law), 6=0%(exempt outside). IDs 1,11,13 are INPUT VAT."
+
+salary-transaction:
+  "POST /salary/transaction":
+    prerequisites:
+      - "Employee must have employment record"
+      - "Employment must have employment/details"
+      - "Salary types must be looked up: GET /salary/type"
+    send_exactly: |
+      {
+        "year": <int>,
+        "month": <int>,
+        "payslips": [
+          {
+            "employee": {"id": <int>},
+            "specifications": [
+              {
+                "salaryType": {"id": <int>},
+                "rate": <number>,
+                "count": 1,
+                "amount": <number>
+              }
+            ]
+          }
+        ]
+      }
+    common_errors:
+      - symptom: "422 specifications.rate Kan ikke være null"
+        fix: "rate and count are REQUIRED on every specification. rate = the per-unit amount, count = number of units (usually 1), amount = rate * count"
+    notes:
+      - "Complex nested structure: payslips array with specifications array inside each"
+      - "EVERY specification MUST have all 4 fields: salaryType, rate, count, amount. None can be null."
+      - "For monthly salary: rate = monthly amount, count = 1, amount = rate * count"
+      - "For bonus: rate = bonus amount, count = 1, amount = bonus amount"
+
+project:
+  "POST /project":
+    prerequisites:
+      - "Customer must exist (need customer.id)"
+      - "If projectManager specified: employee must exist AND have entitlements granted"
+    send_exactly: |
+      {
+        "name": "<string>",
+        "customer": {"id": <int>},
+        "startDate": "YYYY-MM-DD"
+      }
+    do_not_send:
+      - field: "number"
+        reason: "auto-generated if null"
+    common_errors:
+      - symptom: "422 missing startDate"
+        fix: "startDate is required — use today's date if not specified"
+      - symptom: "422 projectManager lacks entitlements"
+        fix: "Grant entitlements first: PUT /employee/entitlement/:grantEntitlementsByTemplate"
+    response_capture:
+      - "value.id — the project ID"
+    notes:
+      - "startDate is REQUIRED even though spec may not mark it"
+      - "For fixed-price projects: set isFixedPrice=true and provide fixedprice amount"
+      - "To assign projectManager, add: \"projectManager\": {\"id\": <int>}"
+
+company:
+  "PUT /company":
+    notes:
+      - "SINGLETON endpoint — NO ID in path. Use PUT /company, NOT PUT /company/{id}"
+      - "Used to register bank account and update company settings"
+    common_errors:
+      - symptom: "404 not found"
+        fix: "Do NOT include an ID in the path — it's PUT /company, not PUT /company/123"
+
+department:
+  "POST /department":
+    send_exactly: |
+      {
+        "name": "<string>"
+      }
+    response_capture:
+      - "value.id — needed for employee creation"
+
+  "POST /department/list":
+    notes:
+      - "Body is an array of department objects for bulk creation"
+
+customer:
+  "POST /customer":
+    send_exactly: |
+      {
+        "name": "<string>"
+      }
+    notes:
+      - "Sandbox starts empty — always CREATE, never search for existing customers"
+    response_capture:
+      - "value.id — the customer ID"
+
+supplier:
+  "POST /supplier":
+    send_exactly: |
+      {
+        "name": "<string>"
+      }
+    notes:
+      - "Sandbox starts empty — always CREATE, never search for existing suppliers"
+    response_capture:
+      - "value.id — the supplier ID"

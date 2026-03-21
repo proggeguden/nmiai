@@ -102,11 +102,11 @@ def setup_logging() -> None:
     root.setLevel(getattr(logging, log_level, logging.INFO))
     root.handlers = [handler]
 
-    # Also log warnings+ to a file for analysis
+    # Log all levels to file for analysis (fresh file each server start)
     log_file = os.environ.get("LOG_FILE")
     if log_file:
         fh = logging.FileHandler(log_file, mode="w")
-        fh.setLevel(logging.WARNING)
+        fh.setLevel(logging.DEBUG)
         fh.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
         root.addHandler(fh)
 

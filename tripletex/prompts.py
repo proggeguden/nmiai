@@ -51,58 +51,67 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - "prima"/"Prämie"/"bonificación" = bonus
 - "lønnsslipp"/"Gehaltsabrechnung"/"bulletin de paie" = payslip
 
-## Task Playbooks
+## Task Playbooks (Send Exactly — use these minimal bodies)
+
+### Entities (simple creates)
+- **Customer**: POST /customer {{"name": "..."}} — or POST /customer/list for bulk
+- **Supplier**: POST /supplier {{"name": "..."}} — or POST /supplier/list for bulk
+- **Department**: POST /department {{"name": "..."}} — or POST /department/list for bulk
+- **Product**: POST /product {{"name": "...", "priceExcludingVatCurrency": N}} — omit "number" (auto-gen). NEVER send priceIncludingVatCurrency.
+- **Sandbox starts empty** — always CREATE, never search (except employee dedup)
 
 ### Employees
-- **Create**: GET /employee?email=X (dedup — employees persist!) → if not found, POST /employee (department + userType REQUIRED)
-- **Bulk create**: POST /employee/list (body = array, each needs department + userType)
-- **Entitle**: PUT /employee/entitlement/:grantEntitlementsByTemplate with query_params: {{employeeId, template: "ALL_PRIVILEGES"}} — required before assigning as projectManager
-- **Update**: GET /employee to get current version → PUT /employee with version field
+- **Dedup first**: GET /employee?email=X&count=1 — employees persist!
+- **Create**: POST /employee {{"firstName": "...", "lastName": "...", "email": "...", "dateOfBirth": "YYYY-MM-DD", "userType": "STANDARD", "department": {{"id": N}}}}
+  dateOfBirth is REQUIRED for payroll workflows — if not given in task, use "1990-01-01"
+- **Bulk**: POST /employee/list (each needs department + userType + dateOfBirth)
+- **Entitle**: PUT /employee/entitlement/:grantEntitlementsByTemplate query_params={{employeeId: N, template: "ALL_PRIVILEGES"}} body=null — required before projectManager
 
-### Customers & Suppliers
-- **Customer**: POST /customer — single. POST /customer/list — bulk (body = array)
-- **Supplier**: POST /supplier — single. POST /supplier/list — bulk (body = array)
-- **Sandbox starts empty** — always CREATE, never search for existing customers/suppliers/orders
+### Invoicing (POST /order → PUT /:invoice — NEVER use POST /invoice directly)
+1. POST /customer → {{"name": "..."}}
+2. POST /order → {{"customer": {{"id": "$step_1.value.id"}}, "orderDate": "YYYY-MM-DD", "deliveryDate": "YYYY-MM-DD", "orderLines": [{{"description": "...", "count": N, "unitPriceExcludingVatCurrency": N}}]}}
+3. PUT /order/$step_2.value.id/:invoice → query_params only, body=null. Response contains the created invoice with its real total.
+   - **+ send**: add query_params: {{"sendToCustomer": true}}
+- **Payment (separate step — NEVER combine with /:invoice):**
+  GET /invoice/paymentType?count=1 → then PUT /invoice/$invoiceStep.value.id/:payment query_params={{"paidAmount": $invoiceStep.value.amount, "paymentTypeId": $paymentTypeStep.values[0].id}} body=null
+  paidAmount MUST equal the invoice's `amount` field (total incl. VAT in NOK). Use $step_N.value.amount from the /:invoice response — NEVER calculate it yourself.
+- **Credit note**: after invoice → PUT /invoice/$step_3.value.id/:createCreditNote query_params={{"date": "YYYY-MM-DD", "comment": "..."}} body=null
+- **Cancel payment**: PUT /invoice/{{id}}/:payment with negative paidAmount in query_params
 
-### Products
-- **Bulk create**: POST /product/list (body = array, omit "number" field to auto-generate)
-- **Single**: POST /product (omit "number" field)
-- **Bulk lookup by number**: GET /product?productNumber=8488,3787 (comma-separated — returns all in one call)
-- Use priceExcludingVatCurrency (NOT priceIncludingVatCurrency — they conflict)
-
-### Invoicing
-- **AVOID POST /invoice directly** — requires many nested fields (invoiceDueDate, orders with customer/orderDate/deliveryDate). Use POST /order + PUT /order/{{id}}/:invoice instead.
-- **Simple invoice**: POST /customer → POST /order (deliveryDate=orderDate!) → PUT /order/{{id}}/:invoice
-- **Invoice + payment (1 call)**: PUT /order/{{id}}/:invoice with query_params: {{invoiceDate: "{today}", paidAmount: <total>, paymentTypeId: 0}} — BOTH paidAmount and paymentTypeId REQUIRED together, omit both or include both
-- **Invoice + send (1 call)**: PUT /order/{{id}}/:invoice with query_params: {{sendToCustomer: true}}
-- **Invoice + payment + send**: combine all three query_params above
-- **Credit note**: ...create invoice first... → PUT /invoice/{{id}}/:createCreditNote with date and comment in query_params
-- **Cancel/reverse payment**: ...create invoice with paidAmount... → PUT /invoice/{{id}}/:payment with negative paidAmount
-- **Bank account** is auto-registered by the system if missing — never call PUT /company or create bank accounts yourself
-
-### Projects
-- **With manager**: POST /department → POST /employee (with department, userType) → grant entitlements → POST /customer → POST /project (startDate REQUIRED, use today if not given) with projectManager ref
-- **Fixed price + invoice**: create project → POST /order with amount → PUT /order/{{id}}/:invoice
-- **Log hours + invoice**: department → employee → entitlements → customer → project → order (orderLines=hours*rate, deliveryDate=orderDate) → PUT /order/{{id}}/:invoice
+### Projects (with manager + invoice)
+1. POST /department → {{"name": "..."}}
+2. GET /employee?email=X&count=1 (dedup)
+3. POST /employee (if needed) → {{"firstName": "...", "lastName": "...", "email": "...", "userType": "STANDARD", "department": {{"id": "$step_1.value.id"}}}}
+4. PUT /employee/entitlement/:grantEntitlementsByTemplate query_params={{"employeeId": "$step_3.value.id", "template": "ALL_PRIVILEGES"}} body=null
+5. POST /customer → {{"name": "..."}}
+6. POST /project → {{"name": "...", "customer": {{"id": "$step_5.value.id"}}, "projectManager": {{"id": "$step_3.value.id"}}, "startDate": "YYYY-MM-DD"}}
+7. POST /order → {{"customer": {{"id": "$step_5.value.id"}}, "orderDate": "YYYY-MM-DD", "deliveryDate": "YYYY-MM-DD", "orderLines": [{{"description": "hours*rate", "count": <hours>, "unitPriceExcludingVatCurrency": <rate>}}]}}
+8. PUT /order/$step_7.value.id/:invoice query_params={{}} body=null
 
 ### Travel Expenses
-- **Flow**: dedup employee → GET /travelExpense/paymentType?showOnEmployeeExpenses=true&count=1 → POST /travelExpense (shell: employee, travelDetails with departureDate, returnDate, destination) → POST /travelExpense/cost per expense (travelExpense ref, category, amountCurrencyIncVat, date, paymentType ref) → POST /travelExpense/perDiemCompensation (travelExpense ref, location=city, count=days, overnightAccommodation="HOTEL")
-- **GOTCHA**: costs and perDiems are SEPARATE sub-resources — never inline them in POST /travelExpense body
+1. GET /employee?email=X&count=1 (dedup) → 2. POST /department → 3. POST /employee (if needed)
+4. GET /travelExpense/paymentType?showOnEmployeeExpenses=true&count=1
+5. POST /travelExpense → {{"employee": {{"id": "$step_3.value.id"}}, "travelDetails": {{"departureDate": "YYYY-MM-DD", "returnDate": "YYYY-MM-DD", "destination": "..."}}}} — SHELL only!
+6. POST /travelExpense/cost (per item) → {{"travelExpense": {{"id": "$step_5.value.id"}}, "category": "TAXI", "amountCurrencyIncVat": N, "date": "YYYY-MM-DD", "paymentType": {{"id": "$step_4.values[0].id"}}}}
+7. POST /travelExpense/perDiemCompensation → {{"travelExpense": {{"id": "$step_5.value.id"}}, "location": "<city>", "count": <days>, "overnightAccommodation": "HOTEL"}}
+- **NEVER** inline costs/perDiems in POST /travelExpense body — they are separate sub-resources
 
 ### Vouchers / Accounting
-- **Flow**: GET /ledger/account?number=NNNN for each account → POST /ledger/voucher
-- Account numbers are NOT IDs — always look up the real ID first
-- Postings: debit=positive, credit=negative, must sum to 0. Do NOT send voucherType.
-- If posting has vatType, use GROSS amount — Tripletex auto-generates the VAT line
-- **Supplier invoice**: credit 2400 (AP) with supplier ref, debit expense account with vatType
-- **Custom dimensions**: NOT available via API. Include relevant info in descriptions instead.
+1. GET /ledger/account?number=NNNN (per account — numbers are NOT IDs!)
+2. POST /ledger/voucher → {{"date": "YYYY-MM-DD", "description": "...", "postings": [{{"account": {{"id": N}}, "amountGross": +N, "amountGrossCurrency": +N}}, {{"account": {{"id": N}}, "amountGross": -N, "amountGrossCurrency": -N}}]}}
+   - BOTH amountGross AND amountGrossCurrency MUST be set to the same value on every posting.
+   - Debit=positive, credit=negative, must sum to 0. Do NOT send number or voucherType.
+   - With vatType: use GROSS amount, system auto-generates VAT line. Known IDs: 1=0%, 3=25%, 5=15%, 6=12%
+   - **Supplier invoice**: debit expense acct with vatType:{{"id":N}}, credit 2400 (AP) with supplier:{{"id": $supplierStep.value.id}} — the AP posting MUST have supplier ref or you get "Leverandør mangler"
 
 ### Payroll
-- **Flow**: department → employee (with department, userType) → POST /employee/employment (employee ref, startDate) → POST /employee/employment/details (employment ref, date, employmentType="ORDINARY", employmentForm="PERMANENT", remunerationType="MONTHLY_WAGE", workingHoursScheme="NOT_SHIFT", annualSalary=baseSalary*12) → GET /salary/type → POST /salary/transaction (year, month, payslips with employee ref and specifications array: one per salary component with salaryType ref + rate + count + amount)
-
-### Departments
-- **Single**: POST /department with name
-- **Bulk**: POST /department/list (body = array)
+1. POST /department → {{"name": "..."}}
+2. POST /employee → {{"firstName":"...", "lastName":"...", "email":"...", "dateOfBirth": "YYYY-MM-DD", "userType":"STANDARD", "department":{{"id":"$step_1.value.id"}}}} — dateOfBirth REQUIRED, use "1990-01-01" if not given
+3. POST /employee/employment → {{"employee": {{"id": "$step_2.value.id"}}, "startDate": "{today}"}} — division is auto-injected by the system
+4. POST /employee/employment/details → {{"employment": {{"id": "$step_3.value.id"}}, "date": "{today}", "employmentType": "ORDINARY", "employmentForm": "PERMANENT", "remunerationType": "MONTHLY_WAGE", "workingHoursScheme": "NOT_SHIFT", "annualSalary": <baseSalary*12>}}
+5. GET /salary/type?number=1000&count=1 (base salary) + GET /salary/type?number=2000&count=10 (bonus)
+6. POST /salary/transaction → {{"year": N, "month": N, "payslips": [{{"employee": {{"id": "$step_2.value.id"}}, "specifications": [{{"salaryType": {{"id": "$step_5.values[0].id"}}, "rate": N, "count": 1, "amount": N}}]}}]}}
+   EVERY specification MUST have rate, count, AND amount — none can be null. rate=per-unit, count=units (usually 1), amount=rate*count.
 
 ## ID Resolution
 - POST creates → use $step_N.value.id
@@ -124,7 +133,7 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 9. For POST /employee: userType is REQUIRED ("STANDARD" or "EXTENDED"). department is REQUIRED.
 10. For POST /travelExpense/cost: paymentType is REQUIRED — always GET paymentType first.
 11. Paths must NOT include /v2 prefix — the base URL already contains it. Use /order, not /v2/order.
-12. Do NOT set vatType on order lines — defaults to 25%. Only use vatType on voucher postings with GET /ledger/vatType lookup first.
+12. Order lines default to 25% VAT. Only set vatType on order lines when the task explicitly requires different VAT rates per line. Known OUTPUT vatType IDs: 3=25%, 31=15%(food/medium), 32=12%(transport/low), 5=0%(exempt within VAT law), 6=0%(exempt outside VAT law). WARNING: IDs 1,11,13 are INPUT VAT — never use on order lines. For voucher postings: always GET /ledger/vatType lookup.
 
 ## Solved Examples
 
@@ -134,12 +143,12 @@ Task: "Run payroll for Lucy Walker (lucy.walker@example.org) for this month. Bas
 [
   {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "GET", "path": "/employee", "query_params": {{"email": "lucy.walker@example.org", "count": 1}}}}, "description": "Check if employee exists"}},
   {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "POST", "path": "/department", "body": {{"name": "General"}}}}, "description": "Create department"}},
-  {{"step_number": 3, "tool_name": "call_api", "args": {{"method": "POST", "path": "/employee", "body": {{"firstName": "Lucy", "lastName": "Walker", "email": "lucy.walker@example.org", "userType": "STANDARD", "department": {{"id": "$step_2.value.id"}}}}}}, "description": "Create employee"}},
+  {{"step_number": 3, "tool_name": "call_api", "args": {{"method": "POST", "path": "/employee", "body": {{"firstName": "Lucy", "lastName": "Walker", "email": "lucy.walker@example.org", "dateOfBirth": "1990-01-01", "userType": "STANDARD", "department": {{"id": "$step_2.value.id"}}}}}}, "description": "Create employee"}},
   {{"step_number": 4, "tool_name": "call_api", "args": {{"method": "POST", "path": "/employee/employment", "body": {{"employee": {{"id": "$step_1.values[0].id || $step_3.value.id"}}, "startDate": "{today}"}}}}, "description": "Create employment"}},
   {{"step_number": 5, "tool_name": "call_api", "args": {{"method": "POST", "path": "/employee/employment/details", "body": {{"employment": {{"id": "$step_4.value.id"}}, "date": "{today}", "employmentType": "ORDINARY", "employmentForm": "PERMANENT", "remunerationType": "MONTHLY_WAGE", "workingHoursScheme": "NOT_SHIFT", "annualSalary": 480000}}}}, "description": "Set employment details"}},
   {{"step_number": 6, "tool_name": "call_api", "args": {{"method": "GET", "path": "/salary/type", "query_params": {{"number": "1000", "count": 1}}}}, "description": "Get base salary type"}},
   {{"step_number": 7, "tool_name": "call_api", "args": {{"method": "GET", "path": "/salary/type", "query_params": {{"number": "2000", "count": 10}}}}, "description": "Get bonus salary type"}},
-  {{"step_number": 8, "tool_name": "call_api", "args": {{"method": "POST", "path": "/salary/transaction", "body": {{"employee": {{"id": "$step_1.values[0].id || $step_3.value.id"}}, "year": 2026, "month": 3, "payslips": [{{"employee": {{"id": "$step_1.values[0].id || $step_3.value.id"}}, "specifications": [{{"salaryType": {{"id": "$step_6.values[0].id"}}, "rate": 40000, "count": 1, "amount": 40000}}, {{"salaryType": {{"id": "$step_7.values[0].id"}}, "rate": 12000, "count": 1, "amount": 12000}}]}}]}}}}, "description": "Create payroll transaction"}}
+  {{"step_number": 8, "tool_name": "call_api", "args": {{"method": "POST", "path": "/salary/transaction", "body": {{"year": 2026, "month": 3, "payslips": [{{"employee": {{"id": "$step_1.values[0].id || $step_3.value.id"}}, "specifications": [{{"salaryType": {{"id": "$step_6.values[0].id"}}, "rate": 40000, "count": 1, "amount": 40000}}, {{"salaryType": {{"id": "$step_7.values[0].id"}}, "rate": 12000, "count": 1, "amount": 12000}}]}}]}}}}, "description": "Create payroll transaction"}}
 ]
 ```
 
@@ -183,7 +192,7 @@ Return ONLY a JSON array of steps, no other text:
 PLANNER_PROFILE = {
     "name": "efficient",
     "temperature": 0,
-    "prefix": "Every API call costs points — minimize total steps ruthlessly. Use bulk /list endpoints. Skip optional lookups (the sandbox starts empty). Do NOT set vatType on order lines (defaults to 25%). Combine invoice+payment via paidAmount query param. The ONE exception: always GET /employee?email=X before creating employees (they persist).",
+    "prefix": "Every API call costs points — minimize total steps ruthlessly. Use bulk /list endpoints. Skip optional lookups (the sandbox starts empty). Do NOT set vatType on order lines (defaults to 25%). NEVER combine payment into PUT /:invoice — invoice first, then pay separately with PUT /invoice/{id}/:payment using the exact amount from the invoice response. Always GET /invoice/paymentType first. The ONE exception: always GET /employee?email=X before creating employees (they persist).",
 }
 
 CHALLENGER_PROFILE = {
@@ -210,6 +219,9 @@ Failed step: {method} {path}
 Args: {args}
 Error: {error_response}
 Endpoint schema: {endpoint_schema}
+
+Known fixes for this endpoint:
+{common_errors}
 
 Remaining plan steps: {remaining_steps}
 Previous results: {previous_results}
@@ -275,6 +287,9 @@ API error response:
 Endpoint schema:
 {endpoint_schema}
 
+Known fixes for this endpoint:
+{common_errors}
+
 Rules:
 - Return ONLY a valid JSON object with the corrected arguments: {{"method": "...", "path": "...", "query_params": {{...}}, "body": {{...}}}}
 - Keep everything that was correct. Only fix what the error indicates.
@@ -285,5 +300,6 @@ Rules:
 - Reference fields use {{id: N}} format.
 - Date format: YYYY-MM-DD
 - Paths must NOT include /v2 prefix (base URL already contains it). Use /order, not /v2/order.
+- Action endpoint paths MUST keep the colon prefix: /:invoice, /:payment, /:send, /:createCreditNote. NEVER strip the colon.
 - Do NOT add vatType to order lines — the API defaults to 25%.
 """

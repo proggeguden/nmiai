@@ -17,6 +17,9 @@ Requires:
 
 import json
 import os
+import random
+import re
+import string
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -47,6 +50,31 @@ def load_prompts() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _randomize_prompt(prompt: str) -> str:
+    """Add random suffixes to emails and org numbers to avoid sandbox collisions.
+
+    Emails: alice.smith@example.org → alice.smith.x7k@example.org
+    Org numbers: 971465336 → random 9-digit number
+    """
+    suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=3))
+
+    # Randomize emails: user@domain → user.{suffix}@domain
+    prompt = re.sub(
+        r'([a-zA-Z0-9_.+-]+)@([a-zA-Z0-9-]+\.[a-zA-Z]{2,})',
+        lambda m: f"{m.group(1)}.{suffix}@{m.group(2)}",
+        prompt,
+    )
+
+    # Randomize 9-digit org numbers (Norwegian org numbers)
+    prompt = re.sub(
+        r'\b(\d{9})\b',
+        lambda m: str(random.randint(800000000, 999999999)),
+        prompt,
+    )
+
+    return prompt
+
 
 def call_solve(prompt: str, label: str = "") -> dict:
     """Send a prompt to the /solve endpoint and return the response.
@@ -123,7 +151,8 @@ def check_health():
 def run_test(test: dict) -> dict:
     """Run a single test and return results."""
     label = f"[{test['id']}] {test['description']} ({test['language']})"
-    result = call_solve(test["prompt"], label)
+    prompt = _randomize_prompt(test["prompt"])
+    result = call_solve(prompt, label)
     result["test_id"] = test["id"]
     result["category"] = test["category"]
     return result

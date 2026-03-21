@@ -64,6 +64,40 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         })
         log.info("Validation: prepended ensure_bank_account step for invoicing plan")
 
+    # ── A2: Auto-inject division + link for employment plans ──
+    # Employment must have a division. We inject: ensure_division meta-step before POST /employee/employment,
+    # and add division:{id} to the employment body.
+    has_employment = False
+    employment_idx = None
+    for i, step in enumerate(plan):
+        if step.get("tool_name") != "call_api":
+            continue
+        args = step.get("args", {})
+        if args.get("method") == "POST" and args.get("path") == "/employee/employment":
+            has_employment = True
+            employment_idx = i
+            break
+
+    if has_employment and employment_idx is not None:
+        emp_step = plan[employment_idx]
+        emp_body = emp_step.get("args", {}).get("body", {})
+        # Only inject if division is not already in the body
+        if isinstance(emp_body, dict) and "division" not in emp_body:
+            # Insert ensure_division meta-step right before the employment step
+            div_step_number = emp_step["step_number"]
+            for step in plan[employment_idx:]:
+                step["step_number"] += 1
+                _shift_step_refs(step, offset=1, min_step=div_step_number)
+            plan.insert(employment_idx, {
+                "step_number": div_step_number,
+                "tool_name": "ensure_division",
+                "args": {},
+                "description": "Ensure company division exists (required for employment)",
+            })
+            # Add division ref to the employment body
+            emp_body["division"] = {"id": f"$step_{div_step_number}.value.id"}
+            log.info("Validation: prepended ensure_division step for employment plan")
+
     # Check if plan has travel expense costs but no paymentType lookup
     has_travel_cost = False
     has_payment_type_lookup = False
@@ -104,14 +138,14 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 "description": "Get travel expense payment type (required for costs)",
             }
 
-            # Renumber steps from first_cost_idx onward
+            # Renumber steps from first_cost_idx onward (only shift refs >= the insertion point)
             for step in plan[first_cost_idx:]:
                 step["step_number"] += 1
-                _shift_step_refs(step, offset=1)
+                _shift_step_refs(step, offset=1, min_step=pt_step_number)
 
             plan.insert(first_cost_idx, pt_step)
 
-            # Inject paymentType reference into all travel cost bodies
+            # Inject/fix paymentType reference in all travel cost bodies
             pt_ref = f"$step_{pt_step_number}.values[0].id"
             for step in plan[first_cost_idx + 1:]:
                 if step.get("tool_name") != "call_api":
@@ -119,8 +153,8 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 args = step.get("args", {})
                 if args.get("method") == "POST" and "/travelExpense/cost" in args.get("path", ""):
                     body = args.get("body", {})
-                    if isinstance(body, dict) and "paymentType" not in body:
-                        body["paymentType"] = {"id": pt_ref}
+                    if isinstance(body, dict):
+                        body["paymentType"] = {"id": pt_ref}  # Always set correct ref
 
             log.info("Validation: injected GET /travelExpense/paymentType step and paymentType refs for travel costs")
 
@@ -158,10 +192,10 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             },
             "description": "Get department for employee (required)",
         }
-        # Renumber from employee_post_idx onward
+        # Renumber from employee_post_idx onward (only shift refs >= insertion point)
         for step in plan[employee_post_idx:]:
             step["step_number"] += 1
-            _shift_step_refs(step, offset=1)
+            _shift_step_refs(step, offset=1, min_step=dept_step_number)
         plan.insert(employee_post_idx, dept_step)
 
         # Inject department ref into employee body
@@ -186,15 +220,26 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             path = args["path"]
             log.info("Validation: stripped /v2 prefix from path")
 
-        # ── B0b: Strip vatType from order lines (wrong IDs cause 422, system defaults to 25%) ──
+        # ── B0b: Strip vatType from order lines ONLY if it's a hardcoded wrong ID ──
+        # Keep vatType if it references a $step_N lookup (planner looked it up correctly)
+        # or uses a known valid ID. Only strip bare integer IDs that may be wrong mappings.
         if method == "POST" and path in ("/order", "/order/list") and isinstance(body, (dict, list)):
             bodies = body if isinstance(body, list) else [body]
             for b in bodies:
                 if isinstance(b, dict):
                     for ol in b.get("orderLines", []):
                         if isinstance(ol, dict) and "vatType" in ol:
+                            vat_ref = ol["vatType"]
+                            # Keep if it's a $step_N reference (planner did a lookup)
+                            if isinstance(vat_ref, dict) and isinstance(vat_ref.get("id"), str) and "$step_" in str(vat_ref.get("id", "")):
+                                continue
+                            # Keep if it's a known valid OUTPUT vatType ID
+                            # 3=25%, 31=15%(food), 32=12%(transport), 5=0%(exempt), 6=0%(exempt)
+                            if isinstance(vat_ref, dict) and vat_ref.get("id") in (3, 5, 6, 31, 32):
+                                continue
+                            # Strip anything else (likely wrong hardcoded ID)
                             del ol["vatType"]
-                            log.info("Validation: stripped vatType from order line (defaults to 25%)")
+                            log.info("Validation: stripped unknown vatType from order line")
 
         # ── B0c: Auto-inject invoiceDueDate for POST /invoice ──
         if method == "POST" and path == "/invoice" and isinstance(body, dict):
@@ -599,28 +644,78 @@ def _ensure_bank_account(call_api_tool, error_count: int) -> tuple[str, dict, in
     return create_result, parsed, error_count
 
 
-def _shift_step_refs(obj, offset: int):
-    """Shift all $step_N references in a plan step by offset (in-place mutation)."""
+def _ensure_division(call_api_tool, error_count: int) -> tuple[str, dict, int]:
+    """Ensure a company division exists (required for employment).
+
+    Searches for existing divisions first; creates one if none found.
+    Returns (result_str, parsed, error_count) where parsed has {value: {id: N}}.
+    """
+    from datetime import date
+
+    # Step 1: Check for existing division
+    search_result = call_api_tool.invoke({
+        "method": "GET",
+        "path": "/division",
+        "query_params": {"from": 0, "count": 1, "fields": "id,name"},
+    })
+
+    try:
+        parsed = json.loads(search_result)
+        values = parsed.get("values", [])
+        if values:
+            log.info(f"Division already exists: {values[0].get('name', '?')} (id={values[0].get('id')})")
+            return search_result, {"value": values[0]}, error_count
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Step 2: Create division with a dummy sub-unit org number
+    # (company's own org number is a legal entity and cannot be used for divisions)
+    today = date.today().isoformat()
+    log.info("Creating division with dummy sub-unit org number")
+    create_result = call_api_tool.invoke({
+        "method": "POST",
+        "path": "/division",
+        "body": {
+            "name": "Hovedvirksomhet",
+            "startDate": today,
+            "organizationNumber": "999999999",
+            "municipality": {"id": 1},
+            "municipalityDate": today,
+        },
+    })
+
+    try:
+        parsed = json.loads(create_result)
+        status = parsed.get("status", 0)
+        if isinstance(status, int) and status >= 400:
+            log.warning(f"Failed to create division: {create_result[:500]}")
+            error_count += 1
+        else:
+            log.info(f"Division created successfully (id={parsed.get('value', {}).get('id')})")
+    except (json.JSONDecodeError, TypeError):
+        parsed = {"raw": create_result}
+
+    return create_result, parsed, error_count
+
+
+def _shift_step_refs(obj, offset: int, min_step: int = 0):
+    """Shift $step_N references by offset, but only for N >= min_step (in-place mutation)."""
+    def _replace(m):
+        n = int(m.group(1))
+        return f'$step_{n + offset}' if n >= min_step else m.group(0)
+
     if isinstance(obj, dict):
         for k, v in list(obj.items()):
             if isinstance(v, str):
-                obj[k] = re.sub(
-                    r'\$step_(\d+)',
-                    lambda m: f'$step_{int(m.group(1)) + offset}',
-                    v,
-                )
+                obj[k] = re.sub(r'\$step_(\d+)', _replace, v)
             else:
-                _shift_step_refs(v, offset)
+                _shift_step_refs(v, offset, min_step)
     elif isinstance(obj, list):
         for i, item in enumerate(obj):
             if isinstance(item, str):
-                obj[i] = re.sub(
-                    r'\$step_(\d+)',
-                    lambda m: f'$step_{int(m.group(1)) + offset}',
-                    item,
-                )
+                obj[i] = re.sub(r'\$step_(\d+)', _replace, item)
             else:
-                _shift_step_refs(item, offset)
+                _shift_step_refs(item, offset, min_step)
 
 def _fix_fields_dots(fields: str) -> str:
     """Convert dot-notation fields to parentheses: orders.orderLines.desc → orders(orderLines(desc))"""
@@ -938,7 +1033,18 @@ def build_agent():
         except Exception:
             return resolved_args
 
-        if not card or not card.get("fields"):
+        if not card:
+            return resolved_args
+
+        # Strip do_not_send fields from body
+        for dns in card.get("do_not_send", []):
+            field_name = dns.get("field", "")
+            # Handle simple field names (not compound descriptions like "request body")
+            if field_name and " " not in field_name and field_name in body:
+                del body[field_name]
+                log.info(f"Schema pre-validation: stripped do_not_send field '{field_name}' — {dns.get('reason', '')}")
+
+        if not card.get("fields"):
             return resolved_args
 
         fields = card["fields"]
@@ -1041,6 +1147,25 @@ def build_agent():
                     "error_count": error_count,
                     "replan_count": replan_count,
                     "messages": [AIMessage(content=f"Step {step['step_number']} done: bank account ensured")],
+                }
+
+        # Handle ensure_division meta-step
+        if tool_name == "ensure_division":
+            call_api_tool = tool_map.get("call_api")
+            if call_api_tool:
+                result_str, parsed, error_count = _ensure_division(
+                    call_api_tool, error_count
+                )
+                results[f"step_{step['step_number']}"] = parsed
+                log.info(f"Step {step['step_number']} completed: division ensured")
+                completed.append(step["step_number"])
+                return {
+                    "current_step": step_idx + 1,
+                    "results": results,
+                    "completed_steps": completed,
+                    "error_count": error_count,
+                    "replan_count": replan_count,
+                    "messages": [AIMessage(content=f"Step {step['step_number']} done: division ensured")],
                 }
 
         # Resolve $step_N placeholders recursively through nested dicts/lists
@@ -1324,6 +1449,19 @@ def build_agent():
                         pass
 
         # ── Self-heal cascade: FIX_ARGS → REPLAN → REPLAN ──
+        # Skip self-heal in local testing for fast iteration
+        skip_self_heal = os.environ.get("SKIP_SELF_HEAL", "").lower() in ("1", "true", "yes")
+        if skip_self_heal:
+            log.warning(f"SKIP_SELF_HEAL: API error {status_code} on {resolved_args.get('method')} {resolved_args.get('path')}: {result_str[:500]}")
+            error_count += 1
+            return {
+                "current_step": step_idx + 1,
+                "results": results,
+                "completed_steps": completed,
+                "error_count": error_count,
+                "replan_count": replan_count,
+                "messages": [AIMessage(content=f"Step {step['step_number']} failed: {result_str[:200]}")],
+            }
         if status_code in RETRYABLE_STATUS_CODES and replan_count < MAX_REPLANS:
             # Attempt 1: Quick FIX_ARGS (fast, targeted fix)
             if replan_count == 0:
@@ -1757,10 +1895,12 @@ def _ask_llm_to_replan(
 
     # Get endpoint schema for rich context
     try:
-        from generic_tools import get_endpoint_schema
+        from generic_tools import get_endpoint_schema, get_common_errors
         endpoint_schema = get_endpoint_schema(method, path)
+        common_errors = get_common_errors(method, path)
     except Exception:
         endpoint_schema = "(unavailable)"
+        common_errors = "(none)"
 
     # Format remaining steps and previous results compactly
     remaining_str = json.dumps(remaining_steps, indent=2, default=str)[:2000] if remaining_steps else "[]"
@@ -1776,6 +1916,7 @@ def _ask_llm_to_replan(
         args=json.dumps(original_args, indent=2, default=str)[:1500],
         error_response=error_response[:2000],
         endpoint_schema=str(endpoint_schema)[:3000],
+        common_errors=common_errors,
         remaining_steps=remaining_str,
         previous_results=results_str,
         original_task=original_task[:500],
@@ -1810,10 +1951,12 @@ def _ask_llm_to_fix_args(
     path = original_args.get("path", "")
 
     try:
-        from generic_tools import get_endpoint_schema
+        from generic_tools import get_endpoint_schema, get_common_errors
         endpoint_schema = get_endpoint_schema(method, path)
+        common_errors = get_common_errors(method, path)
     except Exception:
         endpoint_schema = "(unavailable)"
+        common_errors = "(none)"
 
     prompt = FIX_ARGS_PROMPT.format(
         method=method,
@@ -1822,6 +1965,7 @@ def _ask_llm_to_fix_args(
         body=json.dumps(original_args.get("body"), indent=2, default=str)[:2000],
         error_response=error_response[:2000],
         endpoint_schema=str(endpoint_schema)[:3000],
+        common_errors=common_errors,
     )
 
     try:
@@ -1979,7 +2123,7 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
             if isinstance(obj, list) and idx < len(obj):
                 obj = obj[idx]
             else:
-                log.warning(f"Index [{idx}] out of bounds (list length {len(obj) if isinstance(obj, list) else 'N/A'})")
+                log.debug(f"Index [{idx}] out of bounds (list length {len(obj) if isinstance(obj, list) else 'N/A'})")
                 return _UNRESOLVED
 
     if obj is not None:

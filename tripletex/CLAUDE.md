@@ -107,11 +107,79 @@ Submit endpoint URL at: https://app.ainm.no/submit/tripletex
 1. Run a test submission (or use `test_local.py`)
 2. Harvest logs: `/harvest-logs` (Claude Code skill) — extracts prompts, errors, plans from Cloud Run logs
 3. Diagnose: check `md/api_errors.md` for patterns, review plans for bad reasoning
-4. Fix root cause: update `build_endpoint_catalog.py` (GOTCHA_NOTES, TIER1_TAGS), `prompts.py` (planner hints, workflow recipes), or `agent.py` (execution logic)
-5. Regenerate: `python3 build_endpoint_catalog.py`
-6. Re-test and redeploy
+4. Fix root cause:
+   - **API knowledge issues** → update `curated_overrides.yaml` in the docs repo (`/Users/jakobtiller/Desktop/nmiai/code/tripletex-api-docs/scripts/`), regenerate with `python3 generate_cheatsheets.py`, copy updated files
+   - **Execution/planning logic** → update `agent.py` or `prompts.py`
+5. Re-test and redeploy
 
-## Current Status (2026-03-21)
+## NEXT STEP: Integrate Tripletex API Cheat Sheets (Round 14)
+
+**A separate repo has been created with spec-verified, minimal API cheat sheets:**
+```
+/Users/jakobtiller/Desktop/nmiai/code/tripletex-api-docs/
+```
+
+Read **`MIGRATE.md`** in that repo first — it has the full integration guide.
+
+### What exists there
+- **17 endpoint cheat sheets** (`endpoints/*.md`) — each has a "Send Exactly" JSON body (minimal correct fields), "DO NOT SEND" list, and "Common Errors" table
+- **6 workflow guides** (`guides/*.md`) — step-by-step recipes with exact JSON for invoice, credit note, project invoice, travel expense, voucher, payroll
+- **`curated_overrides.yaml`** — ALL curated domain knowledge (gotchas, field conflicts, prerequisites) in structured YAML
+- **`generate_cheatsheets.py`** — regenerates .md files from OpenAPI spec + overrides
+- All 23 files cross-checked against the real OpenAPI spec (field names, readOnly flags, params)
+
+### What needs to change in this agent
+
+**The core problem:** The current planner sees too much information (130+ endpoints in TIER1_CATALOG, ~11K tokens of field listings) and makes wrong micro-decisions — wrong fields, missing prerequisites, field conflicts. The cheat sheets solve this by showing ONLY what to send.
+
+**Integration plan:**
+
+1. **Copy everything into this project:**
+   ```bash
+   mkdir -p docs
+   cp -r /Users/jakobtiller/Desktop/nmiai/code/tripletex-api-docs/endpoints docs/endpoints
+   cp -r /Users/jakobtiller/Desktop/nmiai/code/tripletex-api-docs/guides docs/guides
+   cp -r /Users/jakobtiller/Desktop/nmiai/code/tripletex-api-docs/scripts docs/scripts
+   cp /Users/jakobtiller/Desktop/nmiai/code/tripletex-api-docs/INDEX.md docs/INDEX.md
+   cp /Users/jakobtiller/Desktop/nmiai/code/tripletex-api-docs/openapi.json docs/openapi.json
+   ```
+   After this, the docs repo is no longer needed. All iteration happens here:
+   - Edit `docs/scripts/curated_overrides.yaml` with new gotchas
+   - Run `python3 docs/scripts/generate_cheatsheets.py` to regenerate
+   - The generator reads `docs/openapi.json` + `docs/scripts/curated_overrides.yaml` → writes `docs/endpoints/*.md`
+
+2. **Replace PLANNER_PROMPT task playbooks** (`prompts.py`):
+   - Current: hand-written playbooks embedded in the prompt
+   - New: use content from `guides/*.md` — same info but spec-verified with exact JSON examples
+   - The guides use the agent's `$step_N.value.id` format already
+
+3. **Replace/augment endpoint_catalog.py** with cheat sheet data:
+   - Use `curated_overrides.yaml` as source of truth for ENDPOINT_CARDS
+   - The Send Exactly bodies become the "schema" the planner sees
+   - The DO NOT SEND lists feed into schema pre-validation
+
+4. **Improve self-heal context** (`agent.py`):
+   - When a 4xx error occurs, load the relevant `docs/endpoints/<domain>.md`
+   - The Common Errors table maps errors → fixes directly
+
+5. **Run tests** with `test_local.py` against the 26 test prompts
+6. **Iterate**: update `curated_overrides.yaml` in the docs repo, regenerate, re-copy
+
+### Key insight
+The cheat sheets use a "Send Exactly + DO NOT SEND" format:
+- **Send Exactly**: Copy-pasteable minimal JSON body (only the fields needed)
+- **DO NOT SEND**: Explicit list of fields that cause errors (readOnly + conflicts)
+- This reduces LLM decision-making: fewer fields shown = fewer wrong choices
+
+### Files to read in the docs repo
+| File | Why |
+|------|-----|
+| `MIGRATE.md` | Full integration guide with 4 options |
+| `curated_overrides.yaml` | All domain knowledge in structured form |
+| `guides/invoice-with-payment.md` | Example recipe — see the format |
+| `endpoints/order.md` | Example cheat sheet — see Send Exactly format |
+
+## Previous Status (2026-03-21)
 See `PLAN.md` for the full iteration roadmap.
 **Round 13**: Fixed critical API usage bugs — removed wrong vatType ID mappings, proactive bank account ensure, POST /invoice guardrails, /v2 path stripping in self-heal, generic POST→/list merging.
 Built on Round 12: dual-model planning (pro+flash best-of-2), FIX_ARGS fast path, 6 deterministic error handlers, schema pre-validation, verifier node, few-shot examples.

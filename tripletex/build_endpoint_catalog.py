@@ -21,7 +21,10 @@ import os
 import sys
 import textwrap
 
+import yaml
+
 SWAGGER_PATH = os.path.join(os.path.dirname(__file__), "swagger.json")
+OVERRIDES_PATH = os.path.join(os.path.dirname(__file__), "docs", "scripts", "curated_overrides.yaml")
 
 # Read-only / server-generated fields to skip everywhere
 READONLY_FIELDS = frozenset({
@@ -44,19 +47,51 @@ TIER1_TAGS = {
     "employee/employment", "employee/employment/details",
 }
 
-# Known gotchas to append as notes
-GOTCHA_NOTES = {
-    "POST /product": "NOTE: Do NOT send priceIncludingVatCurrency — it conflicts with priceExcludingVatCurrency.",
-    "POST /invoice": "NOTE: AVOID — prefer POST /order + PUT /order/{id}/:invoice. If used: invoiceDueDate REQUIRED. orders[] items need customer, orderDate, deliveryDate. Company needs bank account.",
-    "POST /employee": "NOTE: department.id may be required even though schema says optional. userType is REQUIRED — use 'STANDARD' for normal employees, 'EXTENDED' for administrators.",
-    "POST /ledger/voucher": "NOTE: postings cannot be null — must be a non-empty array. If posting has vatType, use GROSS amount — Tripletex auto-generates the VAT line.",
-    "POST /travelExpense": "NOTE: Only creates the shell (employee, travelDetails). Costs and per diems are SEPARATE sub-resources: POST /travelExpense/cost, POST /travelExpense/perDiemCompensation.",
-    "POST /travelExpense/perDiemCompensation": "NOTE: 'location' (string) is REQUIRED even though schema says optional. Set to destination city name.",
-    "POST /travelExpense/cost": "NOTE: Requires travelExpense:{id} reference. Set category, cost, paymentType, currency.",
-    "POST /order": "NOTE: deliveryDate is REQUIRED even though schema says optional. Use orderDate value if not specified.",
-    "PUT /company": "NOTE: Singleton endpoint — NO ID in path. Use PUT /company, NOT PUT /company/{id}. Updates the company entity.",
-    "GET /company": "NOTE: Singleton endpoint — returns the single company. No ID needed.",
-}
+def load_overrides():
+    """Load curated overrides from YAML. Returns flat dict keyed by 'METHOD /path'."""
+    if not os.path.exists(OVERRIDES_PATH):
+        print(f"WARNING: {OVERRIDES_PATH} not found, using empty overrides", file=sys.stderr)
+        return {}
+    with open(OVERRIDES_PATH) as f:
+        raw = yaml.safe_load(f) or {}
+    flat = {}
+    for category_key, category_val in raw.items():
+        if not isinstance(category_val, dict):
+            continue
+        # Category-level notes apply to all endpoints in category
+        cat_notes = category_val.get("notes", [])
+        for ep_key, ep_val in category_val.items():
+            if ep_key == "notes":
+                continue
+            if not isinstance(ep_val, dict):
+                continue
+            entry = dict(ep_val)
+            # Merge category-level notes
+            if cat_notes:
+                entry.setdefault("notes", [])
+                entry["notes"] = cat_notes + entry["notes"]
+            flat[ep_key] = entry
+    return flat
+
+
+def _build_gotcha_notes(overrides):
+    """Build GOTCHA_NOTES dict from curated overrides (notes only, not do_not_send which is shown separately)."""
+    notes = {}
+    for ep_key, ep_val in overrides.items():
+        parts = []
+        for n in ep_val.get("notes", []):
+            parts.append(n)
+        if parts:
+            notes[ep_key] = "NOTE: " + " | ".join(parts[:3])
+    # Hardcoded fallbacks for endpoints not in overrides
+    notes.setdefault("POST /invoice", "NOTE: AVOID — prefer POST /order + PUT /order/{id}/:invoice. If used: invoiceDueDate REQUIRED.")
+    notes.setdefault("GET /company", "NOTE: Singleton endpoint — returns the single company. No ID needed.")
+    return notes
+
+
+# Loaded at build time
+_OVERRIDES = None
+GOTCHA_NOTES = {}  # Populated in main() after loading overrides
 
 # ~35 operations that the agent actually uses — get full endpoint cards
 PRIORITY_ENDPOINTS = {
@@ -234,7 +269,7 @@ def _expand_schema_fields(spec, schema_name):
     return fields
 
 
-def build_endpoint_card(spec, method, path):
+def build_endpoint_card(spec, method, path, overrides=None):
     """Build a rich endpoint card with full field detail for a priority endpoint."""
     method_lower = method.lower()
     op = spec["paths"][path][method_lower]
@@ -253,6 +288,11 @@ def build_endpoint_card(spec, method, path):
         "conflicts": [],
         "gotchas": [],
         "response_shape": "",
+        # New curated fields
+        "send_exactly": "",
+        "do_not_send": [],
+        "common_errors": [],
+        "prerequisites": [],
     }
 
     # Query params
@@ -300,6 +340,18 @@ def build_endpoint_card(spec, method, path):
     if key in GOTCHA_NOTES:
         note = GOTCHA_NOTES[key].replace("NOTE: ", "")
         card["gotchas"].append(note)
+
+    # Enrich with curated overrides
+    if overrides and key in overrides:
+        ov = overrides[key]
+        if ov.get("send_exactly"):
+            card["send_exactly"] = ov["send_exactly"].strip()
+        if ov.get("do_not_send"):
+            card["do_not_send"] = ov["do_not_send"]
+        if ov.get("common_errors"):
+            card["common_errors"] = ov["common_errors"]
+        if ov.get("prerequisites"):
+            card["prerequisites"] = ov["prerequisites"]
 
     # Response shape
     resp_name = get_response_schema_name(spec, path, method_lower)
@@ -519,8 +571,13 @@ def get_response_schema_name(spec, path, method):
     return None
 
 
-def build_catalog(spec):
-    """Build the full endpoint catalog organized by tag."""
+def build_catalog(spec, overrides=None):
+    """Build the full endpoint catalog organized by tag.
+
+    For priority endpoints with send_exactly in overrides, uses the curated
+    minimal body instead of the full schema expansion (saves ~5K tokens).
+    """
+    overrides = overrides or {}
     catalog = {}  # tag -> list of endpoint strings
 
     for path in sorted(spec["paths"].keys()):
@@ -536,24 +593,28 @@ def build_catalog(spec):
 
             # Get summary/description
             summary = op.get("summary", op.get("description", ""))
-            # Clean up and truncate
             summary = summary.replace("\n", " ").strip()
             if len(summary) > 100:
                 summary = summary[:97] + "..."
 
-            # Build the endpoint line
             method_upper = method.upper()
             key = f"{method_upper} {path}"
             line = f"{method_upper} {path} — {summary}"
 
-            # Add body schema for POST/PUT with request body
             has_body = bool(op.get("requestBody"))
-            is_action = ":" in path.split("/")[-1]
-
-            # Use enriched format for priority endpoints
             is_priority = key in PRIORITY_ENDPOINTS
+            ov = overrides.get(key, {})
 
-            if has_body and method in ("post", "put"):
+            # Body: use send_exactly for priority endpoints if available
+            if is_priority and ov.get("send_exactly"):
+                send_ex = ov["send_exactly"].strip()
+                # Compact the JSON to one-ish line for the catalog
+                compact = _compact_send_exactly(send_ex)
+                line += f"\n  Send: {compact}"
+                # Add do_not_send warnings
+                for dns in ov.get("do_not_send", []):
+                    line += f"\n  ⊘ {dns['field']} — {dns['reason']}"
+            elif has_body and method in ("post", "put"):
                 schema_name = get_schema_name_for_body(spec, path, method)
                 if schema_name:
                     is_array = schema_name.endswith("[]")
@@ -564,7 +625,7 @@ def build_catalog(spec):
                     else:
                         line += f"\n  Body: {body_str}"
 
-            # Add query params
+            # Query params
             params = [p for p in op.get("parameters", []) if p.get("in") == "query"]
             if params:
                 param_parts = []
@@ -577,12 +638,12 @@ def build_catalog(spec):
                     param_parts.append(f"{name}({short_type}{req})")
                 line += f"\n  Params: {', '.join(param_parts)}"
 
-            # Add gotcha notes
+            # Gotcha notes (from overrides or hardcoded fallback)
             if key in GOTCHA_NOTES:
                 line += f"\n  {GOTCHA_NOTES[key]}"
 
-            # Add override notes for priority endpoints
-            if is_priority:
+            # Override notes for priority endpoints (only if no send_exactly)
+            if is_priority and not ov.get("send_exactly"):
                 schema_name = get_schema_name_for_body(spec, path, method) if has_body else None
                 if schema_name:
                     base_name = schema_name.rstrip("[]")
@@ -600,8 +661,34 @@ def build_catalog(spec):
     return catalog
 
 
-def build_endpoint_schemas(spec):
-    """Build per-endpoint schema dict for self-heal context."""
+def _compact_send_exactly(send_exactly_str):
+    """Compact a multi-line send_exactly JSON into a readable one-liner.
+
+    Example: '{customer:{id}, orderDate:"YYYY-MM-DD", deliveryDate:"YYYY-MM-DD", orderLines:[{description, count, unitPriceExcludingVatCurrency}]}'
+    """
+    import re
+    s = send_exactly_str.strip()
+    # Collapse whitespace
+    s = re.sub(r'\s+', ' ', s)
+    # Remove quotes around placeholder values but keep field names readable
+    s = s.replace('"<string>"', '"..."')
+    s = s.replace('"<city name>"', '"..."')
+    s = s.replace('"YYYY-MM-DD"', '"date"')
+    s = s.replace('<int>', 'N')
+    s = s.replace('<number>', 'N')
+    s = s.replace('<number_of_days>', 'N')
+    s = s.replace('<positive_for_debit>', '+N')
+    s = s.replace('<negative_for_credit>', '-N')
+    return s
+
+
+def build_endpoint_schemas(spec, overrides=None):
+    """Build per-endpoint schema dict for self-heal context.
+
+    When curated overrides include send_exactly and common_errors, they're
+    appended to give self-heal prompts actionable fix info.
+    """
+    overrides = overrides or {}
     schemas = {}
     for path in spec["paths"]:
         path_def = spec["paths"][path]
@@ -634,18 +721,32 @@ def build_endpoint_schemas(spec):
                     body_str = format_schema_compact(spec, base_name)
                     parts.append(f"Body schema ({base_name}): {body_str}")
 
+            # Curated overrides: send_exactly + common_errors
+            ov = overrides.get(key, {})
+            if ov.get("send_exactly"):
+                parts.append(f"Send exactly:\n{ov['send_exactly'].strip()}")
+            if ov.get("common_errors"):
+                err_lines = []
+                for ce in ov["common_errors"]:
+                    err_lines.append(f"  {ce['symptom']} → {ce['fix']}")
+                parts.append("Common errors:\n" + "\n".join(err_lines))
+            if ov.get("do_not_send"):
+                dns_lines = [f"  {d['field']} — {d['reason']}" for d in ov["do_not_send"]]
+                parts.append("Do NOT send:\n" + "\n".join(dns_lines))
+
             if parts:
-                schemas[key] = "\n".join(parts)
+                schemas[key] = "\n\n".join(parts)
             else:
                 schemas[key] = "(no body or query params)"
 
     return schemas
 
 
-def generate_output(spec):
+def generate_output(spec, overrides=None):
     """Generate the endpoint_catalog.py file content."""
-    catalog = build_catalog(spec)
-    endpoint_schemas = build_endpoint_schemas(spec)
+    overrides = overrides or {}
+    catalog = build_catalog(spec, overrides)
+    endpoint_schemas = build_endpoint_schemas(spec, overrides)
     endpoint_cards = {}
     endpoint_index = build_endpoint_index(spec)
 
@@ -657,7 +758,7 @@ def generate_output(spec):
                 continue
             key = f"{method.upper()} {path}"
             if key in PRIORITY_ENDPOINTS:
-                endpoint_cards[key] = build_endpoint_card(spec, method.upper(), path)
+                endpoint_cards[key] = build_endpoint_card(spec, method.upper(), path, overrides)
 
     # Build tier1 and tier2 text
     tier1_lines = []
@@ -699,6 +800,8 @@ def generate_output(spec):
 
 
 def main():
+    global GOTCHA_NOTES, _OVERRIDES
+
     parser = argparse.ArgumentParser(description="Build endpoint catalog from swagger.json")
     parser.add_argument("--preview", action="store_true", help="Print catalog to stdout instead of generating file")
     parser.add_argument("--schema", type=str, help="Show compact schema for a specific schema name")
@@ -706,12 +809,15 @@ def main():
     args = parser.parse_args()
 
     spec = load_spec()
+    _OVERRIDES = load_overrides()
+    GOTCHA_NOTES = _build_gotcha_notes(_OVERRIDES)
+    print(f"Loaded {len(_OVERRIDES)} curated endpoint overrides")
 
     if args.schema:
         print(format_schema_compact(spec, args.schema))
         return
 
-    catalog = build_catalog(spec)
+    catalog = build_catalog(spec, _OVERRIDES)
 
     if args.stats:
         tier1_count = sum(len(v) for k, v in catalog.items() if k in TIER1_TAGS)
@@ -738,6 +844,10 @@ def main():
         )
         print(f"Endpoint cards (priority): {priority_count}")
         print(f"Endpoint index (all): {len(endpoint_index)}")
+
+        # Count endpoints with curated send_exactly
+        curated_count = sum(1 for k in PRIORITY_ENDPOINTS if k in _OVERRIDES and _OVERRIDES[k].get("send_exactly"))
+        print(f"Endpoints with curated send_exactly: {curated_count}")
         return
 
     if args.preview:
@@ -750,7 +860,7 @@ def main():
         return
 
     # Generate endpoint_catalog.py
-    output = generate_output(spec)
+    output = generate_output(spec, _OVERRIDES)
     output_path = os.path.join(os.path.dirname(__file__), "endpoint_catalog.py")
     with open(output_path, "w") as f:
         f.write(output)

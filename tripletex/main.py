@@ -64,6 +64,16 @@ async def solve(request: Request, body: SolveRequest):
     request_id = str(uuid.uuid4())[:8]
     t_start = time.monotonic()
 
+    # Truncate log file at start of each request (fresh log per test)
+    log_file = os.environ.get("LOG_FILE")
+    if log_file:
+        import logging
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.FileHandler) and handler.baseFilename.endswith(log_file):
+                handler.stream.seek(0)
+                handler.stream.truncate(0)
+                break
+
     log.info(
         "=== New /solve request ===",
         request_id=request_id,

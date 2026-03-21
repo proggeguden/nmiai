@@ -115,6 +115,12 @@ def _format_card_for_self_heal(card: dict) -> str:
             req = " (REQUIRED)" if pinfo.get("required") else ""
             desc = f" — {pinfo['description']}" if pinfo.get("description") else ""
             lines.append(f"  {pname}: {pinfo['type']}{req}{desc}")
+    if card.get("send_exactly"):
+        lines.append(f"Send exactly:\n{card['send_exactly']}")
+    if card.get("do_not_send"):
+        lines.append("Do NOT send:")
+        for d in card["do_not_send"]:
+            lines.append(f"  - {d['field']} — {d['reason']}")
     if card.get("gotchas"):
         lines.append("Gotchas:")
         for g in card["gotchas"]:
@@ -215,6 +221,22 @@ def get_endpoint_card(method: str, path: str) -> dict | None:
     template = re.sub(r'/(\d+)', '/{id}', path)
     key = f"{method.upper()} {template}"
     return ENDPOINT_CARDS.get(key)
+
+
+def get_common_errors(method: str, path: str) -> str:
+    """Get curated common_errors for an endpoint (for self-heal context).
+
+    Returns formatted string of symptom→fix pairs, or '(none)'.
+    """
+    key = f"{method.upper()} {path}"
+    card = ENDPOINT_CARDS.get(key, {})
+    errors = card.get("common_errors", [])
+    if not errors:
+        return "(none)"
+    lines = []
+    for ce in errors:
+        lines.append(f"- {ce['symptom']} → {ce['fix']}")
+    return "\n".join(lines)
 
 
 def get_endpoint_schema(method: str, path: str) -> str:
