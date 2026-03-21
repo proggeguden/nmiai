@@ -1231,7 +1231,13 @@ def build_agent():
     # --- Node: planner (multi-persona) ---
     def planner(state: AgentState) -> dict:
         import random
-        profile = random.choice(PLANNER_PROFILES)
+        # Weighted selection: precise dominates (60%), thorough (30%), creative (10%)
+        # Creative generates analyze_response-heavy plans that are fragile
+        profile = random.choices(
+            PLANNER_PROFILES,
+            weights=[60, 30, 10],
+            k=1,
+        )[0]
 
         prompt_text = PLANNER_PROMPT.format(
             today=date.today().isoformat(),

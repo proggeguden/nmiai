@@ -195,7 +195,8 @@ def build_generic_tools(make_request_fn):
         Returns JSON with the extracted/computed answer."""
         import os
         import re
-        import google.generativeai as genai
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_core.messages import HumanMessage
 
         api_key = os.environ.get("GOOGLE_API_KEY", "")
         model_name = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
@@ -207,45 +208,35 @@ DATA:
 
 QUESTION: {question}
 
-Return ONLY a JSON object with the answer. Use the exact field names requested in the question."""
+Return ONLY a valid JSON object with the answer. Use the exact field names requested in the question. No explanation, no markdown — just the JSON."""
 
         try:
-            # Use Gemini native API with JSON mode for guaranteed valid JSON
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.GenerationConfig(
-                    response_mime_type="application/json",
-                    temperature=0,
-                ),
-            )
-
-            raw = response.text.strip()
-            # Validate it's JSON
+            llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key, temperature=0)
+            response = llm.invoke([HumanMessage(content=prompt)])
+            content = response.content
+            if isinstance(content, list):
+                raw = "".join(str(part) for part in content).strip()
+            else:
+                raw = str(content).strip()
+            # Strip markdown code blocks if present
+            md_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', raw, re.DOTALL)
+            if md_match:
+                raw = md_match.group(1).strip()
+            # Validate JSON
             json.loads(raw)
             return raw
-        except Exception as e:
-            # Fallback: try without JSON mode
+        except json.JSONDecodeError:
+            # Try to extract any JSON from response
             try:
-                response = model.generate_content(prompt)
-                raw = response.text.strip()
-                # Strip markdown code blocks
-                md_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', raw, re.DOTALL)
-                if md_match:
-                    raw = md_match.group(1).strip()
-                json.loads(raw)
-                return raw
-            except Exception as e2:
-                # Last resort: try to extract any JSON from the response
-                try:
-                    json_match = re.search(r'[\[{].*[\]}]', raw, re.DOTALL)
-                    if json_match:
-                        json.loads(json_match.group(0))
-                        return json_match.group(0)
-                except Exception:
-                    pass
-                return json.dumps({"error": f"analyze_response failed: {str(e2)[:200]}"})
+                json_match = re.search(r'[\[{].*[\]}]', raw, re.DOTALL)
+                if json_match:
+                    json.loads(json_match.group(0))
+                    return json_match.group(0)
+            except Exception:
+                pass
+            return json.dumps({"error": f"Could not parse JSON from analyze_response: {raw[:200]}"})
+        except Exception as e:
+            return json.dumps({"error": f"analyze_response failed: {str(e)[:200]}"})
 
     call_api_tool = StructuredTool.from_function(
         func=call_api,
