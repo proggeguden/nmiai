@@ -1,93 +1,50 @@
 # Tripletex — Road to Perfect Score
 
-**Goal:** World-class score (correctness × efficiency). Current baseline: 26 local test prompts, efficiency-optimized planner.
+## Status: Round 14 Complete (2026-03-21)
 
-## Status: Round 14 In Progress (2026-03-21)
-
-### Architecture
+### Architecture (current)
 ```
-Prompt → Best-of-2 Planner (pro t=0 vs flash t=0.3) → validate_plan() → Executor → Deterministic Fixes → Self-Heal Cascade → Verifier → Done
-                                                           ↓
-                                                   POST→/list merge, bank account ensure,
-                                                   division ensure, travel paymentType inject,
-                                                   vatType whitelist, /v2 strip, invoiceDueDate inject
+Prompt + Files → Single Planner (gemini-2.5-pro) → validate_plan() → Executor → Abort on first error → Verifier
+                     ↓                                    ↓
+              SLIM_CATALOG (~2.3K tokens)          bank account ensure,
+              2 few-shot examples                  division ensure, /v2 strip,
+                                                   invoiceDate inject, row numbers
 ```
 
-- **Best-of-2 planner**: gemini-2.5-pro (t=0) vs gemini-2.5-flash (t=0.3), scored by _score_plan()
-- **Curated API docs**: `docs/scripts/curated_overrides.yaml` feeds Send Exactly bodies + common_errors into ENDPOINT_CARDS and TIER1_CATALOG
-- **validate_plan()**: merges POSTs→/list, bank account ensure, division ensure, travel paymentType inject, vatType whitelist (only known output IDs: 3,5,6,31,32), /v2 strip, invoiceDueDate inject, department inject
-- **Deterministic error handlers**: bank account, department, product number, price conflict, voucher rows, overlapping employment — no LLM calls
-- **Self-heal cascade**: FIX_ARGS → REPLAN → REPLAN (3 attempts), with common_errors context from curated overrides
-- **Verifier**: post-execution LLM check with corrective steps
+### Round 14 Summary
 
-### Round 14 Changes
+**Major changes this session:**
+1. Integrated curated API cheat sheets from tripletex-api-docs repo into docs/
+2. Full planner prompt rewrite — concise Key Patterns + Rules + 2 Examples (~1.5K tokens)
+3. Dropped best-of-2 planning → single model (gemini-2.5-pro)
+4. SLIM_CATALOG replaces TIER1_CATALOG in planner (2.3K vs 12.7K tokens, 83% reduction)
+5. Removed REPLAN and FIX_ARGS LLM calls (too slow, caused timeouts)
+6. Abort on first error (was 3) — prevents cascading $step_N failures
+7. Structured GCP error logging (>>>STEP_FAILED<<<) with full context
+8. PDF/image files passed as multimodal content to Gemini
+9. Fixed critical bugs: paymentTypeId=0 injection, travel cost stripping contradiction
+10. validate_plan stripped to 5 essential fixes (was 17 patches)
 
-**Curated API docs integration:**
-1. Copied `tripletex-api-docs/` into `docs/` — 17 endpoint cheat sheets, 6 workflow guides, curated_overrides.yaml
-2. `build_endpoint_catalog.py` reads `curated_overrides.yaml` — Send Exactly bodies in TIER1_CATALOG, enriched ENDPOINT_CARDS with common_errors/do_not_send/prerequisites
-3. Playbooks in `prompts.py` replaced with spec-verified Send Exactly bodies from guides
-
-**Fixes from iterative test-by-test debugging (15 tests passing):**
-4. **Payment split**: Never combine paidAmount with PUT /:invoice. Invoice first, then PUT /invoice/{id}/:payment using exact `$step_N.value.amount` from response. Always GET /invoice/paymentType first (paymentTypeId:0 is invalid).
-5. **Payroll**: dateOfBirth required on employee for employment. Division auto-injection (`ensure_division` meta-step with dummy org number). rate+count required on salary specifications.
-6. **Travel**: Fixed `_shift_step_refs` min_step bug — refs to steps before injection point no longer get corrupted. paymentType always overwritten to correct ref.
-7. **Voucher**: amountGrossCurrency must equal amountGross on every posting. Supplier ref required on AP posting.
-8. **vatType**: Correct OUTPUT IDs (3=25%, 31=15%, 32=12%, 5/6=0%). Only strip unknown IDs from order lines, keep valid ones. IDs 1,11,13 are INPUT VAT — never use on order lines.
-9. **GET /invoice**: invoiceDateFrom + invoiceDateTo are REQUIRED params.
-10. **Sandbox starts empty**: Cancel-payment tasks must create the full chain first (customer → order → invoice → pay → cancel).
-
-**Testing infrastructure:**
-11. SKIP_SELF_HEAL env var for fast local iteration (fail fast, no LLM replan)
-12. LOG_FILE captures all levels, truncated per request
-13. test_local.py randomizes emails/org numbers to avoid sandbox collisions
+**Key production insights discovered:**
+- Employees referenced by email already exist (GET, don't create)
+- Products with numbers in parentheses already exist (GET /product?productNumber=N)
+- Bank account ensure is needed in production
+- Payment must be separate from /:invoice (use real amount from response)
+- Comma-separated GET lookups work across all major endpoints
 
 ---
 
-## Next Steps (Priority Order)
+## Next Steps
 
-1. **TODO: ensure_vat_registered** — Add deterministic step to register company for VAT (PUT /ledger/vatSettings) when plan needs non-default vatType. Fresh accounts may be VAT_NOT_REGISTERED.
-2. **Continue local test iteration** — remaining tests: #11 (cancel payment), #19 (partial invoice), #25 (custom dimension + voucher)
-3. **Deploy and submit** — measure real scores with Round 14 fixes
-4. **Harvest logs** — analyze production errors, iterate
+1. **Harvest GCP logs** — read structured error logs from production submissions, identify remaining failure patterns
+2. **ensure_vat_registered** — add deterministic step for VAT registration when needed
+3. **Iterate on production errors** — each >>>STEP_FAILED<<< log contains prompt + plan + error for diagnosis
+4. **Improve SLIM_CATALOG** — add more endpoints based on production usage patterns
+5. **Re-enable FIX_ARGS** — if we can make it faster (shorter prompt, flash model)
 
----
-
-## Iteration Protocol
-
-1. **Start server**: `LOG_FILE=test_run.log SKIP_SELF_HEAL=1 python3 -m uvicorn main:app --reload --port 8080`
-2. **Run one test**: `python3 test_local.py <ID>`
-3. **Read log**: every WARNING is an error to fix
-4. **Fix root cause**: update curated_overrides.yaml → regenerate, or fix prompts.py/agent.py
-5. **Re-run** until clean, then move to next test
-6. **Deploy** when all tests pass
-
-## Test Status (Round 14)
-
-| ID | Category | Status | Notes |
-|----|----------|--------|-------|
-| 2 | department | PASS | Bulk /list |
-| 24 | department | PASS | Bulk /list |
-| 5 | supplier | PASS | |
-| 7 | customer | PASS | With address |
-| 8 | employee | PASS | With dateOfBirth + employment |
-| 4 | invoice | PASS | Create + send |
-| 1 | payment | PASS | Separate payment with real amount |
-| 6 | project | PASS | With manager + entitlements |
-| 9 | invoice | PASS | Log hours + project invoice |
-| 15 | payroll | PASS | Base salary + bonus, division ensure |
-| 23 | travel | PASS | Costs + per diem |
-| 26 | invoice | PASS | Supplier invoice with VAT voucher |
-| 12 | invoice | PASS | Credit note |
-| 14 | invoice | PASS | Products + invoice + payment |
-| 21 | invoice | PASS | Multiple VAT rates (needs VAT registration) |
-| 11 | payment | FAIL | Cancel payment — needs full chain creation first |
-| 19 | project | TODO | Fixed-price project + partial invoice |
-| 25 | voucher | TODO | Custom dimension + voucher |
-| 3,10,13,16,17,18,20,22 | various | SKIP | Language duplicates of passing tests |
-
-## Score Tracking
-
-| Date | Round | Correctness | Efficiency | Notes |
-|------|-------|-------------|------------|-------|
-| | R11 | | | Docs-driven prompt rewrite + deterministic error handlers |
-| 2026-03-21 | R14 | | | Curated docs integration + 15 tests passing locally |
+## Deploy Command
+```bash
+cd tripletex/
+gcloud builds submit --tag gcr.io/ai-nm26osl-1788/tripletex
+gcloud run deploy tripletex --image gcr.io/ai-nm26osl-1788/tripletex --platform managed --region europe-west1 --allow-unauthenticated --memory 512Mi --timeout 300 --set-env-vars "GOOGLE_API_KEY=...,GEMINI_PLANNER_MODEL=gemini-2.5-pro,GEMINI_MODEL=gemini-2.5-flash"
+```
