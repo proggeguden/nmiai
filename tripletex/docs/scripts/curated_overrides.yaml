@@ -121,8 +121,9 @@ employee:
     notes:
       - "userType is REQUIRED: 'STANDARD' or 'EXTENDED'"
       - "dateOfBirth is REQUIRED for payroll — if not given in task, use 1990-01-01"
-      - "Always dedup by email first: GET /employee?email=X — employees persist across sandbox resets"
       - "department is REQUIRED even though spec may not mark it"
+      - "nationalIdentityNumber must be exactly 11 digits (Norwegian fødselsnummer): DDMMYYNNNNN. No spaces or dashes."
+      - "If a PDF or file is attached with employee contract data, extract ALL fields: name, email, dateOfBirth, nationalIdentityNumber, department, salary, employment percentage, start date, occupation code"
 
 employee-entitlement:
   "PUT /employee/entitlement/:grantEntitlementsByTemplate":

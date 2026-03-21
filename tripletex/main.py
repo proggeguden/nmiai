@@ -113,6 +113,20 @@ async def solve(request: Request, body: SolveRequest):
                 decoded = content.decode("utf-8", errors="replace")
                 log.info(f"File decoded: {f.filename}", mime_type=f.mime_type, size_bytes=len(content), request_id=request_id)
                 file_context += f"\n[File: {f.filename}]\n{decoded}\n"
+            elif f.mime_type == "application/pdf":
+                # Extract text from PDF
+                try:
+                    import fitz  # pymupdf
+                    doc = fitz.open(stream=content, filetype="pdf")
+                    pdf_text = ""
+                    for page in doc:
+                        pdf_text += page.get_text()
+                    doc.close()
+                    log.info(f"PDF extracted: {f.filename}", pages=len(doc), chars=len(pdf_text), request_id=request_id)
+                    file_context += f"\n[File: {f.filename}]\n{pdf_text}\n"
+                except Exception as pdf_err:
+                    log.warning(f"PDF extraction failed: {f.filename}", error=str(pdf_err), request_id=request_id)
+                    file_context += f"\n[File: {f.filename} (PDF, {len(content)} bytes) — could not extract text]\n"
             else:
                 log.info(f"File attached (binary): {f.filename}", mime_type=f.mime_type, size_bytes=len(content), request_id=request_id)
                 file_context += f"\n[File: {f.filename} ({f.mime_type}, {len(content)} bytes) — binary file, extract relevant data if needed]\n"

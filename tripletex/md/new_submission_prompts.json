@@ -11,7 +11,7 @@
   },
   {
     "id": 2,
-    "prompt": "Enviámos uma fatura de 4885 EUR ao Luz do Sol Lda (org. nº 947361074) quando a taxa de câmbio era 11.81 NOK/EUR. O cliente pagou agora, mas a taxa é 10.83 NOK/EUR. Registe o pagamento e lance a diferença cambial (disagio) na conta correta.",
+    "prompt": "Has recibido un contrato de trabajo (ver PDF adjunto). Crea el empleado en Tripletex con todos los datos del contrato: numero de identidad, fecha de nacimiento, departamento, codigo de ocupacion, salario, porcentaje de empleo y fecha de inicio.",
     "task_number": 27,
     "old": false
   },

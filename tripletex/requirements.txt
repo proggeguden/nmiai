@@ -7,3 +7,4 @@ langchain-core
 python-dotenv
 pydantic>=2.0
 pyyaml
+pymupdf
