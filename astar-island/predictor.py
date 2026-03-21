@@ -39,7 +39,7 @@ PROB_FLOOR = 0.0005
 # Settlements/ports are highly variable (trust model), plains/forest are predictable (trust data)
 K_PER_CODE = {
     1: 8.0,   # Settlement — high variance, trust model
-    2: 8.0,   # Port — high variance, trust model
+    2: 15.0,  # Port — few observations per cell, trust model more
     3: 5.0,   # Ruin — moderate
     0: 3.0,   # Empty — predictable
     11: 3.0,  # Plains — predictable
@@ -1134,8 +1134,8 @@ def build_prediction(height, width, initial_grid, observations,
         # Determine minimum port probability based on observed rate
         if port_formation_rate is not None and port_formation_rate > 0.005:
             # Scale observed rate by distance: d≤1 gets full rate, d≤3 gets half
-            base_port_near = min(port_formation_rate * 1.5, 0.40)  # d≤1
-            base_port_mid = min(port_formation_rate * 0.8, 0.25)   # d=2-3
+            base_port_near = min(port_formation_rate * 1.0, 0.25)  # d≤1
+            base_port_mid = min(port_formation_rate * 0.5, 0.15)   # d=2-3
             base_port_far = min(port_formation_rate * 0.3, 0.10)   # d=4-5
         else:
             # Fallback: conservative fixed minimums
@@ -1237,8 +1237,11 @@ def build_prediction(height, width, initial_grid, observations,
         if exp_count > 0:
             model_avg = model_exp / exp_count
             if model_avg > 0.005:
-                scale = expansion_rate / model_avg
-                scale = max(0.3, min(scale, 3.5))  # wider clamp for extreme rounds
+                raw_scale = expansion_rate / model_avg
+                # Dampen: 30% correction, not full override. The spatial bucket model
+                # already encodes expansion rates from the same observations.
+                scale = 1.0 + 0.3 * (raw_scale - 1.0)
+                scale = max(0.7, min(scale, 1.5))
                 if abs(scale - 1.0) > 0.05:  # only adjust if meaningful difference
                     for r in range(height):
                         for c in range(width):
