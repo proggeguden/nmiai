@@ -1561,89 +1561,11 @@ def build_agent():
                 except Exception:
                     pass
 
-        # ── Deterministic fix: duplicate ledger account number → GET existing account ──
-        if (
-            status_code in RETRYABLE_STATUS_CODES
-            and resolved_args.get("method") == "POST"
-            and resolved_args.get("path") == "/ledger/account"
-        ):
-            body = resolved_args.get("body")
-            acct_number = body.get("number") if isinstance(body, dict) else None
-            if acct_number:
-                call_api_tool = tool_map.get("call_api")
-                if call_api_tool:
-                    log.info(f"Deterministic fix: account {acct_number} may exist, searching via GET")
-                    search_result = call_api_tool.invoke({
-                        "method": "GET",
-                        "path": "/ledger/account",
-                        "query_params": {"number": str(acct_number), "count": 1},
-                    })
-                    try:
-                        search_parsed = json.loads(search_result)
-                        values = search_parsed.get("values", [])
-                        if values:
-                            results[f"step_{step['step_number']}"] = {"value": values[0]}
-                            completed.append(step["step_number"])
-                            log.info(f"Step {step['step_number']} resolved: found existing account {acct_number} (id={values[0].get('id')})")
-                            return {
-                                "current_step": step_idx + 1,
-                                "results": results,
-                                "completed_steps": completed,
-                                "error_count": error_count,
-                                "healed_steps": healed_steps,
-                                "messages": [AIMessage(content=f"Step {step['step_number']} done (found existing account {acct_number})")],
-                            }
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-
-        # ── Deterministic fix: duplicate product number → GET existing product ──
-        if (
-            status_code in RETRYABLE_STATUS_CODES
-            and "produktnummeret" in error_lower
-            and "er i bruk" in error_lower
-        ):
-            # Product already exists — search for it by number (GET is free)
-            body = resolved_args.get("body")
-            product_number = None
-            if isinstance(body, dict):
-                product_number = body.get("number")
-            elif isinstance(body, list) and body:
-                product_number = body[0].get("number") if isinstance(body[0], dict) else None
-
-            if product_number:
-                call_api_tool = tool_map.get("call_api")
-                if call_api_tool:
-                    log.info(f"Deterministic fix: product number {product_number} exists, searching via GET")
-                    search_result = call_api_tool.invoke({
-                        "method": "GET",
-                        "path": "/product",
-                        "query_params": {"number": str(product_number), "count": 1, "fields": "id,name,number"},
-                    })
-                    try:
-                        search_parsed = json.loads(search_result)
-                        values = search_parsed.get("values", [])
-                        if values:
-                            # Found existing product — use it as the step result
-                            results[f"step_{step['step_number']}"] = {"value": values[0]}
-                            completed.append(step["step_number"])
-                            log.info(f"Step {step['step_number']} resolved: found existing product {values[0].get('id')}")
-                            return {
-                                "current_step": step_idx + 1,
-                                "results": results,
-                                "completed_steps": completed,
-                                "error_count": error_count,
-                                "healed_steps": healed_steps,
-                                "messages": [AIMessage(content=f"Step {step['step_number']} done (found existing product)")],
-                            }
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-
         # ── All other errors: fail fast, log for analysis ──
         # No LLM self-heal, no retries, no data corruption.
-        # Removed: department inject (#2), price conflict retry (#4),
-        # voucher row renumber (#5), dimension name fix (#6), PM entitlements (#7)
-        # These are now handled in validate_plan() or prompt instructions.
-                    _log_self_heal(tool.name, resolved_args, result_str, fixed_args, retry_succeeded=False)
+        # Only ensure_bank_account deterministic fix above is kept.
+        # Product/account handlers REMOVED — they caused cascade failures on bulk
+        # creates and wasted efficiency points on unnecessary 422s.
 
         # Out of replans or non-retryable — record error and move on
         log.warning(f"Step {step['step_number']} failed with status {status_code}")
