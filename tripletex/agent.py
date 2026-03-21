@@ -1247,8 +1247,14 @@ def build_agent():
             # Find which $step_N refs are unresolved
             unresolved_refs = _find_unresolved_refs(args, results)
             log.warning(
-                f"Step {step['step_number']} FAILED: unresolved refs: {unresolved_refs}. "
-                f"Original args: {json.dumps(args, default=str)[:300]}"
+                f">>>STEP_FAILED<<< Step {step['step_number']} unresolved refs",
+                error_type="unresolved_refs",
+                failed_step=step['step_number'],
+                unresolved=unresolved_refs,
+                step_args=json.dumps(args, default=str)[:1000],
+                prompt=state.get("original_prompt", "")[:500],
+                plan=json.dumps(plan, default=str)[:2000],
+                prior_results={k: str(v)[:200] for k, v in results.items()},
             )
             results[f"step_{step['step_number']}"] = {
                 "skipped": True,
@@ -1648,8 +1654,18 @@ def build_agent():
                     log.warning(f"FIX_ARGS retry also failed with status {retry_status}")
                     _log_self_heal(tool.name, resolved_args, result_str, fixed_args, retry_succeeded=False)
 
-        # Out of replans or non-retryable — record error and move on
-        log.warning(f"Step {step['step_number']} failed with status {status_code}")
+        # Record error and abort (check_done will stop execution)
+        log.warning(
+            f">>>STEP_FAILED<<< Step {step['step_number']} API error {status_code}",
+            error_type="api_error",
+            failed_step=step['step_number'],
+            status_code=status_code,
+            api_error=result_str[:1000],
+            resolved_args=json.dumps(resolved_args, default=str)[:1000],
+            prompt=state.get("original_prompt", "")[:500],
+            plan=json.dumps(plan, default=str)[:2000],
+            prior_results={k: str(v)[:200] for k, v in results.items()},
+        )
         try:
             parsed = json.loads(result_str)
         except (json.JSONDecodeError, TypeError):
@@ -1675,8 +1691,8 @@ def build_agent():
         if state["current_step"] >= len(state["plan"]):
             log.info("All steps completed, routing to verifier")
             return "verify"
-        if state.get("error_count", 0) >= 3:
-            log.warning("Too many errors, aborting to preserve efficiency score")
+        if state.get("error_count", 0) >= 1:
+            log.warning("Step failed — aborting execution to avoid cascading errors")
             return "verify"
         return "continue"
 
