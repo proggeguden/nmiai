@@ -2,63 +2,92 @@
 
 **Goal:** World-class score (correctness × efficiency). Current baseline: 26 local test prompts, efficiency-optimized planner.
 
-## Status: Round 13 Complete (2026-03-21)
+## Status: Round 14 In Progress (2026-03-21)
 
 ### Architecture
 ```
 Prompt → Best-of-2 Planner (pro t=0 vs flash t=0.3) → validate_plan() → Executor → Deterministic Fixes → Self-Heal Cascade → Verifier → Done
                                                            ↓
                                                    POST→/list merge, bank account ensure,
-                                                   vatType strip, /v2 strip, invoiceDueDate inject
+                                                   division ensure, travel paymentType inject,
+                                                   vatType whitelist, /v2 strip, invoiceDueDate inject
 ```
 
 - **Best-of-2 planner**: gemini-2.5-pro (t=0) vs gemini-2.5-flash (t=0.3), scored by _score_plan()
-- **validate_plan()**: merges consecutive POSTs→/list, proactive bank account ensure, strips vatType from order lines, strips /v2 prefix, injects invoiceDueDate, fixes fields/dates, injects department/travel paymentType
-- **Deterministic error handlers**: bank account, department, product number, price conflict, voucher rows — no LLM calls
-- **Self-heal cascade**: FIX_ARGS → REPLAN → REPLAN (3 attempts, /v2 sanitized)
+- **Curated API docs**: `docs/scripts/curated_overrides.yaml` feeds Send Exactly bodies + common_errors into ENDPOINT_CARDS and TIER1_CATALOG
+- **validate_plan()**: merges POSTs→/list, bank account ensure, division ensure, travel paymentType inject, vatType whitelist (only known output IDs: 3,5,6,31,32), /v2 strip, invoiceDueDate inject, department inject
+- **Deterministic error handlers**: bank account, department, product number, price conflict, voucher rows, overlapping employment — no LLM calls
+- **Self-heal cascade**: FIX_ARGS → REPLAN → REPLAN (3 attempts), with common_errors context from curated overrides
 - **Verifier**: post-execution LLM check with corrective steps
-- **Default model**: gemini-2.5-flash (planner: gemini-2.5-pro)
 
-### Changes in Round 12b-13
+### Round 14 Changes
 
-**Round 12b — Generic /list Merging:**
-1. `_merge_consecutive_posts_to_list()` — merges consecutive same-path POSTs into bulk /list calls
-2. Rewrites downstream $step_N.value.id → $step_N.values[idx].id refs
-3. Expanded /list mentions in playbook (customers, suppliers, employees)
-4. _score_plan() penalty for missed bulk ops (-5 per extra step)
+**Curated API docs integration:**
+1. Copied `tripletex-api-docs/` into `docs/` — 17 endpoint cheat sheets, 6 workflow guides, curated_overrides.yaml
+2. `build_endpoint_catalog.py` reads `curated_overrides.yaml` — Send Exactly bodies in TIER1_CATALOG, enriched ENDPOINT_CARDS with common_errors/do_not_send/prerequisites
+3. Playbooks in `prompts.py` replaced with spec-verified Send Exactly bodies from guides
 
-**Round 13 — Fix Critical API Usage Bugs:**
-5. **vatType fix**: Removed wrong hardcoded ID mapping (1=0% was actually INPUT VAT). Stopped stripping GET /ledger/vatType lookups. Strip vatType from order lines defensively (system defaults to 25%).
-6. **Proactive bank account**: Re-enabled ensure_bank_account meta-step prepend for invoicing plans (prevents 422 entirely)
-7. **POST /invoice guardrails**: Discouraged in prompt/scoring (-15), auto-inject invoiceDueDate if missing, updated GOTCHA_NOTES
-8. **/v2 path stripping**: Strip /v2/ prefix in validate_plan(), FIX_ARGS response, REPLAN response
-9. **Prompt improvements**: Added rules 11-12 (no /v2, no vatType on orders), updated FIX_ARGS/REPLAN prompts
-10. Updated build_endpoint_catalog.py: Invoice.invoiceDueDate required, POST /invoice AVOID gotcha
+**Fixes from iterative test-by-test debugging (15 tests passing):**
+4. **Payment split**: Never combine paidAmount with PUT /:invoice. Invoice first, then PUT /invoice/{id}/:payment using exact `$step_N.value.amount` from response. Always GET /invoice/paymentType first (paymentTypeId:0 is invalid).
+5. **Payroll**: dateOfBirth required on employee for employment. Division auto-injection (`ensure_division` meta-step with dummy org number). rate+count required on salary specifications.
+6. **Travel**: Fixed `_shift_step_refs` min_step bug — refs to steps before injection point no longer get corrupted. paymentType always overwritten to correct ref.
+7. **Voucher**: amountGrossCurrency must equal amountGross on every posting. Supplier ref required on AP posting.
+8. **vatType**: Correct OUTPUT IDs (3=25%, 31=15%, 32=12%, 5/6=0%). Only strip unknown IDs from order lines, keep valid ones. IDs 1,11,13 are INPUT VAT — never use on order lines.
+9. **GET /invoice**: invoiceDateFrom + invoiceDateTo are REQUIRED params.
+10. **Sandbox starts empty**: Cancel-payment tasks must create the full chain first (customer → order → invoice → pay → cancel).
+
+**Testing infrastructure:**
+11. SKIP_SELF_HEAL env var for fast local iteration (fail fast, no LLM replan)
+12. LOG_FILE captures all levels, truncated per request
+13. test_local.py randomizes emails/org numbers to avoid sandbox collisions
 
 ---
 
 ## Next Steps (Priority Order)
 
-1. **Submit and harvest logs** — measure real scores with Round 13 fixes
-2. **Self-improvement loop** — read gcloud logs, analyze errors, iterate automatically
-3. **Harder tasks releasing tomorrow** — ensure robustness for unknown task types
-4. **Further iterate** — based on production log patterns
+1. **TODO: ensure_vat_registered** — Add deterministic step to register company for VAT (PUT /ledger/vatSettings) when plan needs non-default vatType. Fresh accounts may be VAT_NOT_REGISTERED.
+2. **Continue local test iteration** — remaining tests: #11 (cancel payment), #19 (partial invoice), #25 (custom dimension + voucher)
+3. **Deploy and submit** — measure real scores with Round 14 fixes
+4. **Harvest logs** — analyze production errors, iterate
 
 ---
 
 ## Iteration Protocol
 
-1. **Measure** — Run all prompts in `test_local.py`, note warnings per test
-2. **Harvest** — `/harvest-logs` to pull real submission data
-3. **Diagnose** — Review plans and errors: is the problem planning, execution, or self-heal?
-4. **Fix** — Pick the highest-impact item from this plan
-5. **Test** — Run affected test categories locally
-6. **Deploy** — `gcloud builds submit` + `gcloud run deploy`
-7. **Submit** — Run a real submission, harvest logs, compare scores
-8. **Update** — Update this plan with results and next priorities
+1. **Start server**: `LOG_FILE=test_run.log SKIP_SELF_HEAL=1 python3 -m uvicorn main:app --reload --port 8080`
+2. **Run one test**: `python3 test_local.py <ID>`
+3. **Read log**: every WARNING is an error to fix
+4. **Fix root cause**: update curated_overrides.yaml → regenerate, or fix prompts.py/agent.py
+5. **Re-run** until clean, then move to next test
+6. **Deploy** when all tests pass
+
+## Test Status (Round 14)
+
+| ID | Category | Status | Notes |
+|----|----------|--------|-------|
+| 2 | department | PASS | Bulk /list |
+| 24 | department | PASS | Bulk /list |
+| 5 | supplier | PASS | |
+| 7 | customer | PASS | With address |
+| 8 | employee | PASS | With dateOfBirth + employment |
+| 4 | invoice | PASS | Create + send |
+| 1 | payment | PASS | Separate payment with real amount |
+| 6 | project | PASS | With manager + entitlements |
+| 9 | invoice | PASS | Log hours + project invoice |
+| 15 | payroll | PASS | Base salary + bonus, division ensure |
+| 23 | travel | PASS | Costs + per diem |
+| 26 | invoice | PASS | Supplier invoice with VAT voucher |
+| 12 | invoice | PASS | Credit note |
+| 14 | invoice | PASS | Products + invoice + payment |
+| 21 | invoice | PASS | Multiple VAT rates (needs VAT registration) |
+| 11 | payment | FAIL | Cancel payment — needs full chain creation first |
+| 19 | project | TODO | Fixed-price project + partial invoice |
+| 25 | voucher | TODO | Custom dimension + voucher |
+| 3,10,13,16,17,18,20,22 | various | SKIP | Language duplicates of passing tests |
 
 ## Score Tracking
 
 | Date | Round | Correctness | Efficiency | Notes |
 |------|-------|-------------|------------|-------|
 | | R11 | | | Docs-driven prompt rewrite + deterministic error handlers |
+| 2026-03-21 | R14 | | | Curated docs integration + 15 tests passing locally |

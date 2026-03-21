@@ -104,82 +104,33 @@ Submit endpoint URL at: https://app.ainm.no/submit/tripletex
 - `PUT /company` is a singleton — NO ID in path. validate_plan auto-fixes PUT /company/{id}
 
 ## Iteration Workflow
-1. Run a test submission (or use `test_local.py`)
-2. Harvest logs: `/harvest-logs` (Claude Code skill) — extracts prompts, errors, plans from Cloud Run logs
-3. Diagnose: check `md/api_errors.md` for patterns, review plans for bad reasoning
-4. Fix root cause:
-   - **API knowledge issues** → update `curated_overrides.yaml` in the docs repo (`/Users/jakobtiller/Desktop/nmiai/code/tripletex-api-docs/scripts/`), regenerate with `python3 generate_cheatsheets.py`, copy updated files
-   - **Execution/planning logic** → update `agent.py` or `prompts.py`
-5. Re-test and redeploy
+1. Run a test: `LOG_FILE=test_run.log SKIP_SELF_HEAL=1 python3 -m uvicorn main:app --reload --port 8080`, then `python3 test_local.py <ID>`
+2. Read `test_run.log` — every WARNING is an error to fix
+3. Fix root cause:
+   - **API knowledge issues** → update `docs/scripts/curated_overrides.yaml`, then `python3 build_endpoint_catalog.py`
+   - **Planning logic** → update playbooks in `prompts.py`
+   - **Execution/validation** → update `agent.py` (validate_plan, validate_step, deterministic handlers)
+4. Re-run test until clean, move to next test
+5. Deploy: `gcloud builds submit` + `gcloud run deploy` (remove SKIP_SELF_HEAL for production)
+6. Harvest production logs: `/harvest-logs` skill
 
-## NEXT STEP: Integrate Tripletex API Cheat Sheets (Round 14)
+## Curated API Docs (integrated in Round 14)
 
-**A separate repo has been created with spec-verified, minimal API cheat sheets:**
-```
-/Users/jakobtiller/Desktop/nmiai/code/tripletex-api-docs/
-```
+All docs live in `docs/` — the external repo is no longer needed.
 
-Read **`MIGRATE.md`** in that repo first — it has the full integration guide.
+| Path | Purpose |
+|------|---------|
+| `docs/scripts/curated_overrides.yaml` | **Source of truth** — Send Exactly bodies, DO NOT SEND, common_errors per endpoint |
+| `docs/endpoints/*.md` | 17 auto-generated cheat sheets (from openapi.json + overrides) |
+| `docs/guides/*.md` | 6 workflow recipes (invoice, credit note, project, travel, voucher, payroll) |
+| `docs/scripts/generate_cheatsheets.py` | Regenerates .md files from spec + overrides |
+| `docs/openapi.json` | OpenAPI 3.0 spec |
 
-### What exists there
-- **17 endpoint cheat sheets** (`endpoints/*.md`) — each has a "Send Exactly" JSON body (minimal correct fields), "DO NOT SEND" list, and "Common Errors" table
-- **6 workflow guides** (`guides/*.md`) — step-by-step recipes with exact JSON for invoice, credit note, project invoice, travel expense, voucher, payroll
-- **`curated_overrides.yaml`** — ALL curated domain knowledge (gotchas, field conflicts, prerequisites) in structured YAML
-- **`generate_cheatsheets.py`** — regenerates .md files from OpenAPI spec + overrides
-- All 23 files cross-checked against the real OpenAPI spec (field names, readOnly flags, params)
+**To update API knowledge:** edit `curated_overrides.yaml` → `python3 build_endpoint_catalog.py` → test
 
-### What needs to change in this agent
+## TODO for Production
+- **ensure_vat_registered**: Add deterministic step to PUT /ledger/vatSettings with vatRegistrationStatus=VAT_REGISTERED when plan uses non-default vatType IDs. Fresh accounts may be VAT_NOT_REGISTERED.
 
-**The core problem:** The current planner sees too much information (130+ endpoints in TIER1_CATALOG, ~11K tokens of field listings) and makes wrong micro-decisions — wrong fields, missing prerequisites, field conflicts. The cheat sheets solve this by showing ONLY what to send.
-
-**Integration plan:**
-
-1. **Copy everything into this project:**
-   ```bash
-   mkdir -p docs
-   cp -r /Users/jakobtiller/Desktop/nmiai/code/tripletex-api-docs/endpoints docs/endpoints
-   cp -r /Users/jakobtiller/Desktop/nmiai/code/tripletex-api-docs/guides docs/guides
-   cp -r /Users/jakobtiller/Desktop/nmiai/code/tripletex-api-docs/scripts docs/scripts
-   cp /Users/jakobtiller/Desktop/nmiai/code/tripletex-api-docs/INDEX.md docs/INDEX.md
-   cp /Users/jakobtiller/Desktop/nmiai/code/tripletex-api-docs/openapi.json docs/openapi.json
-   ```
-   After this, the docs repo is no longer needed. All iteration happens here:
-   - Edit `docs/scripts/curated_overrides.yaml` with new gotchas
-   - Run `python3 docs/scripts/generate_cheatsheets.py` to regenerate
-   - The generator reads `docs/openapi.json` + `docs/scripts/curated_overrides.yaml` → writes `docs/endpoints/*.md`
-
-2. **Replace PLANNER_PROMPT task playbooks** (`prompts.py`):
-   - Current: hand-written playbooks embedded in the prompt
-   - New: use content from `guides/*.md` — same info but spec-verified with exact JSON examples
-   - The guides use the agent's `$step_N.value.id` format already
-
-3. **Replace/augment endpoint_catalog.py** with cheat sheet data:
-   - Use `curated_overrides.yaml` as source of truth for ENDPOINT_CARDS
-   - The Send Exactly bodies become the "schema" the planner sees
-   - The DO NOT SEND lists feed into schema pre-validation
-
-4. **Improve self-heal context** (`agent.py`):
-   - When a 4xx error occurs, load the relevant `docs/endpoints/<domain>.md`
-   - The Common Errors table maps errors → fixes directly
-
-5. **Run tests** with `test_local.py` against the 26 test prompts
-6. **Iterate**: update `curated_overrides.yaml` in the docs repo, regenerate, re-copy
-
-### Key insight
-The cheat sheets use a "Send Exactly + DO NOT SEND" format:
-- **Send Exactly**: Copy-pasteable minimal JSON body (only the fields needed)
-- **DO NOT SEND**: Explicit list of fields that cause errors (readOnly + conflicts)
-- This reduces LLM decision-making: fewer fields shown = fewer wrong choices
-
-### Files to read in the docs repo
-| File | Why |
-|------|-----|
-| `MIGRATE.md` | Full integration guide with 4 options |
-| `curated_overrides.yaml` | All domain knowledge in structured form |
-| `guides/invoice-with-payment.md` | Example recipe — see the format |
-| `endpoints/order.md` | Example cheat sheet — see Send Exactly format |
-
-## Previous Status (2026-03-21)
-See `PLAN.md` for the full iteration roadmap.
-**Round 13**: Fixed critical API usage bugs — removed wrong vatType ID mappings, proactive bank account ensure, POST /invoice guardrails, /v2 path stripping in self-heal, generic POST→/list merging.
-Built on Round 12: dual-model planning (pro+flash best-of-2), FIX_ARGS fast path, 6 deterministic error handlers, schema pre-validation, verifier node, few-shot examples.
+## Status (Round 14, 2026-03-21)
+See `PLAN.md` for full test status and roadmap. 15/26 tests passing locally.
+Key Round 14 fixes: curated docs integration, separate payment from /:invoice, division ensure for payroll, correct vatType OUTPUT IDs, amountGrossCurrency on vouchers, supplier ref on AP postings.

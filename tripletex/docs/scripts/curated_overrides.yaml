@@ -90,6 +90,10 @@ invoice-actions:
     common_errors:
       - symptom: "422 'From' >= 'To' in filter"
         fix: "invoiceDateTo must be strictly greater than invoiceDateFrom (add 1 day)"
+      - symptom: "422 invoiceDateFrom/invoiceDateTo Kan ikke være null"
+        fix: "BOTH invoiceDateFrom AND invoiceDateTo are REQUIRED on GET /invoice. Use wide range like 2000-01-01 to 2099-12-31."
+    notes:
+      - "invoiceDateFrom and invoiceDateTo are REQUIRED query params — always include both"
 
 employee:
   "POST /employee":

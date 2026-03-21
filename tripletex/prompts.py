@@ -76,7 +76,8 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
   GET /invoice/paymentType?count=1 → then PUT /invoice/$invoiceStep.value.id/:payment query_params={{"paidAmount": $invoiceStep.value.amount, "paymentTypeId": $paymentTypeStep.values[0].id}} body=null
   paidAmount MUST equal the invoice's `amount` field (total incl. VAT in NOK). Use $step_N.value.amount from the /:invoice response — NEVER calculate it yourself.
 - **Credit note**: after invoice → PUT /invoice/$step_3.value.id/:createCreditNote query_params={{"date": "YYYY-MM-DD", "comment": "..."}} body=null
-- **Cancel payment**: PUT /invoice/{{id}}/:payment with negative paidAmount in query_params
+- **Cancel payment**: The sandbox starts EMPTY — first create customer → order → invoice → pay it, THEN cancel: PUT /invoice/$invoiceId/:payment query_params={{"paidAmount": -$amount, "paymentTypeId": $ptId}} body=null. Use negative paidAmount to reverse.
+- **GET /invoice REQUIRES invoiceDateFrom + invoiceDateTo** — always include both, e.g. "2000-01-01" to "2099-12-31"
 
 ### Projects (with manager + invoice)
 1. POST /department → {{"name": "..."}}
