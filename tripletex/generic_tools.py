@@ -194,11 +194,11 @@ def build_generic_tools(make_request_fn):
         or extract specific values from API response data (e.g., 'find the 3 accounts with the largest increase').
         Returns JSON with the extracted/computed answer."""
         import os
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        import re
+        import google.generativeai as genai
 
         api_key = os.environ.get("GOOGLE_API_KEY", "")
         model_name = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
-        llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key, temperature=0)
 
         prompt = f"""Analyze the following API response data and answer the question.
 
@@ -207,37 +207,45 @@ DATA:
 
 QUESTION: {question}
 
-Return ONLY valid JSON with your answer. No explanation, no markdown — just the JSON object or array."""
+Return ONLY a JSON object with the answer. Use the exact field names requested in the question."""
 
         try:
-            response = llm.invoke(prompt)
-            # response.content may be a string OR a list of content parts (Gemini SDK)
-            content = response.content
-            if isinstance(content, list):
-                raw = "".join(str(part) for part in content).strip()
-            else:
-                raw = str(content).strip()
-            # Strip markdown code blocks if present
-            import re
-            md_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', raw, re.DOTALL)
-            if md_match:
-                raw = md_match.group(1).strip()
-            # Validate it's actually JSON
+            # Use Gemini native API with JSON mode for guaranteed valid JSON
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.GenerationConfig(
+                    response_mime_type="application/json",
+                    temperature=0,
+                ),
+            )
+
+            raw = response.text.strip()
+            # Validate it's JSON
             json.loads(raw)
             return raw
-        except json.JSONDecodeError:
-            # Try to extract any JSON object or array from the response
-            import re
-            json_match = re.search(r'[\[{].*[\]}]', raw, re.DOTALL)
-            if json_match:
-                try:
-                    json.loads(json_match.group(0))
-                    return json_match.group(0)
-                except json.JSONDecodeError:
-                    pass
-            return json.dumps({"error": f"Could not parse JSON from response: {raw[:200]}"})
         except Exception as e:
-            return json.dumps({"error": str(e)})
+            # Fallback: try without JSON mode
+            try:
+                response = model.generate_content(prompt)
+                raw = response.text.strip()
+                # Strip markdown code blocks
+                md_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', raw, re.DOTALL)
+                if md_match:
+                    raw = md_match.group(1).strip()
+                json.loads(raw)
+                return raw
+            except Exception as e2:
+                # Last resort: try to extract any JSON from the response
+                try:
+                    json_match = re.search(r'[\[{].*[\]}]', raw, re.DOTALL)
+                    if json_match:
+                        json.loads(json_match.group(0))
+                        return json_match.group(0)
+                except Exception:
+                    pass
+                return json.dumps({"error": f"analyze_response failed: {str(e2)[:200]}"})
 
     call_api_tool = StructuredTool.from_function(
         func=call_api,

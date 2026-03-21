@@ -371,7 +371,14 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                                     log.info("Validation: stripped priceIncludingVatCurrency from nested item")
 
         # NOTE: product "number" field is KEPT — the scoring system checks for it.
-        # Only strip if we get a duplicate-number error at runtime (deterministic fix below).
+
+        # Auto-inject activityType on POST /activity if missing (required field)
+        if method == "POST" and path in ("/activity", "/activity/list") and isinstance(body, (dict, list)):
+            act_bodies = body if isinstance(body, list) else [body]
+            for ab in act_bodies:
+                if isinstance(ab, dict) and "activityType" not in ab:
+                    ab["activityType"] = "PROJECT_GENERAL_ACTIVITY"
+                    log.info("Validation: injected activityType=PROJECT_GENERAL_ACTIVITY on POST /activity")
 
         # Auto-copy postalAddress ↔ physicalAddress on customer creation (scoring may check either)
         if method == "POST" and path in ("/customer", "/customer/list") and isinstance(body, (dict, list)):
@@ -1664,7 +1671,7 @@ def build_agent():
                             parsed = json.loads(retry_result_str)
                         except (json.JSONDecodeError, TypeError):
                             parsed = {"raw": retry_result_str}
-                        results[f"step_{step['step_number']}"] = parsed
+                        results[f"step_{step['step_number']}"] = _normalize_result(parsed)
                         completed.append(step["step_number"])
                         return {
                             "current_step": step_idx + 1,
@@ -1677,11 +1684,45 @@ def build_agent():
                 except Exception:
                     pass
 
+        # ── Deterministic fix: employee email already exists → find existing user ──
+        if (
+            status_code in RETRYABLE_STATUS_CODES
+            and resolved_args.get("method") == "POST"
+            and resolved_args.get("path") == "/employee"
+            and "e-postadressen" in error_lower
+        ):
+            # The email is registered as a user but not as an employee.
+            # Search more broadly and try to use the existing user.
+            body = resolved_args.get("body", {})
+            email = body.get("email", "") if isinstance(body, dict) else ""
+            if email:
+                call_api_tool = tool_map.get("call_api")
+                if call_api_tool:
+                    log.info(f"Deterministic fix: email {email} exists as user, searching broadly")
+                    search_result = call_api_tool.invoke({
+                        "method": "GET",
+                        "path": "/employee",
+                        "query_params": {"email": email, "includeContacts": True, "count": 1},
+                    })
+                    try:
+                        search_parsed = json.loads(search_result)
+                        values = search_parsed.get("values", [])
+                        if values:
+                            results[f"step_{step['step_number']}"] = _normalize_result(search_parsed)
+                            completed.append(step["step_number"])
+                            log.info(f"Step {step['step_number']} resolved: found existing employee by email (id={values[0].get('id')})")
+                            return {
+                                "current_step": step_idx + 1,
+                                "results": results,
+                                "completed_steps": completed,
+                                "error_count": error_count,  # Don't count as error — we recovered
+                                "healed_steps": healed_steps,
+                                "messages": [AIMessage(content=f"Step {step['step_number']} done (found existing employee)")],
+                            }
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
         # ── All other errors: fail fast, log for analysis ──
-        # No LLM self-heal, no retries, no data corruption.
-        # Only ensure_bank_account deterministic fix above is kept.
-        # Product/account handlers REMOVED — they caused cascade failures on bulk
-        # creates and wasted efficiency points on unnecessary 422s.
 
         # Out of replans or non-retryable — record error and move on
         log.warning(f"Step {step['step_number']} failed with status {status_code}")
