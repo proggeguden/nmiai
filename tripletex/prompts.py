@@ -70,7 +70,7 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - **vatType OUTPUT IDs**: 3=25%, 31=15%(food), 32=12%(transport), 5=0%(exempt), 6=0%(exempt outside VAT). IDs 1,11,13 are INPUT VAT — never use on orders.
 - **Division** is required for employment (auto-injected by system)
 - **GET /invoice** REQUIRES invoiceDateFrom + invoiceDateTo params
-- **Voucher postings**: debit=positive, credit=negative, must sum to 0. Do NOT send number or voucherType. For purchase/expense vouchers, include vatType on the expense line: INPUT VAT IDs: 1=25%, 11=15%, 13=12%. Bank/payment lines can omit vatType.
+- **Voucher postings**: debit=positive, credit=negative, must sum to 0. Do NOT send number, voucherType, or dueDate on postings. For purchase/expense vouchers, include vatType on the expense line: INPUT VAT IDs: 1=25%, 11=15%, 13=12%. Bank/payment lines can omit vatType.
 - **Supplier invoice voucher**: AP (credit) posting MUST include supplier:{{"id": N}}
 - **Product**: include "number" field when task specifies it. NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency. Set vatType:{{"id": 3}} for 25% VAT (or other rate if specified). If a unit is mentioned (stk, timer, kg), look up with GET /product/unit then set productUnit:{{"id": N}}.
 - **Employee for payroll**: dateOfBirth REQUIRED. Employee MUST have an active employment (POST /employee/employment with startDate on or before the pay period) and employment details (POST /employee/employment/details with percentageOfFullTimeEquivalent) BEFORE creating salary transactions. salary/transaction specifications MUST have rate, count, AND amount. If employee already exists (GET found them), still check if they have employment (GET /employee/employment?employeeId=N) — create if missing.
@@ -97,16 +97,18 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - **vatType**: Order lines default to 25% output VAT. Set vatType only if the task requires a different rate. Known OUTPUT IDs: 3=25%, 31=15%, 32=12%, 5=0%, 6=0%.
 
 ## Rules
-1. **Minimize API calls — #1 scoring criterion.** Every write call (POST/PUT/DELETE) costs points. GET is FREE. Every 4xx error costs double. Plan correctly the first time.
-2. **SEARCH BEFORE CREATE.** Production accounts have pre-existing data. ALWAYS search first: GET /employee?email=X, GET /product?number=X, GET /customer?name=X. Only POST if the GET returns empty. This prevents 422 "already exists" errors. Use $step_N.values[0].id if found, only POST if values is empty.
-3. **BULK /list endpoints for efficiency.** When creating 2+ entities: POST /department/list (body = array), NOT 3× POST /department.
+1. **ALWAYS include action steps.** Your plan MUST contain the write operations (POST/PUT) that accomplish the task. A plan with only GET steps is USELESS. If you need to discover data first, include BOTH the discovery GETs AND the action steps that use the results in a SINGLE plan.
+2. **Minimize write API calls.** GET is FREE. Every write call (POST/PUT/DELETE) costs points. Every 4xx error costs double. Plan correctly the first time.
+3. **SEARCH BEFORE CREATE.** Production accounts may have pre-existing data. ALWAYS search first: GET /employee?email=X, GET /product?number=X. Only POST if the GET returns empty.
+4. **BULK /list endpoints for efficiency.** When creating 2+ entities: POST /department/list (body = array), NOT 3× POST /department.
    - Available: /customer/list, /supplier/list, /department/list, /product/list, /employee/list, /project/list, /order/list, /contact/list, /timesheet/entry/list
-   - Response: {{values: [...]}} — $step_N.values[0].id, $step_N.values[1].id (same order as input)
-4. Use $step_N.value.id for POST results, $step_N.values[0].id for GET results.
-5. Bodies use **camelCase**. Reference fields: {{id: N}}. Dates: YYYY-MM-DD.
-6. POST responses contain the created object — never follow up with a GET.
-7. Paths must NOT include /v2 prefix. Use /order, not /v2/order.
-8. Use `lookup_endpoint` if you need an endpoint not listed in the catalog.
+5. Use $step_N.value.id for POST results, $step_N.values[0].id for GET results.
+6. Bodies use **camelCase**. Reference fields: {{id: N}}. Dates: YYYY-MM-DD.
+7. POST responses contain the created object — never follow up with a GET.
+8. Paths must NOT include /v2 prefix. Use /order, not /v2/order.
+9. Use `lookup_endpoint` if you need an endpoint not listed in the catalog.
+10. **If accounts might not exist** (1209, 6700, 7798, 8700 etc.), plan a GET first and a POST /ledger/account to create it if empty.
+11. **Always GET /invoice/paymentType** before any /:payment call — never hardcode paymentTypeId.
 
 ## Solved Examples
 

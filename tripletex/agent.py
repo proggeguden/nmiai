@@ -286,11 +286,16 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 body["startDate"] = date.today().isoformat()
                 log.info("Validation: added missing startDate to POST /project")
 
-        # Quick fix: POST /ledger/voucher — remove voucherType, fix null postings, add row numbers
+        # Quick fix: POST /ledger/voucher — remove invalid fields, fix null postings, add row numbers
         if method == "POST" and path == "/ledger/voucher" and isinstance(body, dict):
             if "voucherType" in body:
                 del body["voucherType"]
                 log.info("Validation: stripped voucherType from POST /ledger/voucher")
+            # Strip dueDate from postings — not a valid field on voucher postings
+            for posting in body.get("postings", []) if isinstance(body.get("postings"), list) else []:
+                if isinstance(posting, dict) and "dueDate" in posting:
+                    del posting["dueDate"]
+                    log.info("Validation: stripped dueDate from voucher posting (not a valid field)")
             # B3: Fix null postings
             if body.get("postings") is None:
                 body["postings"] = []
@@ -304,6 +309,12 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                     if isinstance(posting, dict) and "row" not in posting:
                         posting["row"] = idx + 1
                         log.info(f"Validation: added row={idx + 1} to voucher posting")
+
+        # Fix POST /division — startDate is required
+        if method == "POST" and path == "/division" and isinstance(body, dict):
+            if "startDate" not in body:
+                body["startDate"] = date.today().isoformat()
+                log.info("Validation: added missing startDate to POST /division")
 
         # Strip priceIncludingVatCurrency when priceExcludingVatCurrency also present (conflict)
         if isinstance(body, (dict, list)):
