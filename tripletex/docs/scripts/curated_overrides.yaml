@@ -77,9 +77,14 @@ invoice-actions:
     do_not_send:
       - field: "request body"
         reason: "ALL params go in query_params. Body must be empty/null."
+    common_errors:
+      - symptom: "500 Internal Server Error"
+        fix: "All 3 query_params are REQUIRED: paymentDate (YYYY-MM-DD), paymentTypeId (from GET /invoice/paymentType), paidAmount (exact invoice amount). Missing any causes 500. paymentTypeId 0 is INVALID."
     notes:
+      - "ALL params in query_params: paymentDate=YYYY-MM-DD, paymentTypeId=N, paidAmount=N"
+      - "paymentTypeId must be looked up: GET /invoice/paymentType?count=1 — NEVER use 0"
+      - "paidAmount must match the invoice's amount field exactly"
       - "To reverse/cancel a payment: use negative paidAmount"
-      - "paymentTypeId 0 = default payment type"
 
   "PUT /invoice/{id}/:send":
     do_not_send:
