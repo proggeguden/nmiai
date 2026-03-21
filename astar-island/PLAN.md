@@ -54,14 +54,17 @@
 - Round 5: 13.1 (rank 130/144) — naive predictor
 - Round 6: **78.5** (rank 28/186) — first spatial model
 - Round 7: **60.4** (rank 83/199) — harsh winter, high expansion
-- Round 8: **82.4** (rank 55/214) — best raw score
-- Round 9: 8.5 (rank 205/221) — broken submission, model would have scored ~80-83
-- Round 10: **82.0** (rank 60/238) — best weighted=133.6
+- Round 8: **82.4** (rank 55/214)
+- Round 9: 8.5 (rank 205/221) — broken submission
+- Round 10: **82.0** (rank 60/238)
 - Round 11: **79.7** (rank 61/171)
-- Round 12: **59.4** (rank 38/146) — tough round (KL=0.1239 in backtest)
-- Round 13: submitted, pending score (20% survival, harsh)
-- Leaderboard: best weighted=133.6. Top teams: ~158 weighted (~87 raw on R13).
-- Gap to close: ~11 raw points. Need ~93 raw on later rounds to compete.
+- Round 12: **59.4** (rank 38/146) — tough round
+- Round 13: **73.2** (rank 126/186)
+- Round 14: **74.1** (rank 71/244) — degraded by accidental resubmission
+- Round 15: **86.1** (rank 97/262) — best raw score ever, weighted=179.0
+- Round 16: submitted with k-boost fix, pending score
+- Leaderboard: best weighted=179.0. Top teams: ~196 weighted.
+- Gap to close: ~6-8 raw points. Need ~90 raw on later rounds to compete.
 
 ---
 
@@ -326,6 +329,12 @@ All 4 priority items implemented and submitted:
 - SimProd backtest (5 runs, 15 rounds): **-10.9% avg KL, 15/15 rounds improved, zero regressions**
 
 **R16 submitted** with k-boost fix. Survival=30.8%, 58 spatial buckets, 50/50 queries used.
+
+**Further iteration (2026-03-21 evening):**
+- Graduated k-boost (k*4/n continuous) ➖: Marginal (<0.5%) improvement, within noise. Current k*3 binary threshold is already near-optimal.
+- Skip-1-obs blending ➖: Marginal on most rounds, regressed on R14. Single obs still provides some signal via blending.
+- Viewport size tuning: Analysis showed 15×15 (max) is optimal — smaller viewports need more tiles than 10-query budget allows.
+- **Conclusion**: Per-cell blending is now well-tuned. Remaining oracle→sim-prod gap (26%) comes from spatial bucket coverage limits with 50 queries.
 
 ---
 

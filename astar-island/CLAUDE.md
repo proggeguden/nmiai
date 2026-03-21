@@ -113,11 +113,12 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 - Settlements k=8 (high variance → trust model more)
 - Ports k=15 (very few observations per cell → trust model much more)
 - Plains/forest/empty k=3 (predictable → trust observations more)
+- **Sparse observation k-boost**: For Plains/Forest/Empty cells with ≤2 observations, k is tripled (k=9). Prevents single-outlier distortion where one Ruin observation on Plains produces 21% Ruin prediction (GT: 0.5%).
 
 **Backtest performance** (simulated-production KL, lower is better):
-- Rounds 1–14 avg: **0.0612** (simulated production, 3 runs)
-- Best: 0.033 (R8), 0.041 (R4), Worst: 0.119 (R12), 0.102 (R7)
-- Oracle backtest avg: 0.044 (but misleading — see below)
+- Rounds 1–15 avg: **0.0537** (simulated production, 5 runs)
+- Best: 0.029 (R8), 0.035 (R4), Worst: 0.118 (R12), 0.099 (R7)
+- Oracle backtest avg: 0.043 (but misleading — see below)
 - Probability floor: 0.0005
 
 **CRITICAL: Use simulated-production backtest for validation, not oracle.**
@@ -126,10 +127,15 @@ Simulated-production (`--simulate-production`) has rho=0.964 rank correlation
 with actual production scores; oracle only has rho=0.750.
 Oracle improvements can be production regressions (confirmed empirically).
 
+**CRITICAL: Rate estimates from 50 queries are noisy (2-4x off).**
+Approaches that gate on survival_rate thresholds don't trigger correctly in production.
+Prefer model-internal consistency checks over rate-dependent thresholds.
+
 **Known issues**:
 - Plains cells are largest error source (~60% of KL loss) — within-bucket variance
-- R7 and R12 are 2-3x worse than other rounds — high-survival, high expansion
-- Gap to top teams: ~10-15 raw points (we score ~74-82, top teams ~89-94)
+- R7 and R12 are 2-3x worse than other rounds — harsh/extreme dynamics
+- Gap to top teams: ~6-8 raw points (we score ~86, top teams ~94)
+- Remaining oracle→sim-prod gap (26%) is from spatial bucket coverage limits, not blending
 
 See `PLAN.md` for error analysis, improvement roadmap, and round-by-round changelog.
 
