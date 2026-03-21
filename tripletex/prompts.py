@@ -74,6 +74,8 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - **Supplier invoice voucher**: AP (credit) posting MUST include supplier:{{"id": N}}
 - **Product**: include "number" field when the task specifies a product number. NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency.
 - **Employee for payroll**: dateOfBirth REQUIRED. salary/transaction specifications MUST have rate, count, AND amount.
+- **Employment details**: POST /employee/employment/details — use **percentageOfFullTimeEquivalent** (NOT employmentPercentage). occupationCode must be {{"id": <int>}} not bare string.
+- **Project-specific activities**: POST /project/projectActivity needs activity:{{"id": N}} — create the activity first with POST /activity (activityType: GENERAL_ACTIVITY), then link it.
 - **Travel expenses**: costs + perDiemCompensations can be inlined in POST /travelExpense body. Each cost needs paymentType (GET /travelExpense/paymentType first).
 - **Timesheet entries**: need an activity linked to the project (POST /activity → POST /project/projectActivity). Use POST /timesheet/entry/list for bulk.
 - **Activities**: POST /activity needs activityType enum: GENERAL_ACTIVITY, PROJECT_GENERAL_ACTIVITY, PROJECT_SPECIFIC_ACTIVITY, TASK. Names must be unique.

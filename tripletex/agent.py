@@ -310,6 +310,29 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 body["dimensionName"] = body.pop("name")
                 log.info("Validation: fixed name → dimensionName on accountingDimensionName")
 
+        # Fix employmentPercentage → percentageOfFullTimeEquivalent on employment/details
+        if method == "POST" and "/employment/details" in path and isinstance(body, dict):
+            if "employmentPercentage" in body and "percentageOfFullTimeEquivalent" not in body:
+                body["percentageOfFullTimeEquivalent"] = body.pop("employmentPercentage")
+                log.info("Validation: fixed employmentPercentage → percentageOfFullTimeEquivalent")
+            # Fix occupationCode: bare string → {"id": <int>}
+            oc = body.get("occupationCode")
+            if isinstance(oc, str):
+                try:
+                    body["occupationCode"] = {"id": int(oc)}
+                    log.info(f"Validation: fixed occupationCode string → {{id: {oc}}}")
+                except ValueError:
+                    del body["occupationCode"]
+                    log.info(f"Validation: removed invalid occupationCode '{oc}'")
+
+        # Fix /project/projectActivity body: needs activity:{id}, not {name}
+        if method == "POST" and "/project/projectActivity" in path and isinstance(body, dict):
+            act = body.get("activity")
+            if isinstance(act, dict) and "name" in act and "id" not in act:
+                # Can't create with name — need to create activity separately first
+                # Remove name so it doesn't cause 422, keep activity ref if it has id
+                log.info("Validation: /project/projectActivity needs activity:{id}, not {name}")
+
         # Fix hallucinated /report/ paths → correct endpoints
         if isinstance(path, str) and path.startswith("/report/"):
             path_lower = path.lower()
