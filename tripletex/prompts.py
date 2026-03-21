@@ -65,6 +65,7 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - **amountGross + amountGrossCurrency** must be set to the same value on every voucher posting
 - **Action endpoints** (/:invoice, /:payment, /:send, /:createCreditNote): params go in query_params, NOT body
 - **paymentTypeId** must be looked up via GET /invoice/paymentType — do NOT hardcode 0
+- **Bank account required for invoicing**: company must have a bank account registered before creating invoices (auto-handled by system)
 - **Payment must be separate from /:invoice**: invoice first, then PUT /invoice/{{id}}/:payment with the real amount from the invoice response ($step_N.value.amount)
 - **nationalIdentityNumber**: exactly 11 digits, Norwegian format DDMMYYNNNNN
 - **vatType OUTPUT IDs**: 3=25%, 31=15%(food), 32=12%(transport), 5=0%(exempt), 6=0%(exempt outside VAT). IDs 1,11,13 are INPUT VAT — never use on orders.

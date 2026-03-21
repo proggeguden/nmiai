@@ -834,9 +834,10 @@ def _find_unresolved_refs(obj, results: dict) -> list[str]:
     import re
     unresolved = []
     text = json.dumps(obj, default=str)
-    for m in re.finditer(r'\$step_(\d+)\.\S+', text):
+    for m in re.finditer(r'\$step_(\d+)\.(\S+)', text):
         ref = m.group(0)
         step_key = f"step_{m.group(1)}"
+        ref_path = m.group(2)
         step_result = results.get(step_key)
         if step_result is None:
             unresolved.append(f"{ref} (step {m.group(1)} has no result)")
@@ -844,8 +845,16 @@ def _find_unresolved_refs(obj, results: dict) -> list[str]:
             unresolved.append(f"{ref} (step {m.group(1)} was skipped)")
         elif isinstance(step_result, dict) and "values" in step_result:
             vals = step_result["values"]
-            if isinstance(vals, list) and len(vals) == 0:
-                unresolved.append(f"{ref} (step {m.group(1)} returned empty list)")
+            if isinstance(vals, list):
+                if len(vals) == 0:
+                    unresolved.append(f"{ref} (step {m.group(1)} returned empty list)")
+                else:
+                    # Check for index out of bounds: values[N].id
+                    idx_match = re.search(r'values\[(\d+)\]', ref_path)
+                    if idx_match:
+                        idx = int(idx_match.group(1))
+                        if idx >= len(vals):
+                            unresolved.append(f"{ref} (index [{idx}] out of bounds, list has {len(vals)} items)")
     return unresolved or ["unknown"]
 
 
@@ -1607,8 +1616,8 @@ def build_agent():
                     except Exception:
                         pass
 
-        # ── Self-heal: FIX_ARGS only (1 attempt, no REPLAN) ──
-        if status_code in RETRYABLE_STATUS_CODES and replan_count == 0:
+        # ── Self-heal: FIX_ARGS disabled for speed (TODO: re-enable when faster) ──
+        if False and status_code in RETRYABLE_STATUS_CODES and replan_count == 0:
             log.warning(f"API error {status_code}, attempting FIX_ARGS")
             fixed_args = _ask_llm_to_fix_args(heal_llm, resolved_args, result_str)
             if fixed_args:

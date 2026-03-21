@@ -393,6 +393,21 @@ company:
       - symptom: "404 not found"
         fix: "Do NOT include an ID in the path — it's PUT /company, not PUT /company/123"
 
+division:
+  "POST /division":
+    send_exactly: |
+      {
+        "name": "<string>",
+        "startDate": "YYYY-MM-DD",
+        "organizationNumber": "999999999",
+        "municipality": {"id": 1},
+        "municipalityDate": "YYYY-MM-DD"
+      }
+    notes:
+      - "ALL fields are REQUIRED: name, startDate, organizationNumber, municipality, municipalityDate"
+      - "organizationNumber must be a sub-unit number, NOT the company's own org number"
+      - "municipality.id=1 is a safe default"
+
 department:
   "POST /department":
     send_exactly: |
