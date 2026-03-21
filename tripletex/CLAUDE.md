@@ -6,64 +6,39 @@ calls Tripletex REST API, returns `{"status": "completed"}`.
 Scored on field-by-field correctness + API call efficiency.
 
 ## Stack
-- Python + FastAPI + LangGraph StateGraph + Gemini (configurable via GEMINI_MODEL env var)
+- Python + FastAPI + LangGraph StateGraph + Gemini (gemini-3-flash-preview)
 - Cloud Run (GCP project `ai-nm26osl-1788`, service `tripletex`, region `europe-west1`)
+- Cloud Run config: concurrency=1, min-instances=3, timeout=300s
 
-## Architecture: Multi-Agent Planner → Executor → Self-Heal → Verifier
-1. **Planner** — best-of-2 parallel planning: gemini-2.5-pro (t=0) vs gemini-2.5-flash (t=0.3), scored by `_score_plan()`, validated by `validate_plan()`. Includes 3 few-shot examples (payroll, project+invoice, travel expense).
-2. **validate_plan()** — pre-flight fixes: merges consecutive POSTs→/list bulk calls, proactive bank account ensure for invoicing plans, strips vatType from order lines, strips /v2 path prefix, injects invoiceDueDate, fixes fields dot→parens, date range, null postings, injects department, injects travel paymentType, fixes PUT /company/{id}→PUT /company
-3. **Schema pre-validation** — `_validate_step_against_schema()` checks required fields, conflicting fields, reference format before each API call
-4. **Executor** — pure Python loop, resolves `$step_N` placeholders recursively
-5. **Deterministic error handlers** — bank account, department, product number, duplicate email, price field conflict, voucher row numbering fixes without LLM calls
-6. **Self-heal cascade** — FIX_ARGS (fast targeted fix) → REPLAN → REPLAN (3 attempts total)
-7. **Verifier** — post-execution LLM check: "was the task accomplished?" If not, generates corrective steps (max 1 round, skipped if all steps succeeded)
-8. **check_done** — routes to verifier or continues execution (aborts after 3 errors)
+## Architecture: Planner → Executor → Self-Heal → Verifier
+1. **Planner** — gemini-3-flash-preview (t=0), ~15K char prompt with 3 few-shot examples. Receives file attachments (PDFs) as multimodal content.
+2. **validate_plan()** — pre-flight fixes: POST→/list merge, bank account ensure, division ensure, field renames (fixedPrice→fixedprice, employmentPercentage→percentageOfFullTimeEquivalent, dimension name/displayName), /report/ path rewrites, isInternal=false on customer projects, dateFrom injection on GET /invoice and /balanceSheet
+3. **Schema pre-validation** — `_validate_step_against_schema()` checks required fields, do_not_send (preserves product number), reference format
+4. **Executor** — pure Python loop, resolves `$step_N` placeholders recursively. 250s deadline tracking.
+5. **Deterministic error handlers** — bank account, department, product number, duplicate email, price conflict, voucher rows, dimension field names, project manager entitlements — no LLM calls
+6. **Self-heal** — per-step FIX_ARGS (each step gets its own attempt). 403 expired token → immediate abort.
+7. **Verifier** — gemini-3-flash-preview check. Skipped if all steps succeeded or past deadline. Corrective steps NOT re-validated (prevents ref corruption).
 
 ## Key Files
 | File | Purpose |
 |------|---------|
-| `main.py` | FastAPI app, request parsing, credential injection |
+| `main.py` | FastAPI app, request parsing, credential injection, file attachment handling |
 | `agent.py` | StateGraph (planner/executor/check_done), recursive placeholder resolution, smart self-heal |
 | `tools.py` | Credentials, `_make_request`, `load_tools()` with feature flag |
 | `generic_tools.py` | `call_api` + `lookup_endpoint` StructuredTools |
 | `endpoint_catalog.py` | **GENERATED** — Tier 1/2 endpoint catalog + per-endpoint schemas |
 | `build_endpoint_catalog.py` | Build script: swagger.json → endpoint_catalog.py |
-| `swagger_tools.py` | **LEGACY** — 46 typed tools (fallback via USE_GENERIC_TOOLS=false) |
 | `state.py` | `AgentState` and `PlanStep` TypedDict schemas |
-| `prompts.py` | `PLANNER_PROMPT` (with few-shot examples), `FIX_ARGS_PROMPT`, `REPLAN_PROMPT`, `VERIFY_PROMPT`, challenger profile |
-| `swagger.json` | OpenAPI 3.0 spec (3.6MB, used by build script) |
-| `md/` | `test_prompts.json` (real prompts), `api_errors.md` (known errors) |
+| `prompts.py` | `PLANNER_PROMPT` (with few-shot examples), `FIX_ARGS_PROMPT`, `VERIFY_PROMPT` |
+| `docs/` | Curated API docs, endpoint cheat sheets, workflow guides |
 | `test_local.py` | Local test harness (backup — primary testing is via production submissions) |
-
-## Tool System (generic_tools.py)
-**Two tools only:**
-- `call_api(method, path, query_params, body)` — generic API call, body in raw camelCase
-- `lookup_endpoint(query)` — search full API catalog for unfamiliar endpoints
-
-The planner prompt includes a **Tier 1 catalog** (~130 endpoints, ~11K tokens) covering all common accounting entities. All remaining endpoints are searchable via `lookup_endpoint`.
-
-**Endpoint catalog** is auto-generated from swagger.json:
-```bash
-python3 build_endpoint_catalog.py           # regenerate endpoint_catalog.py
-python3 build_endpoint_catalog.py --preview # preview catalog
-python3 build_endpoint_catalog.py --stats   # show statistics
-python3 build_endpoint_catalog.py --schema Customer  # show one schema
-```
 
 ## Environment Variables
 | Var | Default | Purpose |
 |-----|---------|---------|
 | `GOOGLE_API_KEY` | (required) | Gemini API key |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Model for self-heal + challenger planner |
-| `GEMINI_PLANNER_MODEL` | `gemini-2.5-pro` | Model for primary planner + verifier |
-| `USE_GENERIC_TOOLS` | `true` | Set to `false` to use legacy typed tools |
-
-## Running Locally
-```bash
-cp .env.example .env  # add GOOGLE_API_KEY, optionally GEMINI_MODEL
-pip3 install -r requirements.txt
-python3 -m uvicorn main:app --reload --port 8080
-```
+| `GEMINI_MODEL` | `gemini-3-flash-preview` | Model for self-heal |
+| `GEMINI_PLANNER_MODEL` | `gemini-3-flash-preview` | Model for planner + verifier |
 
 ## Deploying to Cloud Run
 ```bash
@@ -72,66 +47,48 @@ gcloud run deploy tripletex \
   --image gcr.io/ai-nm26osl-1788/tripletex \
   --platform managed --region europe-west1 \
   --allow-unauthenticated \
-  --set-env-vars GOOGLE_API_KEY=...,GEMINI_MODEL=gemini-2.5-pro
+  --min-instances=3 --concurrency=1 \
+  --update-env-vars GEMINI_PLANNER_MODEL=gemini-3-flash-preview,GEMINI_MODEL=gemini-3-flash-preview
 ```
 Submit endpoint URL at: https://app.ainm.no/submit/tripletex
 
-## Tripletex API
-- Auth: Basic Auth, username `0`, password = session_token
-- Sandbox base URL: `https://kkpqfuj-amager.tripletex.dev/v2`
-- List responses: `{"values": [...]}`, single: `{"value": {...}}`
-- Action endpoints (/:payment, /:send, /:invoice): PUT with query_params, no body
-
 ## Scoring
-- Every 4xx error reduces efficiency bonus
+- Field-by-field correctness: scoring system queries Tripletex API after agent responds
+- Only write calls (POST/PUT/DELETE/PATCH) count for efficiency. **GET is free.**
+- Every 4xx error on write calls reduces efficiency bonus
 - Perfect correctness (1.0) unlocks efficiency bonus (can 2x tier score)
-- Best score per task is kept
-- Fewer API calls = higher efficiency score. Bulk `/list` endpoints help.
+- Best score per task is kept — bad runs never lower your score
+- Tier 1 = x1, Tier 2 = x2, Tier 3 = x3. Max per task = 6.0
+- 30 tasks total, task assignment weighted toward less-attempted tasks
 
 ## Known Gotchas
-- Account starts empty each submission — create prerequisites before invoices
+- Each submission gets a fresh account BUT some tasks have pre-existing data (invoices, employees). SEARCH before CREATE.
 - `priceIncludingVatCurrency` must NOT be sent alongside `priceExcludingVatCurrency`
-- `tools.py` uses module-level globals for credentials (not safe for concurrent requests)
-- Invoice creation requires company to have registered a bank account number first
-- Employee creation may require `department.id` — deterministic fix handles this at runtime
-- Voucher `postings` cannot be null — validate_plan auto-fixes
+- Invoice creation requires ledger account 1920 with bankAccountNumber set
+- Voucher dimension field is `freeAccountingDimension1` (NOT freeDimension1)
+- `fixedprice` (lowercase p) on POST /project, with `isFixedPrice: true`
+- `employmentPercentage` → `percentageOfFullTimeEquivalent` on employment/details
+- `occupationCode` must be `{"id": <int>}` not bare string
 - PUT action endpoints (/:payment, /:send) take params in query_params, not body
-- Do NOT set vatType on order lines — system defaults to 25%. Only use on voucher postings with GET lookup.
-- `PUT /order/{id}/:invoice` supports `paidAmount`+`paymentTypeId` and `sendToCustomer=true`
-- POST /invoice is error-prone — prefer POST /order + PUT /order/{id}/:invoice workflow
-- Self-heal LLM may generate /v2 paths — validate_plan and response sanitizers strip them
-- GET fields must use parentheses not dots — validate_plan auto-fixes
-- `PUT /company` is a singleton — NO ID in path. validate_plan auto-fixes PUT /company/{id}
+- POST /invoice is error-prone — prefer POST /order + PUT /order/{id}/:invoice
+- Reminders: use PUT /invoice/{id}/:createReminder with includeCharge=true
+- Projects with customers need `isInternal: false`
+- Unresolved placeholder skips don't count as errors (prevents premature abort)
+- Verifier corrective steps are NOT re-validated by validate_plan (prevents ref corruption)
 
 ## Iteration Workflow (Production-First)
 Testing is done through real submissions — the sandbox and production behave differently.
 
-1. **Deploy**: `gcloud builds submit --tag gcr.io/ai-nm26osl-1788/tripletex && gcloud run deploy tripletex --image gcr.io/ai-nm26osl-1788/tripletex --platform managed --region europe-west1 --allow-unauthenticated --set-env-vars GOOGLE_API_KEY=...,GEMINI_MODEL=gemini-2.5-pro`
+1. **Deploy**: `gcloud builds submit` + `gcloud run deploy` (with concurrency=1, min-instances=3)
 2. **Submit** at https://app.ainm.no/submit/tripletex
-3. **Harvest production logs**: `/harvest-logs` skill — pull prompts + errors from Cloud Run logs
+3. **Harvest production logs**: pull prompts + errors from Cloud Run logs via gcloud
 4. **Fix root cause**:
    - **API knowledge issues** → update `docs/scripts/curated_overrides.yaml`, then `python3 build_endpoint_catalog.py`
    - **Planning logic** → update playbooks in `prompts.py`
    - **Execution/validation** → update `agent.py` (validate_plan, validate_step, deterministic handlers)
-5. **Re-deploy and re-submit** until scores improve
+5. **Verify**: `python3 -c "from main import app; print('OK')"` — ALWAYS before deploying
+6. **Re-deploy and re-submit** until scores improve
 
-## Curated API Docs (integrated in Round 14)
-
-All docs live in `docs/` — the external repo is no longer needed.
-
-| Path | Purpose |
-|------|---------|
-| `docs/scripts/curated_overrides.yaml` | **Source of truth** — Send Exactly bodies, DO NOT SEND, common_errors per endpoint |
-| `docs/endpoints/*.md` | 17 auto-generated cheat sheets (from openapi.json + overrides) |
-| `docs/guides/*.md` | 6 workflow recipes (invoice, credit note, project, travel, voucher, payroll) |
-| `docs/scripts/generate_cheatsheets.py` | Regenerates .md files from spec + overrides |
-| `docs/openapi.json` | OpenAPI 3.0 spec |
-
-**To update API knowledge:** edit `curated_overrides.yaml` → `python3 build_endpoint_catalog.py` → test
-
-## TODO for Production
-- **ensure_vat_registered**: Add deterministic step to PUT /ledger/vatSettings with vatRegistrationStatus=VAT_REGISTERED when plan uses non-default vatType IDs. Fresh accounts may be VAT_NOT_REGISTERED.
-
-## Status (Round 14, 2026-03-21)
-See `PLAN.md` for full roadmap. Testing via production submissions + gcloud logs.
-Key Round 14 fixes: curated docs integration, separate payment from /:invoice, division ensure for payroll, correct vatType OUTPUT IDs, amountGrossCurrency on vouchers, supplier ref on AP postings.
+## Status (Round 20, 2026-03-21)
+See `PLAN.md` for full roadmap. Iterating via production submissions.
+Key Round 15-20 fixes: flash model, concurrency=1, file attachments reach planner, product number kept, per-step self-heal, deadline tracking, search-before-create, dimension endpoints, report path rewrites, project isInternal, payroll employment chain, reminder includeCharge.
