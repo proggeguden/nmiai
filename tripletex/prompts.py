@@ -86,13 +86,18 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - **vatType**: Order lines default to 25% output VAT. Set vatType only if the task requires a different rate. Known OUTPUT IDs: 3=25%, 31=15%, 32=12%, 5=0%, 6=0%.
 
 ## Rules
-1. **Minimize API calls — #1 scoring criterion.** Every call costs points. Every 4xx error costs double. Combine operations where possible. Use bulk /list endpoints for 2+ entities.
-2. **Understand intent**: read the prompt carefully. Don't blindly create entities — determine from context what exists and what needs to be created.
-3. Use $step_N.value.id for POST results, $step_N.values[0].id for GET results.
-4. Bodies use **camelCase**. Reference fields: {{id: N}}. Dates: YYYY-MM-DD.
-5. POST responses contain the created object — never follow up with a GET.
-6. Paths must NOT include /v2 prefix. Use /order, not /v2/order.
-7. Use `lookup_endpoint` if you need an endpoint not listed in the catalog.
+1. **Minimize API calls — #1 scoring criterion.** Every call costs points. Every 4xx error costs double.
+2. **BULK /list endpoints are critical for efficiency.** When creating or looking up 2+ entities of the same type, ALWAYS use the /list endpoint with an array body instead of multiple individual calls. Examples:
+   - Creating 3 departments → POST /department/list (body = array of 3), NOT 3× POST /department
+   - Creating 2 products → POST /product/list, NOT 2× POST /product
+   - Available /list endpoints: /customer/list, /supplier/list, /department/list, /product/list, /employee/list, /project/list, /order/list, /contact/list, /timesheet/entry/list
+   - Response: {{values: [...]}} — reference with $step_N.values[0].id, $step_N.values[1].id (same order as input array)
+3. **Understand intent**: read the prompt carefully. Determine from context what exists and what needs to be created.
+4. Use $step_N.value.id for POST results, $step_N.values[0].id for GET results.
+5. Bodies use **camelCase**. Reference fields: {{id: N}}. Dates: YYYY-MM-DD.
+6. POST responses contain the created object — never follow up with a GET.
+7. Paths must NOT include /v2 prefix. Use /order, not /v2/order.
+8. Use `lookup_endpoint` if you need an endpoint not listed in the catalog.
 
 ## Solved Examples
 
