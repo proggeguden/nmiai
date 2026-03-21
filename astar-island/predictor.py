@@ -32,7 +32,7 @@ TERRAIN_TO_CLASS = {
 STATIC_CODES = {10, 5}  # Ocean → always Empty, Mountain → always Mountain
 
 # Probability floor to avoid KL divergence → infinity
-PROB_FLOOR = 0.001
+PROB_FLOOR = 0.0005
 
 # Adaptive smoothing: k controls how much we trust the bucket model vs per-cell observations
 # High k → trust bucket model more; Low k → trust empirical observations more
@@ -635,6 +635,208 @@ def estimate_all_rates(initial_grids, observations):
     }
 
 
+# ---------------------------------------------------------------------------
+# Monte Carlo forward simulation
+# ---------------------------------------------------------------------------
+
+def monte_carlo_predict(initial_grid, rates, n_runs=100, n_years=50):
+    """Run Monte Carlo simulations of the Norse world and return probability tensor.
+
+    Simplified simulation of the 5-phase yearly cycle:
+    1. Growth: settlements produce food from adjacent forests
+    2. Expansion: prosperous settlements found new settlements nearby
+    3. Port formation: coastal settlements develop ports
+    4. Winter: settlements lose food, weak ones collapse to ruins
+    5. Environment: ruins decay to empty/forest, forest reclaims land
+
+    Args:
+        initial_grid: H×W list of lists with terrain codes
+        rates: dict with estimated rates from observations
+        n_runs: number of Monte Carlo simulation runs
+        n_years: number of years to simulate (game uses 50)
+
+    Returns:
+        H×W×6 numpy probability tensor
+    """
+    import random
+
+    H = len(initial_grid)
+    W = len(initial_grid[0])
+
+    # Extract rates with defaults
+    survival_50y = rates.get("survival") or 0.4
+    expansion_50y = rates.get("expansion") or 0.1
+    port_50y = rates.get("port_formation") or 0.03
+    forest_reclaim_50y = rates.get("forest_reclamation") or 0.15
+
+    # Calibrate per-year rates from 50-year outcome rates.
+    # expansion_50y = avg P(Settlement | initial Plains/Empty) across all cells.
+    # This includes far cells (~0%) and near cells (~30-60%), averaging to ~14%.
+    # To reproduce this, per-settlement-per-year expansion must be high enough
+    # that the cumulative effect over 50 years matches.
+
+    import math
+
+    # Death rate: 1 - survival^(1/years), adjusted for food protection (~0.25 avg)
+    if 0.001 < survival_50y < 0.999:
+        annual_survive = survival_50y ** (1.0 / n_years)
+        base_annual_death = (1.0 - annual_survive) / 0.75
+        base_annual_death = max(0.003, min(base_annual_death, 0.12))
+    else:
+        base_annual_death = 0.10 if survival_50y < 0.05 else 0.003
+
+    # Expansion: each settlement tries to expand with this prob per year.
+    # Empirically calibrated: expansion_50y * 20/n_years gives correct magnitude.
+    # The factor 20 accounts for: most eligible cells are far from settlements
+    # and never get expanded into, so the per-settlement rate must be much higher
+    # than the per-cell outcome rate.
+    annual_expansion = max(0.005, min(expansion_50y * 20.0 / n_years, 0.12))
+
+    # Port: annual probability for coastal settlement to develop port
+    annual_port = max(0.002, min(port_50y * 15.0 / n_years, 0.06))
+
+    # Forest reclamation: annual probability per ruin/empty cell near forest
+    annual_forest = max(0.005, min(forest_reclaim_50y * 5.0 / n_years, 0.04))
+
+    # Ruin decay: ruins become empty or forest, not stay as ruin forever
+    # Low value — most ruins transition to forest, not empty
+    annual_ruin_decay = 0.015
+
+    # Precompute static masks
+    impassable = set()
+    coastal_cells = set()
+    for r in range(H):
+        for c in range(W):
+            if initial_grid[r][c] in (5, 10):
+                impassable.add((r, c))
+            # Precompute coastal adjacency (using initial grid for ocean)
+            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < H and 0 <= nc < W and initial_grid[nr][nc] == 10:
+                    coastal_cells.add((r, c))
+
+    # Neighbor offsets (8-connected)
+    NEIGHBORS_8 = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    # Expansion range (Manhattan ≤ 3)
+    EXPAND_OFFSETS = [(dr, dc) for dr in range(-3, 4) for dc in range(-3, 4)
+                      if (dr, dc) != (0, 0) and abs(dr) + abs(dc) <= 3]
+
+    # Count outcomes across runs
+    outcome_counts = np.zeros((H, W, NUM_CLASSES), dtype=np.float64)
+
+    for run in range(n_runs):
+        # Initialize grid (class indices)
+        grid = [[terrain_code_to_class(initial_grid[r][c]) for c in range(W)] for r in range(H)]
+
+        for year in range(n_years):
+            # --- Phase 1: Growth (compute food) ---
+            food = {}
+            settlements = []
+            for r in range(H):
+                for c in range(W):
+                    if grid[r][c] in (1, 2):
+                        f = 0
+                        for dr, dc in NEIGHBORS_8:
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < H and 0 <= nc < W and grid[nr][nc] == 4:
+                                f += 1
+                        food[(r, c)] = f
+                        settlements.append((r, c))
+
+            # --- Phase 2: Expansion ---
+            new_cells = []
+            for r, c in settlements:
+                f = food.get((r, c), 0)
+                prob = annual_expansion * (1.0 + 0.4 * min(f, 3))
+                if random.random() < prob:
+                    candidates = []
+                    for dr, dc in EXPAND_OFFSETS:
+                        nr, nc = r + dr, c + dc
+                        if (0 <= nr < H and 0 <= nc < W
+                                and (nr, nc) not in impassable
+                                and grid[nr][nc] in (0, 4)):
+                            # Prefer empty over forest (lower cost)
+                            weight = 2 if grid[nr][nc] == 0 else 1
+                            candidates.extend([(nr, nc)] * weight)
+                    if candidates:
+                        nr, nc = random.choice(candidates)
+                        # Coastal expansion → port; inland → settlement
+                        if (nr, nc) in coastal_cells and random.random() < 0.3:
+                            new_cells.append((nr, nc, 2))
+                        else:
+                            new_cells.append((nr, nc, 1))
+
+            for nr, nc, cell_type in new_cells:
+                grid[nr][nc] = cell_type
+
+            # --- Phase 3: Port formation (existing settlements) ---
+            for r, c in settlements:
+                if grid[r][c] != 1:
+                    continue
+                if (r, c) in coastal_cells:
+                    f = food.get((r, c), 0)
+                    prob = annual_port * (1.0 + 0.5 * min(f, 3))
+                    if random.random() < prob:
+                        grid[r][c] = 2
+
+            # --- Phase 4: Winter ---
+            winter_severity = random.uniform(0.6, 1.4)
+            for r, c in settlements:
+                if grid[r][c] not in (1, 2):
+                    continue  # already dead from raids or expansion overwrite
+                f = food.get((r, c), 0)
+                food_prot = min(f / 3.0, 1.0)
+                death = base_annual_death * winter_severity * (1.0 - 0.5 * food_prot)
+                if grid[r][c] == 2:
+                    death *= 0.75  # ports more resilient (trade)
+                if random.random() < death:
+                    grid[r][c] = 3  # ruin
+
+            # --- Phase 5: Environment ---
+            changes = []
+            for r in range(H):
+                for c in range(W):
+                    if (r, c) in impassable:
+                        continue
+                    cell = grid[r][c]
+
+                    if cell == 3:  # Ruin
+                        adj_forest = 0
+                        adj_sett = 0
+                        for dr, dc in NEIGHBORS_8:
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < H and 0 <= nc < W:
+                                if grid[nr][nc] == 4:
+                                    adj_forest += 1
+                                elif grid[nr][nc] in (1, 2):
+                                    adj_sett += 1
+
+                        # Settlement reclaims ruin
+                        if adj_sett > 0 and random.random() < 0.02 * adj_sett:
+                            if (r, c) in coastal_cells and random.random() < 0.4:
+                                changes.append((r, c, 2))
+                            else:
+                                changes.append((r, c, 1))
+                        # Forest reclaims ruin
+                        elif adj_forest > 0 and random.random() < annual_forest * min(adj_forest, 3):
+                            changes.append((r, c, 4))
+                        # Ruin decays to empty
+                        elif random.random() < annual_ruin_decay:
+                            changes.append((r, c, 0))
+
+            for r, c, new_type in changes:
+                grid[r][c] = new_type
+
+        # Record final state
+        for r in range(H):
+            for c in range(W):
+                outcome_counts[r, c, grid[r][c]] += 1
+
+    # Normalize to probabilities
+    predictions = outcome_counts / n_runs
+    return predictions
+
+
 def extract_settlement_stats(observations):
     """Extract settlement statistics from query responses.
 
@@ -875,7 +1077,8 @@ def build_prediction(height, width, initial_grid, observations,
                      transition_model=None, spatial_model=None,
                      survival_rate=None, forward_rates=None,
                      settlement_stats=None, spatial_obs=None,
-                     expansion_rate=None):
+                     expansion_rate=None, port_formation_rate=None,
+                     mc_rates=None):
     """Build a H×W×6 probability tensor.
 
     Uses spatial_model (per-bucket) when available, falls back to
@@ -927,8 +1130,22 @@ def build_prediction(height, width, initial_grid, observations,
             else:
                 predictions[r, c, terrain_code_to_class(code)] = 1.0
 
-    # Step 1.5: Port probability boost for coastal cells near settlements
+    # Step 1.5: Rate-adaptive port calibration for coastal cells near settlements
+    # Use observed port_formation_rate to set minimum port probability,
+    # scaling by distance to settlement. On high-port rounds this can be 15-30%+.
     if fmap and settlement_dists:
+        # Determine minimum port probability based on observed rate
+        if port_formation_rate is not None and port_formation_rate > 0.005:
+            # Scale observed rate by distance: d≤1 gets full rate, d≤3 gets half
+            base_port_near = min(port_formation_rate * 1.5, 0.40)  # d≤1
+            base_port_mid = min(port_formation_rate * 0.8, 0.25)   # d=2-3
+            base_port_far = min(port_formation_rate * 0.3, 0.10)   # d=4-5
+        else:
+            # Fallback: conservative fixed minimums
+            base_port_near = 0.05
+            base_port_mid = 0.03
+            base_port_far = 0.0
+
         for r in range(height):
             for c in range(width):
                 code = initial_grid[r][c]
@@ -940,9 +1157,14 @@ def build_prediction(height, width, initial_grid, observations,
                     and initial_grid[r + dr][c + dc] == 10
                     for dr in (-1, 0, 1) for dc in (-1, 0, 1) if (dr, dc) != (0, 0)
                 )
-                if is_coastal and d <= 3:
-                    min_port = 0.05 if d <= 1 else 0.03
-                    if predictions[r, c, 2] < min_port:
+                if is_coastal and d <= 5:
+                    if d <= 1:
+                        min_port = base_port_near
+                    elif d <= 3:
+                        min_port = base_port_mid
+                    else:
+                        min_port = base_port_far
+                    if min_port > 0 and predictions[r, c, 2] < min_port:
                         deficit = min_port - predictions[r, c, 2]
                         predictions[r, c, 2] = min_port
                         # Distribute deficit proportionally across non-port classes
@@ -1155,6 +1377,23 @@ def build_prediction(height, width, initial_grid, observations,
                             alpha[r, c, 0] * cell_probs[r, c]
                             + (1 - alpha[r, c, 0]) * predictions[r, c]
                         )
+
+    # Step 2.5: Monte Carlo blending (adaptive weight based on survival rate)
+    # MC captures spatial correlations missing from bucket model.
+    # Helps most on high-expansion rounds; hurts on harsh winter rounds.
+    if mc_rates is not None:
+        sr = mc_rates.get("survival") or 0.0
+        if sr > 0.50:
+            # Very high survival → complex dynamics, MC adds value
+            # Only for the hardest rounds (R12-type with 50%+ survival)
+            mc_weight = 0.05
+            mc_pred = monte_carlo_predict(initial_grid, mc_rates,
+                                          n_runs=80, n_years=50)
+            mc_pred = apply_floor(mc_pred, floor=0.001)
+            predictions = (1 - mc_weight) * predictions + mc_weight * mc_pred
+            # Re-normalize
+            sums = predictions.sum(axis=2, keepdims=True)
+            predictions = predictions / sums
 
     # Step 3: Apply probability floor
     predictions = apply_floor(predictions)

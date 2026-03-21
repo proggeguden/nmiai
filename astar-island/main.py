@@ -20,7 +20,7 @@ import api_client
 from predictor import (
     build_prediction, predictions_to_list, validate_predictions,
     learn_spatial_transition_model, estimate_survival_rate, estimate_all_rates,
-    extract_settlement_stats, estimate_expansion_rate,
+    extract_settlement_stats, estimate_expansion_rate, estimate_port_formation_rate,
 )
 
 app = FastAPI()
@@ -138,8 +138,10 @@ def run_pipeline(round_id):
     survival_rate = estimate_survival_rate(initial_grids, all_observations)
     forward_rates = estimate_all_rates(initial_grids, all_observations)
     expansion_rate = estimate_expansion_rate(initial_grids, all_observations)
+    port_formation_rate = estimate_port_formation_rate(initial_grids, all_observations)
     print(f"Estimated survival rate: {survival_rate}")
     print(f"Estimated expansion rate: {expansion_rate}")
+    print(f"Estimated port formation rate: {port_formation_rate}")
     print(f"Forward model rates: {forward_rates}")
 
     # Extract settlement stats from observations
@@ -175,7 +177,9 @@ def run_pipeline(round_id):
                                 survival_rate=survival_rate,
                                 settlement_stats=settlement_stats,
                                 spatial_obs=spatial_obs,
-                                expansion_rate=expansion_rate)
+                                expansion_rate=expansion_rate,
+                                port_formation_rate=port_formation_rate,
+                                mc_rates=forward_rates)
         pred_list = predictions_to_list(pred)
         validate_predictions(pred_list, height, width)
 
@@ -254,18 +258,23 @@ def observe_seed(round_id, seed_index, height, width, max_queries,
         # Sort tiles by score descending
         scored_tiles = sorted(zip(tile_scores, positions), reverse=True)
 
-        # Phase 1: Cover all tiles with dynamic cells (skip pure ocean/mountain)
+        # Phase 1: Coverage of top half of tiles (highest settlement density)
+        # Phase 2: Repeat top tiles for multi-observation per-cell blending
+        # Rationale: multiple observations of high-entropy cells near settlements
+        # improves per-cell distributions more than single observation of low-entropy cells
         coverage_tiles = [(s, pos) for s, pos in scored_tiles if s > 0]
-        repeat_tiles = [(s, pos) for s, pos in scored_tiles if s > 10]
+        coverage_count = min(len(coverage_tiles), max(max_queries // 2, 5))
+        repeat_count = max_queries - coverage_count
 
         print(f"  Tiles: {len(coverage_tiles)} dynamic (of {len(positions)}), "
-              f"{len(repeat_tiles)} high-value for repeats")
+              f"using {coverage_count} coverage + {repeat_count} repeats")
     else:
         coverage_tiles = [(1, pos) for pos in positions]
-        repeat_tiles = coverage_tiles
+        coverage_count = max_queries
+        repeat_count = 0
 
-    # Phase 1: Full coverage of dynamic tiles
-    for _, (x, y) in coverage_tiles[:max_queries]:
+    # Phase 1: Coverage of top-scoring tiles
+    for _, (x, y) in coverage_tiles[:coverage_count]:
         try:
             result = api_client.query_seed(round_id, seed_index,
                                            viewport_x=x, viewport_y=y,
@@ -275,42 +284,13 @@ def observe_seed(round_id, seed_index, height, width, max_queries,
             print(f"  Query error at ({x},{y}): {e}")
             break
 
-    # Phase 2: Repeat queries targeting under-observed bucket coverage
+    # Phase 2: Repeat high-value tiles for per-cell blending improvement
     remaining = max_queries - len(observations)
-    if remaining > 0 and initial_grid:
-        from predictor import compute_feature_map
-        fmap, _, _ = compute_feature_map(initial_grid)
-
-        # Count bucket observations from Phase 1
-        bucket_obs_count = {}
-        for obs in observations:
-            vp = obs.get("viewport", {})
-            grid = obs.get("grid", [])
-            vp_x, vp_y = vp.get("x", 0), vp.get("y", 0)
-            for dr in range(len(grid)):
-                for dc in range(len(grid[0]) if grid else 0):
-                    r, c = vp_y + dr, vp_x + dc
-                    if 0 <= r < height and 0 <= c < width:
-                        bk = fmap[r][c]
-                        bucket_obs_count[bk] = bucket_obs_count.get(bk, 0) + 1
-
-        # Score tiles by sum of 1/(1+obs_count) for cells — tiles with rare buckets score higher
-        tile_bucket_scores = []
-        for tx, ty in positions:
-            score = 0.0
-            for r in range(ty, min(ty + vp_h, height)):
-                for c in range(tx, min(tx + vp_w, width)):
-                    if initial_grid[r][c] not in STATIC_CODES:
-                        bk = fmap[r][c]
-                        score += 1.0 / (1.0 + bucket_obs_count.get(bk, 0))
-            if score > 0:
-                tile_bucket_scores.append((score, (tx, ty)))
-
-        tile_bucket_scores.sort(reverse=True)
+    if remaining > 0 and coverage_tiles:
+        # Repeat the top settlement-heavy tiles
+        top_tiles = [pos for _, pos in coverage_tiles[:max(3, coverage_count // 2)]]
         for i in range(remaining):
-            if not tile_bucket_scores:
-                break
-            _, (x, y) = tile_bucket_scores[i % len(tile_bucket_scores)]
+            x, y = top_tiles[i % len(top_tiles)]
             try:
                 result = api_client.query_seed(round_id, seed_index,
                                                viewport_x=x, viewport_y=y,
@@ -319,16 +299,6 @@ def observe_seed(round_id, seed_index, height, width, max_queries,
             except Exception as e:
                 print(f"  Query error repeat ({x},{y}): {e}")
                 break
-    elif remaining > 0 and repeat_tiles:
-        for i in range(remaining):
-            _, (x, y) = repeat_tiles[i % len(repeat_tiles)]
-            try:
-                result = api_client.query_seed(round_id, seed_index,
-                                               viewport_x=x, viewport_y=y,
-                                               viewport_w=vp_w, viewport_h=vp_h)
-                observations.append(result)
-            except Exception as e:
-                print(f"  Query error repeat ({x},{y}): {e}")
                 break
 
     return observations
