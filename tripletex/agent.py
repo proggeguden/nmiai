@@ -301,6 +301,32 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 body["isFixedPrice"] = True
                 log.info("Validation: set isFixedPrice=true on POST /project")
 
+        # Fix field names on accounting dimension endpoints
+        if method == "POST" and "/ledger/accountingDimension" in path and isinstance(body, dict):
+            if "Value" in path and "name" in body and "displayName" not in body:
+                body["displayName"] = body.pop("name")
+                log.info("Validation: fixed name → displayName on accountingDimensionValue")
+            elif "Name" in path and "name" in body and "dimensionName" not in body:
+                body["dimensionName"] = body.pop("name")
+                log.info("Validation: fixed name → dimensionName on accountingDimensionName")
+
+        # Fix hallucinated /report/ paths → correct endpoints
+        if isinstance(path, str) and path.startswith("/report/"):
+            path_lower = path.lower()
+            if "profitandloss" in path_lower or "result" in path_lower:
+                args["path"] = "/resultbudget/company"
+                args["method"] = "GET"
+                log.info(f"Validation: fixed {path} → /resultbudget/company")
+            elif "balance" in path_lower:
+                args["path"] = "/balanceSheet"
+                args["method"] = "GET"
+                log.info(f"Validation: fixed {path} → /balanceSheet")
+            elif "ledger" in path_lower or "posting" in path_lower:
+                args["path"] = "/ledger/posting"
+                args["method"] = "GET"
+                log.info(f"Validation: fixed {path} → /ledger/posting")
+            path = args.get("path", path)
+
         # Fix PUT /company/{id} → PUT /company (singleton endpoint, no ID in path)
         if method == "PUT" and re.match(r"^/company/\d+$", path):
             args["path"] = "/company"
@@ -1653,6 +1679,85 @@ def build_agent():
                             }
                     except Exception:
                         pass
+
+        # Deterministic fix: displayName/dimensionName on accounting dimension endpoints
+        if (
+            status_code in RETRYABLE_STATUS_CODES
+            and "kan ikke" in error_lower
+            and "/ledger/accountingdimension" in resolved_args.get("path", "").lower()
+        ):
+            body = resolved_args.get("body")
+            fixed = False
+            if isinstance(body, dict) and "name" in body:
+                path_str = resolved_args.get("path", "")
+                if "Value" in path_str and "displayName" not in body:
+                    body["displayName"] = body.pop("name")
+                    fixed = True
+                    log.info("Deterministic fix: name → displayName on accountingDimensionValue")
+                elif "Name" in path_str and "dimensionName" not in body:
+                    body["dimensionName"] = body.pop("name")
+                    fixed = True
+                    log.info("Deterministic fix: name → dimensionName on accountingDimensionName")
+            if fixed:
+                try:
+                    retry_result_str = tool.invoke(resolved_args)
+                    retry_is_error, _ = _is_api_error(retry_result_str)
+                    if not retry_is_error:
+                        try:
+                            parsed = json.loads(retry_result_str)
+                        except (json.JSONDecodeError, TypeError):
+                            parsed = {"raw": retry_result_str}
+                        results[f"step_{step['step_number']}"] = parsed
+                        completed.append(step["step_number"])
+                        return {
+                            "current_step": step_idx + 1,
+                            "results": results,
+                            "completed_steps": completed,
+                            "error_count": error_count,
+                            "healed_steps": healed_steps,
+                            "messages": [AIMessage(content=f"Step {step['step_number']} done (dimension field fix)")],
+                        }
+                except Exception:
+                    pass
+
+        # Deterministic fix: projectManager lacks entitlements
+        if (
+            status_code in RETRYABLE_STATUS_CODES
+            and ("prosjektleder" in error_lower or "project manager" in error_lower or "rettigheter" in error_lower)
+            and "/project" in resolved_args.get("path", "")
+        ):
+            call_api_tool = tool_map.get("call_api")
+            pm = resolved_args.get("body", {})
+            if isinstance(pm, dict):
+                pm = pm.get("projectManager", {})
+            pm_id = pm.get("id") if isinstance(pm, dict) else None
+            if call_api_tool and pm_id and not isinstance(pm_id, str):
+                log.info(f"Deterministic fix: granting entitlements to projectManager {pm_id}")
+                call_api_tool.invoke({
+                    "method": "PUT",
+                    "path": "/employee/entitlement/:grantEntitlementsByTemplate",
+                    "query_params": {"employeeId": int(pm_id), "template": "ALL_PRIVILEGES"},
+                })
+                try:
+                    retry_result_str = tool.invoke(resolved_args)
+                    retry_is_error, _ = _is_api_error(retry_result_str)
+                    if not retry_is_error:
+                        try:
+                            parsed = json.loads(retry_result_str)
+                        except (json.JSONDecodeError, TypeError):
+                            parsed = {"raw": retry_result_str}
+                        results[f"step_{step['step_number']}"] = parsed
+                        completed.append(step["step_number"])
+                        return {
+                            "current_step": step_idx + 1,
+                            "results": results,
+                            "completed_steps": completed,
+                            "error_count": error_count,
+                            "healed_steps": healed_steps,
+                            "messages": [AIMessage(content=f"Step {step['step_number']} done (entitlements fixed)")],
+                        }
+                except Exception:
+                    pass
 
         # ── Self-heal: FIX_ARGS only (1 attempt, no REPLAN) ──
         if status_code in RETRYABLE_STATUS_CODES and step["step_number"] not in healed_steps:

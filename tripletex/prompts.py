@@ -76,8 +76,13 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - **Employee for payroll**: dateOfBirth REQUIRED. salary/transaction specifications MUST have rate, count, AND amount.
 - **Travel expenses**: costs + perDiemCompensations can be inlined in POST /travelExpense body. Each cost needs paymentType (GET /travelExpense/paymentType first).
 - **Timesheet entries**: need an activity linked to the project (POST /activity → POST /project/projectActivity). Use POST /timesheet/entry/list for bulk.
+- **Activities**: POST /activity needs activityType enum: GENERAL_ACTIVITY, PROJECT_GENERAL_ACTIVITY, PROJECT_SPECIFIC_ACTIVITY, TASK. Names must be unique.
 - **Depreciation**: annual = cost / lifetime_years, monthly = annual / 12
-- **Custom accounting dimensions**: POST /ledger/accountingDimensionName to create dimension (e.g. "Kostsenter"). dimensionIndex is auto-assigned (1-3). Then POST /ledger/accountingDimensionValue for each value (use dimensionIndex from step response). On voucher postings, reference as freeDimension1/2/3:{{"id": value_id}}.
+- **Custom accounting dimensions**: POST /ledger/accountingDimensionName with **dimensionName** (NOT "name"). dimensionIndex is auto-assigned (1-3). Then POST /ledger/accountingDimensionValue with **displayName** (NOT "name"), dimensionIndex, number. On voucher postings, reference as freeDimension1/2/3:{{"id": value_id}}.
+- **Reports/Balances**: There is NO /report/ prefix. Use GET /balanceSheet (dateFrom + dateTo REQUIRED) for account balances. Filter expense accounts: accountNumberFrom=3000&accountNumberTo=9999. Use GET /ledger/posting (dateFrom + dateTo REQUIRED) for detailed postings.
+- **Ledger accounts**: Not all standard accounts exist in fresh environments. If GET /ledger/account?number=NNNN returns empty, CREATE it with POST /ledger/account {{number, name}}.
+- **Project**: POST /project REQUIRES projectManager:{{"id": N}}. Always GET /employee first, then PUT /employee/entitlement/:grantEntitlementsByTemplate?employeeId=N&template=ALL_PRIVILEGES before creating the project.
+- **Voucher account 2400**: Postings to account 2400 (AP/leverandorgjeld) MUST include supplier:{{"id": N}} — otherwise 422.
 
 ## ID Resolution
 - POST creates → use $step_N.value.id
