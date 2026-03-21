@@ -497,15 +497,10 @@ def estimate_expansion_rate(initial_grids, observations):
 
     if initial_settlement_count < 10 or observed_non_settlement < 30:
         return None
-    # Rate = new settlements per observation / initial settlements per seed
-    obs_count = len(observations) if observations else 1
-    rate = new_settlements / obs_count
-    # Normalize by initial settlements per seed
-    seeds_observed = max(len(seen_seeds), 1)
-    avg_initial = initial_settlement_count / seeds_observed
-    if avg_initial > 0:
-        rate = rate / avg_initial
-    return max(0.0, min(rate, 0.5))
+    # Rate = fraction of observed non-settlement cells that became settlement.
+    # This is directly comparable to the model's P(Settlement | Plains/Forest).
+    rate = new_settlements / observed_non_settlement
+    return max(0.0, min(rate, 0.30))
 
 
 def estimate_port_formation_rate(initial_grids, observations):
