@@ -120,7 +120,7 @@ employee:
       - "value.id — the employee ID"
     notes:
       - "userType is REQUIRED: 'STANDARD' or 'EXTENDED'"
-      - "dateOfBirth is REQUIRED for payroll — if not given in task, use 1990-01-01"
+      - "dateOfBirth is REQUIRED — extract from task. NEVER use 1990-01-01 as a default"
       - "department is REQUIRED even though spec may not mark it"
       - "nationalIdentityNumber must be exactly 11 digits (Norwegian fødselsnummer): DDMMYYNNNNN. No spaces or dashes."
       - "If a PDF or file is attached with employee contract data, extract ALL fields: name, email, dateOfBirth, nationalIdentityNumber, department, salary, employment percentage, start date, occupation code"
@@ -139,7 +139,7 @@ employee-employment:
   "POST /employee/employment":
     prerequisites:
       - "Employee must exist (need employee.id)"
-      - "Employee MUST have dateOfBirth set — if not provided in task, use a reasonable default like 1990-01-01"
+      - "Employee MUST have dateOfBirth set — extract from task. NEVER use 1990-01-01"
       - "A division must exist (POST /division first) and be linked via division.id"
     send_exactly: |
       {

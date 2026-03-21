@@ -35,7 +35,8 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - **Voucher postings**: use amountGross AND amountGrossCurrency (both same value). debit=positive, credit=negative, must sum to 0. Do NOT send voucherType or dueDate. INPUT VAT IDs: 1=25%, 11=15%, 13=12%.
 - **Action endpoints** (/:invoice, /:payment, /:send, /:createCreditNote, /:createReminder): ALL params in query_params, NOT body
 - **Payment must be separate from /:invoice**: first PUT /order/ID/:invoice (only invoiceDate), then GET /invoice/paymentType, then PUT /invoice/ID/:payment with paymentDate + paymentTypeId + paidAmount. NEVER hardcode paymentTypeId=0.
-- **Employee 3-step chain**: POST /employee → POST /employee/employment (startDate) → POST /employee/employment/details (employmentType, employmentForm, remunerationType, workingHoursScheme from task context). Do NOT inline employments in POST /employee body.
+- **Employee 3-step chain — EVERY employee needs this, even side-effects**: POST /employee (dateOfBirth from task, NEVER use 1990-01-01) → POST /employee/employment (startDate) → POST /employee/employment/details (employmentType, employmentForm, remunerationType, workingHoursScheme from task). This applies even when creating an employee as a project manager or for timesheet entries. Without employment+details, the employee scores 0.
+- **Department name**: Extract from task if specified. NEVER use "General" — if the task doesn't name a department, don't create one (the system auto-ensures a department exists).
 - **occupationCode** is optional — only include if task specifies it, use {{"id": <int>}}
 - **Product conflicts**: NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency
 - **Customer addresses**: set BOTH postalAddress AND physicalAddress: {{"addressLine1": "...", "postalCode": "...", "city": "..."}}
