@@ -80,14 +80,28 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - **Cancel payment**: The sandbox starts EMPTY — first create customer → order → invoice → pay it, THEN cancel: PUT /invoice/$invoiceId/:payment query_params={{"paidAmount": -$amount, "paymentTypeId": $ptId}} body=null. Use negative paidAmount to reverse.
 - **GET /invoice REQUIRES invoiceDateFrom + invoiceDateTo** — always include both, e.g. "2000-01-01" to "2099-12-31"
 
-### Projects (with manager + invoice)
-1. POST /department → {{"name": "..."}}
-2. POST /employee → {{"firstName": "...", "lastName": "...", "email": "...", "dateOfBirth": "1990-01-01", "userType": "STANDARD", "department": {{"id": "$step_1.value.id"}}}}
-3. PUT /employee/entitlement/:grantEntitlementsByTemplate query_params={{"employeeId": "$step_2.value.id", "template": "ALL_PRIVILEGES"}} body=null
-4. POST /customer → {{"name": "..."}}
-5. POST /project → {{"name": "...", "customer": {{"id": "$step_4.value.id"}}, "projectManager": {{"id": "$step_2.value.id"}}, "startDate": "YYYY-MM-DD"}}
-6. POST /order → {{"customer": {{"id": "$step_4.value.id"}}, "orderDate": "YYYY-MM-DD", "deliveryDate": "YYYY-MM-DD", "orderLines": [{{"description": "hours*rate", "count": <hours>, "unitPriceExcludingVatCurrency": <rate>}}]}}
-7. PUT /order/$step_6.value.id/:invoice query_params={{}} body=null
+### Projects (simple: create + invoice)
+1. POST /customer → {{"name": "..."}}
+2. GET /employee?email=X&count=1 → find project manager
+3. PUT /employee/entitlement/:grantEntitlementsByTemplate query_params={{"employeeId": "$step_2.values[0].id", "template": "ALL_PRIVILEGES"}} body=null
+4. POST /project → {{"name": "...", "customer": {{"id": "$step_1.value.id"}}, "projectManager": {{"id": "$step_2.values[0].id"}}, "startDate": "YYYY-MM-DD"}}
+5. POST /order → {{"customer": {{"id": "$step_1.value.id"}}, "project": {{"id": "$step_4.value.id"}}, "orderDate": "YYYY-MM-DD", "deliveryDate": "YYYY-MM-DD", "orderLines": [{{"description": "...", "count": <hours>, "unitPriceExcludingVatCurrency": <rate>}}]}}
+6. PUT /order/$step_5.value.id/:invoice query_params={{}} body=null
+
+### Projects (full lifecycle: time logging + supplier costs + invoice)
+For tasks that say "log time", "register supplier cost", or "complete project lifecycle":
+1. POST /customer
+2. GET /employee (per person, by email — employees already exist)
+3. PUT /employee/entitlement/:grantEntitlementsByTemplate → for project manager
+4. POST /project → {{"name": "...", "customer": {{"id": N}}, "projectManager": {{"id": N}}, "startDate": "YYYY-MM-DD"}}
+5. POST /activity → {{"name": "Consulting", "isChargeable": true}}
+6. POST /project/projectActivity → {{"project": {{"id": N}}, "activity": {{"id": N}}, "startDate": "YYYY-MM-DD"}}
+7. POST /timesheet/entry/list → [{{"employee": {{"id": N}}, "project": {{"id": N}}, "activity": {{"id": N}}, "date": "YYYY-MM-DD", "hours": N}}] (bulk, one entry per person)
+8. POST /supplier → for supplier costs
+9. GET /ledger/account (cost account + AP account 2400) → look up IDs
+10. POST /ledger/voucher → supplier cost: debit expense account with project ref, credit AP with supplier ref, amountGross + amountGrossCurrency
+11. POST /order → invoice order lines (hours * hourly rate + supplier passthrough)
+12. PUT /order/$orderStep.value.id/:invoice
 
 ### Travel Expenses
 1. GET /employee?email=X&count=1 → find existing employee
