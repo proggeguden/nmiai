@@ -58,7 +58,8 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - If someone is referenced by email → they likely exist, GET them
 - If someone is referenced by name + org number and the task says "create" → CREATE them
 - If an entity is just mentioned as context (e.g. "register supplier cost from X") → it may need to be created, or you can reference it directly. Use your judgment.
-- Use `lookup_endpoint` if you're unsure which endpoint to use.
+- **When files (PDFs, images) are attached**: they contain the data you need. Extract ALL relevant information from the files. Do NOT make up data or use placeholder values — use exactly what's in the files.
+- Use `lookup_endpoint` during planning to discover endpoints, but NEVER include lookup_endpoint as a plan step. All plan steps must use call_api.
 
 ### API Constraints (hard rules from real errors)
 - **deliveryDate** is REQUIRED on orders — use orderDate if not specified
@@ -99,21 +100,17 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 6. POST responses contain the created object — never follow up with a GET.
 7. Paths must NOT include /v2 prefix. Use /order, not /v2/order.
 8. **Comma-separated GET lookups**: Most GET endpoints support comma-separated values for id/number params. Use ONE call for multiple lookups: `GET /ledger/account?number=1920,2400,6030` returns all 3 accounts. Response: values[] array in same order. Works for /customer, /employee, /supplier, /product, /project, /department, /invoice, /order, /ledger/account, /ledger/vatType.
-9. Use `lookup_endpoint` if you need an endpoint not listed in the catalog.
+9. **All plan steps MUST use call_api.** NEVER include lookup_endpoint as a plan step — use it during planning only. The output must be only call_api steps.
 
 ## Solved Examples
 
-### Example 1: Payroll
+### Example 1: Payroll (employee exists, referenced by email)
 Task: "Run payroll for Lucy Walker (lucy.walker@example.org) for this month. Base salary 480000 NOK/year, bonus 12000 NOK."
 ```json
 [
-  {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "POST", "path": "/department", "body": {{"name": "General"}}}}, "description": "Create department"}},
-  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "POST", "path": "/employee", "body": {{"firstName": "Lucy", "lastName": "Walker", "email": "lucy.walker@example.org", "dateOfBirth": "1990-01-01", "userType": "STANDARD", "department": {{"id": "$step_1.value.id"}}}}}}, "description": "Create employee"}},
-  {{"step_number": 3, "tool_name": "call_api", "args": {{"method": "POST", "path": "/employee/employment", "body": {{"employee": {{"id": "$step_2.value.id"}}, "startDate": "{today}"}}}}, "description": "Create employment"}},
-  {{"step_number": 4, "tool_name": "call_api", "args": {{"method": "POST", "path": "/employee/employment/details", "body": {{"employment": {{"id": "$step_3.value.id"}}, "date": "{today}", "employmentType": "ORDINARY", "employmentForm": "PERMANENT", "remunerationType": "MONTHLY_WAGE", "workingHoursScheme": "NOT_SHIFT", "annualSalary": 480000}}}}, "description": "Set employment details"}},
-  {{"step_number": 5, "tool_name": "call_api", "args": {{"method": "GET", "path": "/salary/type", "query_params": {{"number": "1000", "count": 1}}}}, "description": "Get base salary type"}},
-  {{"step_number": 6, "tool_name": "call_api", "args": {{"method": "GET", "path": "/salary/type", "query_params": {{"number": "2000", "count": 10}}}}, "description": "Get bonus salary type"}},
-  {{"step_number": 7, "tool_name": "call_api", "args": {{"method": "POST", "path": "/salary/transaction", "body": {{"year": 2026, "month": 3, "payslips": [{{"employee": {{"id": "$step_2.value.id"}}, "specifications": [{{"salaryType": {{"id": "$step_5.values[0].id"}}, "rate": 40000, "count": 1, "amount": 40000}}, {{"salaryType": {{"id": "$step_6.values[0].id"}}, "rate": 12000, "count": 1, "amount": 12000}}]}}]}}}}, "description": "Create payroll transaction"}}
+  {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "GET", "path": "/employee", "query_params": {{"email": "lucy.walker@example.org", "count": 1}}}}, "description": "Find employee by email"}},
+  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "GET", "path": "/salary/type", "query_params": {{"number": "1000,2000", "count": 10}}}}, "description": "Get salary types (base + bonus) in one call"}},
+  {{"step_number": 3, "tool_name": "call_api", "args": {{"method": "POST", "path": "/salary/transaction", "body": {{"year": 2026, "month": 3, "payslips": [{{"employee": {{"id": "$step_1.values[0].id"}}, "specifications": [{{"salaryType": {{"id": "$step_2.values[0].id"}}, "rate": 40000, "count": 1, "amount": 40000}}, {{"salaryType": {{"id": "$step_2.values[1].id"}}, "rate": 12000, "count": 1, "amount": 12000}}]}}]}}}}, "description": "Create payroll transaction"}}
 ]
 ```
 
@@ -152,7 +149,7 @@ Return ONLY a JSON array of steps, no other text:
 PLANNER_PROFILE = {
     "name": "efficient",
     "temperature": 0,
-    "prefix": "Every API call costs points — minimize total steps. Read the prompt carefully: determine what exists vs what to create. Use bulk /list endpoints. Inline sub-resources where possible (e.g. costs in POST /travelExpense). Payment must be separate from /:invoice (use real amount from response). Use lookup_endpoint for unfamiliar endpoints.",
+    "prefix": "Every API call costs points — minimize total steps. Read the prompt and any attached files carefully: extract all data from files, determine what exists vs what to create. Use bulk /list endpoints and comma-separated GET lookups. Inline sub-resources where possible. Payment must be separate from /:invoice. All plan steps must use call_api only.",
 }
 
 CHALLENGER_PROFILE = {
