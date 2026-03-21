@@ -1168,14 +1168,8 @@ def build_prediction(height, width, initial_grid, observations,
                         predictions[r, c] = np.maximum(predictions[r, c], 0)
                         predictions[r, c] /= predictions[r, c].sum()
 
-    # Step 1.6: Winter severity calibration (with optional food modulation)
+    # Step 1.6: Winter severity calibration
     if survival_rate is not None:
-        # Modulate scale based on settlement food levels if available
-        food_modifier = 1.0
-        FOOD_BASELINE = 50.0  # conservative default, calibrate from live data
-        if settlement_stats and settlement_stats.get("avg_food") is not None:
-            food_modifier = max(0.8, min(settlement_stats["avg_food"] / FOOD_BASELINE, 1.2))
-
         model_survival = 0
         model_count = 0
         for r in range(height):
@@ -1187,7 +1181,6 @@ def build_prediction(height, width, initial_grid, observations,
             model_rate = model_survival / model_count
             if model_rate > 0.01:
                 scale = survival_rate / model_rate
-                scale *= food_modifier
                 scale = max(0.3, min(scale, 3.0))  # clamp to avoid wild swings
                 for r in range(height):
                     for c in range(width):
