@@ -74,7 +74,7 @@ DINO_WEIGHT = 0.3
 
 # FP reduction
 MIN_FINAL_SCORE = 0.0        # minimum final score to output (0.0 = disabled, tune via sweep)
-UNKNOWN_SCORE_BOOST = 0.0     # penalty subtracted from cat 355 scores (0.0 = disabled)
+UNKNOWN_SCORE_BOOST = 0.3     # penalty subtracted from cat 355 scores (sweep: +0.0005 local)
 
 
 def create_session(path):

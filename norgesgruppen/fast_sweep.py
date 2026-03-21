@@ -166,26 +166,30 @@ def main():
     run_py = ROOT / "run.py"
     original = run_py.read_text()
 
-    # Configs to sweep — focused on highest-impact, skip already-tested
-    # Already tested: current(knn=0.4)=0.9550, knn=0.2=0.9554, knn=0.3=0.9553
+    # Configs to sweep — FP reduction focus (2026-03-21 evening)
+    # Current proven config: KNN=0.1, DINO=0.3, WBF=0.8/0.2, POW=0.7, scored 0.9215 test
     configs = [
-        # Baseline
-        ("current",    {}),
-        # kNN=0.2 was best, try neighbors
-        ("knn_0.1",    {"KNN_WEIGHT": "0.1"}),
-        ("knn_0.15",   {"KNN_WEIGHT": "0.15"}),
-        # DINO weight (never swept — high priority)
-        ("dino_0.3",   {"DINO_WEIGHT": "0.3"}),
-        ("dino_0.6",   {"DINO_WEIGHT": "0.6"}),
-        # WBF weights
-        ("wbf_8_2",    {"WBF_TWO_STAGE_WEIGHT": "0.8", "WBF_MULTICLASS_WEIGHT": "0.2"}),
-        # Score power
-        ("pow_0.6",    {"SCORE_CLS_POWER": "0.6"}),
-        ("pow_0.8",    {"SCORE_CLS_POWER": "0.8"}),
-        # Best combo: knn=0.2 + best others
-        ("combo1",     {"KNN_WEIGHT": "0.2", "DINO_WEIGHT": "0.3"}),
-        ("combo2",     {"KNN_WEIGHT": "0.2", "WBF_TWO_STAGE_WEIGHT": "0.8", "WBF_MULTICLASS_WEIGHT": "0.2"}),
-        ("combo3",     {"KNN_WEIGHT": "0.2", "SCORE_CLS_POWER": "0.6"}),
+        # Baseline (current proven config)
+        ("baseline",   {}),
+        # MIN_FINAL_SCORE sweep — biggest impact (47% excess FPs)
+        ("min_0.05",   {"MIN_FINAL_SCORE": "0.05"}),
+        ("min_0.10",   {"MIN_FINAL_SCORE": "0.10"}),
+        ("min_0.15",   {"MIN_FINAL_SCORE": "0.15"}),
+        ("min_0.20",   {"MIN_FINAL_SCORE": "0.20"}),
+        ("min_0.25",   {"MIN_FINAL_SCORE": "0.25"}),
+        # Unknown product suppression (cat 355: 67 preds vs 9 GT)
+        ("unk_0.1",    {"UNKNOWN_SCORE_BOOST": "0.1"}),
+        ("unk_0.2",    {"UNKNOWN_SCORE_BOOST": "0.2"}),
+        ("unk_0.3",    {"UNKNOWN_SCORE_BOOST": "0.3"}),
+        # WBF skip threshold (raise from 0.01)
+        ("wbf_skip_03", {"WBF_SKIP_BOX_THRESH": "0.03"}),
+        ("wbf_skip_05", {"WBF_SKIP_BOX_THRESH": "0.05"}),
+        ("wbf_skip_10", {"WBF_SKIP_BOX_THRESH": "0.10"}),
+        # Best combos (to be refined after individual results)
+        ("combo_a",    {"MIN_FINAL_SCORE": "0.10", "UNKNOWN_SCORE_BOOST": "0.2"}),
+        ("combo_b",    {"MIN_FINAL_SCORE": "0.15", "UNKNOWN_SCORE_BOOST": "0.2"}),
+        ("combo_c",    {"MIN_FINAL_SCORE": "0.10", "WBF_SKIP_BOX_THRESH": "0.05"}),
+        ("combo_d",    {"MIN_FINAL_SCORE": "0.15", "WBF_SKIP_BOX_THRESH": "0.05", "UNKNOWN_SCORE_BOOST": "0.2"}),
     ]
 
     results = []
