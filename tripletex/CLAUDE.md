@@ -9,13 +9,15 @@ Scored on field-by-field correctness + API call efficiency.
 - Python + FastAPI + LangGraph StateGraph + Gemini (configurable via GEMINI_MODEL env var)
 - Cloud Run (GCP project `ai-nm26osl-1788`, service `tripletex`, region `europe-west1`)
 
-## Architecture: Planner → Executor → Self-Heal
-1. **Planner** — single LLM call (efficient profile, t=0) → JSON plan. Prompt uses task-category **playbooks** (not numbered hints) + 10 consolidated rules
-2. **validate_plan()** — pre-flight fixes: strips vatType lookups, fixes fields dot→parens, date range, null postings, injects department, injects travel paymentType, fixes PUT /company/{id}→PUT /company
-3. **Executor** — pure Python loop, resolves `$step_N` placeholders recursively
-4. **Deterministic error handlers** — bank account, department, product number fixes without LLM calls
-5. **Adaptive self-heal** — on 400/422, LLM replan (retry/skip/replace) as fallback after deterministic fixes
-6. **check_done** — routes back to executor or ends (aborts after 3 errors)
+## Architecture: Multi-Agent Planner → Executor → Self-Heal → Verifier
+1. **Planner** — best-of-2 parallel planning: gemini-2.5-pro (t=0) vs gemini-2.5-flash (t=0.3), scored by `_score_plan()`, validated by `validate_plan()`. Includes 3 few-shot examples (payroll, project+invoice, travel expense).
+2. **validate_plan()** — pre-flight fixes: merges consecutive POSTs→/list bulk calls, proactive bank account ensure for invoicing plans, strips vatType from order lines, strips /v2 path prefix, injects invoiceDueDate, fixes fields dot→parens, date range, null postings, injects department, injects travel paymentType, fixes PUT /company/{id}→PUT /company
+3. **Schema pre-validation** — `_validate_step_against_schema()` checks required fields, conflicting fields, reference format before each API call
+4. **Executor** — pure Python loop, resolves `$step_N` placeholders recursively
+5. **Deterministic error handlers** — bank account, department, product number, duplicate email, price field conflict, voucher row numbering fixes without LLM calls
+6. **Self-heal cascade** — FIX_ARGS (fast targeted fix) → REPLAN → REPLAN (3 attempts total)
+7. **Verifier** — post-execution LLM check: "was the task accomplished?" If not, generates corrective steps (max 1 round, skipped if all steps succeeded)
+8. **check_done** — routes to verifier or continues execution (aborts after 3 errors)
 
 ## Key Files
 | File | Purpose |
@@ -28,7 +30,7 @@ Scored on field-by-field correctness + API call efficiency.
 | `build_endpoint_catalog.py` | Build script: swagger.json → endpoint_catalog.py |
 | `swagger_tools.py` | **LEGACY** — 46 typed tools (fallback via USE_GENERIC_TOOLS=false) |
 | `state.py` | `AgentState` and `PlanStep` TypedDict schemas |
-| `prompts.py` | `PLANNER_PROMPT` (with inline API catalog), `FIX_ARGS_PROMPT` (with endpoint schema) |
+| `prompts.py` | `PLANNER_PROMPT` (with few-shot examples), `FIX_ARGS_PROMPT`, `REPLAN_PROMPT`, `VERIFY_PROMPT`, challenger profile |
 | `swagger.json` | OpenAPI 3.0 spec (3.6MB, used by build script) |
 | `md/` | `test_prompts.json` (real prompts), `api_errors.md` (known errors) |
 | `test_local.py` | Local test harness — runs real prompts against local server |
@@ -52,7 +54,8 @@ python3 build_endpoint_catalog.py --schema Customer  # show one schema
 | Var | Default | Purpose |
 |-----|---------|---------|
 | `GOOGLE_API_KEY` | (required) | Gemini API key |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Model name |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Model for self-heal + challenger planner |
+| `GEMINI_PLANNER_MODEL` | `gemini-2.5-pro` | Model for primary planner + verifier |
 | `USE_GENERIC_TOOLS` | `true` | Set to `false` to use legacy typed tools |
 
 ## Running Locally
@@ -93,8 +96,10 @@ Submit endpoint URL at: https://app.ainm.no/submit/tripletex
 - Employee creation may require `department.id` — deterministic fix handles this at runtime
 - Voucher `postings` cannot be null — validate_plan auto-fixes
 - PUT action endpoints (/:payment, /:send) take params in query_params, not body
-- vatType number == ID for standard rates (1,3,5,6,33) — validate_plan strips lookups
+- Do NOT set vatType on order lines — system defaults to 25%. Only use on voucher postings with GET lookup.
 - `PUT /order/{id}/:invoice` supports `paidAmount`+`paymentTypeId` and `sendToCustomer=true`
+- POST /invoice is error-prone — prefer POST /order + PUT /order/{id}/:invoice workflow
+- Self-heal LLM may generate /v2 paths — validate_plan and response sanitizers strip them
 - GET fields must use parentheses not dots — validate_plan auto-fixes
 - `PUT /company` is a singleton — NO ID in path. validate_plan auto-fixes PUT /company/{id}
 
@@ -106,8 +111,7 @@ Submit endpoint URL at: https://app.ainm.no/submit/tripletex
 5. Regenerate: `python3 build_endpoint_catalog.py`
 6. Re-test and redeploy
 
-## Current Status (2026-03-20)
+## Current Status (2026-03-21)
 See `PLAN.md` for the full iteration roadmap.
-**Round 11**: Docs-driven prompt rewrite (task playbooks, consolidated rules, API Tips),
-PUT /company singleton fix, deterministic error handlers (bank account, department, product number).
-Next: deploy and submit for scored evaluation.
+**Round 13**: Fixed critical API usage bugs — removed wrong vatType ID mappings, proactive bank account ensure, POST /invoice guardrails, /v2 path stripping in self-heal, generic POST→/list merging.
+Built on Round 12: dual-model planning (pro+flash best-of-2), FIX_ARGS fast path, 6 deterministic error handlers, schema pre-validation, verifier node, few-shot examples.

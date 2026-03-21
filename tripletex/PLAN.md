@@ -2,52 +2,47 @@
 
 **Goal:** World-class score (correctness × efficiency). Current baseline: 26 local test prompts, efficiency-optimized planner.
 
-## Status: Round 11 Complete (2026-03-20)
+## Status: Round 13 Complete (2026-03-21)
 
 ### Architecture
 ```
-Prompt → Single Planner (efficient, t=0) → validate_plan() → Executor → Deterministic Fixes → Adaptive Self-Heal → Done
-                                                                   ↓
-                                                           call_api / lookup_endpoint
+Prompt → Best-of-2 Planner (pro t=0 vs flash t=0.3) → validate_plan() → Executor → Deterministic Fixes → Self-Heal Cascade → Verifier → Done
+                                                           ↓
+                                                   POST→/list merge, bank account ensure,
+                                                   vatType strip, /v2 strip, invoiceDueDate inject
 ```
 
-- **Single planner**: efficiency-focused profile (t=0)
-- **validate_plan()**: strips vatType lookups, fixes fields/dates, injects department, injects travel paymentType, fixes PUT /company/{id} → PUT /company
-- **Deterministic error handlers**: bank account, department, product number fixes WITHOUT LLM calls
-- **Adaptive self-heal**: retry/skip/replace actions via LLM (fallback after deterministic fixes)
-- **Default model**: gemini-2.5-flash (overridable via GEMINI_MODEL)
+- **Best-of-2 planner**: gemini-2.5-pro (t=0) vs gemini-2.5-flash (t=0.3), scored by _score_plan()
+- **validate_plan()**: merges consecutive POSTs→/list, proactive bank account ensure, strips vatType from order lines, strips /v2 prefix, injects invoiceDueDate, fixes fields/dates, injects department/travel paymentType
+- **Deterministic error handlers**: bank account, department, product number, price conflict, voucher rows — no LLM calls
+- **Self-heal cascade**: FIX_ARGS → REPLAN → REPLAN (3 attempts, /v2 sanitized)
+- **Verifier**: post-execution LLM check with corrective steps
+- **Default model**: gemini-2.5-flash (planner: gemini-2.5-pro)
 
-### Changes in Round 11 (Docs-Driven Rethink)
+### Changes in Round 12b-13
 
-**Prompt rewrite (prompts.py):**
-1. Replaced 15 workflow hints with task-category **playbooks** (Employees, Customers, Products, Invoicing, Projects, Travel, Vouchers, Payroll, Departments)
-2. Consolidated 28 rules → 10 essential cross-cutting rules
-3. Added **API Tips** section matching competition format (fields, pagination, response wrapping)
-4. Simplified vocabulary section
-5. Updated output example to use POST (not GET) as first step — reinforces "create don't search"
+**Round 12b — Generic /list Merging:**
+1. `_merge_consecutive_posts_to_list()` — merges consecutive same-path POSTs into bulk /list calls
+2. Rewrites downstream $step_N.value.id → $step_N.values[idx].id refs
+3. Expanded /list mentions in playbook (customers, suppliers, employees)
+4. _score_plan() penalty for missed bulk ops (-5 per extra step)
 
-**Bug fixes (agent.py → validate_plan()):**
-6. Added singleton path normalization: PUT /company/{id} → PUT /company
-
-**New deterministic error handlers (agent.py → executor):**
-7. Bank account missing → run ensure_bank_account + retry (no LLM call)
-8. Missing department.id on employee → fetch department + retry (no LLM call)
-9. Duplicate product number → strip number field + retry (no LLM call)
-
-**Catalog improvements (build_endpoint_catalog.py):**
-10. Added "company" to TIER1_TAGS
-11. Added PUT /company, GET /company to PRIORITY_ENDPOINTS
-12. Added gotcha notes for company singleton endpoint
+**Round 13 — Fix Critical API Usage Bugs:**
+5. **vatType fix**: Removed wrong hardcoded ID mapping (1=0% was actually INPUT VAT). Stopped stripping GET /ledger/vatType lookups. Strip vatType from order lines defensively (system defaults to 25%).
+6. **Proactive bank account**: Re-enabled ensure_bank_account meta-step prepend for invoicing plans (prevents 422 entirely)
+7. **POST /invoice guardrails**: Discouraged in prompt/scoring (-15), auto-inject invoiceDueDate if missing, updated GOTCHA_NOTES
+8. **/v2 path stripping**: Strip /v2/ prefix in validate_plan(), FIX_ARGS response, REPLAN response
+9. **Prompt improvements**: Added rules 11-12 (no /v2, no vatType on orders), updated FIX_ARGS/REPLAN prompts
+10. Updated build_endpoint_catalog.py: Invoice.invoiceDueDate required, POST /invoice AVOID gotcha
 
 ---
 
 ## Next Steps (Priority Order)
 
-1. **Deploy and submit** — measure real scores with Round 11 changes
-2. **Harvest production logs** — check if prompt rewrite improved plan quality
-3. **Analyze errors** — are deterministic fixes triggering? Are playbooks reducing errors?
-4. **Response validation** — post-execution check that critical steps succeeded
-5. **Further iterate** — based on production log patterns
+1. **Submit and harvest logs** — measure real scores with Round 13 fixes
+2. **Self-improvement loop** — read gcloud logs, analyze errors, iterate automatically
+3. **Harder tasks releasing tomorrow** — ensure robustness for unknown task types
+4. **Further iterate** — based on production log patterns
 
 ---
 

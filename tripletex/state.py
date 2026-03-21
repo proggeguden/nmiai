@@ -23,3 +23,4 @@ class AgentState(TypedDict):
     error_count: int
     replan_count: int
     original_prompt: str
+    verification_attempts: int

@@ -47,7 +47,7 @@ TIER1_TAGS = {
 # Known gotchas to append as notes
 GOTCHA_NOTES = {
     "POST /product": "NOTE: Do NOT send priceIncludingVatCurrency — it conflicts with priceExcludingVatCurrency.",
-    "POST /invoice": "NOTE: Company must have a registered bank account first, or this will fail.",
+    "POST /invoice": "NOTE: AVOID — prefer POST /order + PUT /order/{id}/:invoice. If used: invoiceDueDate REQUIRED. orders[] items need customer, orderDate, deliveryDate. Company needs bank account.",
     "POST /employee": "NOTE: department.id may be required even though schema says optional. userType is REQUIRED — use 'STANDARD' for normal employees, 'EXTENDED' for administrators.",
     "POST /ledger/voucher": "NOTE: postings cannot be null — must be a non-empty array. If posting has vatType, use GROSS amount — Tripletex auto-generates the VAT line.",
     "POST /travelExpense": "NOTE: Only creates the shell (employee, travelDetails). Costs and per diems are SEPARATE sub-resources: POST /travelExpense/cost, POST /travelExpense/perDiemCompensation.",
@@ -106,6 +106,7 @@ FIELD_OVERRIDES = {
     "EmploymentDetails.annualSalary": {"note": "Required for MONTHLY_WAGE remunerationType"},
     "EmploymentDetails.hourlyWage": {"note": "Required for HOURLY_WAGE remunerationType"},
     "Project.startDate": {"required": True, "note": "Use today's date if not specified"},
+    "Invoice.invoiceDueDate": {"required": True, "note": "Default to invoiceDate + 14 days"},
     "PerDiemCompensation.location": {"required": True, "note": "Destination city name, e.g. 'Kristiansand'"},
 }
 
