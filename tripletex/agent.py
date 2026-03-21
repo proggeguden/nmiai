@@ -245,8 +245,23 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                         f"Validation: fixed fields filter dots→parentheses: {fields_val} → {fixed}"
                     )
 
-        # ── B2: Fix date range From < To ──
+        # ── B2: Fix date range From < To + inject required date params ──
         if method == "GET" and isinstance(query_params, dict):
+            # Auto-inject required date params on GET /invoice
+            if path == "/invoice":
+                if "invoiceDateFrom" not in query_params:
+                    query_params["invoiceDateFrom"] = "2000-01-01"
+                    log.info("Validation: injected invoiceDateFrom=2000-01-01 on GET /invoice")
+                if "invoiceDateTo" not in query_params:
+                    query_params["invoiceDateTo"] = "2099-12-31"
+                    log.info("Validation: injected invoiceDateTo=2099-12-31 on GET /invoice")
+            # Auto-inject required dateFrom on GET /balanceSheet and GET /ledger/posting
+            if path in ("/balanceSheet", "/ledger/posting") and "dateFrom" not in query_params:
+                query_params["dateFrom"] = "2000-01-01"
+                log.info(f"Validation: injected dateFrom=2000-01-01 on GET {path}")
+            if path in ("/balanceSheet", "/ledger/posting") and "dateTo" not in query_params:
+                query_params["dateTo"] = "2099-12-31"
+                log.info(f"Validation: injected dateTo=2099-12-31 on GET {path}")
             _fix_date_range(query_params, "invoiceDateFrom", "invoiceDateTo")
             _fix_date_range(query_params, "dateFrom", "dateTo")
             _fix_date_range(query_params, "startDateFrom", "startDateTo")
@@ -1041,8 +1056,8 @@ def build_agent():
     tools, tool_summaries = load_tools()
     tool_map = {t.name: t for t in tools}
 
-    planner_model = os.environ.get("GEMINI_PLANNER_MODEL", "gemini-3.1-pro-preview")
-    heal_model = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
+    planner_model = os.environ.get("GEMINI_PLANNER_MODEL", "gemini-2.5-flash")
+    heal_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
     api_key = os.environ["GOOGLE_API_KEY"]
 
     planner_llm = ChatGoogleGenerativeAI(
@@ -1834,6 +1849,7 @@ def build_agent():
 
     # --- Node: verifier (post-execution check) ---
     def verifier(state: AgentState) -> dict:
+        import time as _time
         verification_attempts = state.get("verification_attempts", 0)
 
         # Skip verification if all steps succeeded (no wasted LLM call)
@@ -1851,6 +1867,12 @@ def build_agent():
 
         if not has_failures:
             log.info("All steps succeeded — skipping verification")
+            return {"verification_attempts": verification_attempts}
+
+        # Skip verification if past deadline (save time for partial credit)
+        deadline = state.get("deadline", 0)
+        if deadline and _time.monotonic() > deadline:
+            log.warning("Past deadline — skipping verification to preserve partial credit")
             return {"verification_attempts": verification_attempts}
 
         # Max 1 verification round
@@ -1894,7 +1916,7 @@ def build_agent():
         )
 
         try:
-            resp = planner_llm.invoke([HumanMessage(content=prompt)])
+            resp = heal_llm.invoke([HumanMessage(content=prompt)])  # Use flash for speed
             raw = _extract_text(resp.content)
             parsed = _parse_json_object(raw)
 
@@ -2013,6 +2035,7 @@ def run_agent(agent, prompt: str, file_attachments: list = None) -> None:
         "healed_steps": [],
         "original_prompt": original_prompt,
         "file_content_parts": file_content_parts,
+        "deadline": time.monotonic() + 250,  # 250s budget, 50s safety margin for 300s Cloud Run timeout
         "verification_attempts": 0,
     }
 

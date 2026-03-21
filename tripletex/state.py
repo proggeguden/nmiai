@@ -24,4 +24,5 @@ class AgentState(TypedDict):
     healed_steps: list[int]  # step numbers that already used FIX_ARGS
     original_prompt: str
     file_content_parts: list[dict]  # multimodal file parts for planner LLM calls
+    deadline: float  # time.monotonic() deadline — skip verifier if past this
     verification_attempts: int
