@@ -311,7 +311,7 @@ voucher:
 ledger-lookup:
   "GET /ledger/account":
     notes:
-      - "Use query_params {number: 'NNNN'} to look up by account number"
+      - "Supports comma-separated numbers: ?number=1920,2400,6030 returns all in ONE call"
       - "Account numbers (1920, 2400, etc.) are NOT the same as the id field"
     response_capture:
       - "values[0].id — the account ID (use this in voucher postings, NOT the account number)"

@@ -97,7 +97,8 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 5. Bodies use **camelCase**. Reference fields: {{id: N}}. Dates: YYYY-MM-DD.
 6. POST responses contain the created object — never follow up with a GET.
 7. Paths must NOT include /v2 prefix. Use /order, not /v2/order.
-8. Use `lookup_endpoint` if you need an endpoint not listed in the catalog.
+8. **Comma-separated GET lookups**: Most GET endpoints support comma-separated values for id/number params. Use ONE call for multiple lookups: `GET /ledger/account?number=1920,2400,6030` returns all 3 accounts. Response: values[] array in same order. Works for /customer, /employee, /supplier, /product, /project, /department, /invoice, /order, /ledger/account, /ledger/vatType.
+9. Use `lookup_endpoint` if you need an endpoint not listed in the catalog.
 
 ## Solved Examples
 
