@@ -32,7 +32,7 @@ TERRAIN_TO_CLASS = {
 STATIC_CODES = {10, 5}  # Ocean → always Empty, Mountain → always Mountain
 
 # Probability floor to avoid KL divergence → infinity
-PROB_FLOOR = 0.001
+PROB_FLOOR = 0.0005
 
 # Adaptive smoothing: k controls how much we trust the bucket model vs per-cell observations
 # High k → trust bucket model more; Low k → trust empirical observations more
@@ -875,7 +875,7 @@ def build_prediction(height, width, initial_grid, observations,
                      transition_model=None, spatial_model=None,
                      survival_rate=None, forward_rates=None,
                      settlement_stats=None, spatial_obs=None,
-                     expansion_rate=None):
+                     expansion_rate=None, port_formation_rate=None):
     """Build a H×W×6 probability tensor.
 
     Uses spatial_model (per-bucket) when available, falls back to
@@ -927,8 +927,22 @@ def build_prediction(height, width, initial_grid, observations,
             else:
                 predictions[r, c, terrain_code_to_class(code)] = 1.0
 
-    # Step 1.5: Port probability boost for coastal cells near settlements
+    # Step 1.5: Rate-adaptive port calibration for coastal cells near settlements
+    # Use observed port_formation_rate to set minimum port probability,
+    # scaling by distance to settlement. On high-port rounds this can be 15-30%+.
     if fmap and settlement_dists:
+        # Determine minimum port probability based on observed rate
+        if port_formation_rate is not None and port_formation_rate > 0.005:
+            # Scale observed rate by distance: d≤1 gets full rate, d≤3 gets half
+            base_port_near = min(port_formation_rate * 1.5, 0.40)  # d≤1
+            base_port_mid = min(port_formation_rate * 0.8, 0.25)   # d=2-3
+            base_port_far = min(port_formation_rate * 0.3, 0.10)   # d=4-5
+        else:
+            # Fallback: conservative fixed minimums
+            base_port_near = 0.05
+            base_port_mid = 0.03
+            base_port_far = 0.0
+
         for r in range(height):
             for c in range(width):
                 code = initial_grid[r][c]
@@ -940,9 +954,14 @@ def build_prediction(height, width, initial_grid, observations,
                     and initial_grid[r + dr][c + dc] == 10
                     for dr in (-1, 0, 1) for dc in (-1, 0, 1) if (dr, dc) != (0, 0)
                 )
-                if is_coastal and d <= 3:
-                    min_port = 0.05 if d <= 1 else 0.03
-                    if predictions[r, c, 2] < min_port:
+                if is_coastal and d <= 5:
+                    if d <= 1:
+                        min_port = base_port_near
+                    elif d <= 3:
+                        min_port = base_port_mid
+                    else:
+                        min_port = base_port_far
+                    if min_port > 0 and predictions[r, c, 2] < min_port:
                         deficit = min_port - predictions[r, c, 2]
                         predictions[r, c, 2] = min_port
                         # Distribute deficit proportionally across non-port classes

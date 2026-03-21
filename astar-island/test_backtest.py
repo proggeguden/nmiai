@@ -198,8 +198,10 @@ def backtest_round_enhanced(round_id, verbose=True):
 
     # Compute forward rates from GT
     forward_rates = _compute_forward_rates(initial_states, all_gt, height, width, seeds_count)
-    # Extract expansion rate for expansion modulation
+    # Extract rates for calibration steps
     gt_expansion_rate = forward_rates.get("expansion")
+    gt_survival_rate = forward_rates.get("survival")
+    gt_port_formation_rate = forward_rates.get("port_formation")
 
     # Score all seeds with model variants
     model_variants = {}
@@ -214,7 +216,9 @@ def backtest_round_enhanced(round_id, verbose=True):
             pred = build_prediction(height, width, init_grid, [],
                                     transition_model=gm, spatial_model=sm,
                                     forward_rates=fr, spatial_obs=spatial_obs,
-                                    expansion_rate=er)
+                                    expansion_rate=er,
+                                    survival_rate=gt_survival_rate,
+                                    port_formation_rate=gt_port_formation_rate)
             wkl, _ = score_predictions(pred, gt)
             kl_scores.append(float(wkl))
         model_variants[model_name] = float(np.mean(kl_scores))
@@ -230,7 +234,9 @@ def backtest_round_enhanced(round_id, verbose=True):
                                 transition_model=global_model,
                                 spatial_model=spatial_model,
                                 spatial_obs=spatial_obs,
-                                expansion_rate=gt_expansion_rate)
+                                expansion_rate=gt_expansion_rate,
+                                survival_rate=gt_survival_rate,
+                                port_formation_rate=gt_port_formation_rate)
         wkl, _ = score_predictions(pred, gt)
         per_seed_kl.append(float(wkl))
 
