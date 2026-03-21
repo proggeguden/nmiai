@@ -116,8 +116,8 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 - **Sparse observation k-boost**: For Plains/Forest/Empty cells with ≤2 observations, k is tripled (k=9). Prevents single-outlier distortion where one Ruin observation on Plains produces 21% Ruin prediction (GT: 0.5%).
 
 **Backtest performance** (simulated-production KL, lower is better):
-- Rounds 1–15 avg: **0.0537** (simulated production, 5 runs)
-- Best: 0.029 (R8), 0.035 (R4), Worst: 0.118 (R12), 0.099 (R7)
+- Rounds 1–16 avg: **0.0504** (simulated production, 5 runs)
+- Best: 0.026 (R8), 0.029 (R4), Worst: 0.131 (R12), 0.104 (R7)
 - Oracle backtest avg: 0.043 (but misleading — see below)
 - Probability floor: 0.0005
 

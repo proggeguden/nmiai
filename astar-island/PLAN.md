@@ -336,6 +336,23 @@ All 4 priority items implemented and submitted:
 - Viewport size tuning: Analysis showed 15×15 (max) is optimal — smaller viewports need more tiles than 10-query budget allows.
 - **Conclusion**: Per-cell blending is now well-tuned. Remaining oracle→sim-prod gap (26%) comes from spatial bucket coverage limits with 50 queries.
 
+### Deep research sprint (2026-03-21 evening)
+
+**Gap analysis** identified 3 mechanisms driving the 26% oracle→sim-prod gap:
+1. Discrete sampling noise in bucket distributions (63.3%) — structural, hard to fix
+2. **Expansion rate estimator broken** (36.7%) — estimate_expansion_rate() divided by obs_count not cell_count, hit 0.50 clamp on every round (true rates: 0.13-0.28)
+3. Per-cell blending noise (7.8%) — partially fixed by k-boost
+
+**Expansion rate fix**: Changed `new_settlements / obs_count / avg_initial` to `new_settlements / observed_non_settlement`. SimProd -6.1% avg KL. 13/15 rounds improved, R7/R12 regressed (extreme rounds where accidental over-boost helped).
+
+**Tested and rejected:**
+- Ensemble predictions (3 k-configs averaged) ➖: Zero effect — configs too similar, bucket model dominates
+- Adaptive two-phase queries ❌: 60/40 split reduced coverage, KL regressed -19% on R15
+- Historical round prior ❌: Cross-round averaging adds noise since hidden params differ per round
+- Neural network predictor: NO-GO — only 16 independent rounds, bucket model already captures what NN would learn, hidden param variation makes generalization unreliable
+
+**Combined improvements this session**: baseline 0.0603 → k-boost 0.0537 (-10.9%) → expansion fix 0.0504 (-6.1%) = **total -16.4% improvement**.
+
 ---
 
 ## Simulation Phase Summary (for modeling reference)
