@@ -200,10 +200,44 @@ All 4 priority items implemented and submitted:
 **Promising directions not yet tried:**
 - Plains bucket refinement: split by distance + cluster density interaction
 - Ruin-to-forest transition: currently under-predicted, especially near forests in harsh winters
-- Adjacent settlement COUNT for Plains (not just binary is_clustered): 2+ adjacent settlements = much higher expansion
-- Better port prediction for coastal settlements (R7 worst cell: Settlement→Port under-predicted)
 - Ensemble approach: run predictions with multiple parameter sets and average
 - Non-linear feature interactions: multiplicative features in bucket key (e.g., coastal AND clustered AND near_forest)
+
+### Saturday session findings (2026-03-21)
+
+**Investigated and dead-ended:**
+- **Terrain-aware A* distance** ❌: Tested all 12 rounds — 0 cells have different terrain distance vs Manhattan distance. Mountains on competition maps are small clusters (2-5 cells) that can always be walked around. The map generator never creates complete barriers. Do NOT retry.
+
+**Key discovery: backtest→production gap is 53%:**
+- Simulated production (50 queries, sampled from GT) gives KL ~0.154 for R7
+- Backtest (GT data) gives KL 0.101 for R7
+- The observation noise is where most points are lost, not the model itself
+- Per-cell blending k values (k=3/8) already well-tuned (tested in simulation)
+
+**Error analysis (worst cells on R7):**
+- **Port under-prediction** is the #1 cell-level error: GT shows 20-45% port for coastal forest cells near settlements, model predicts 1-2%
+- **Settlement expansion under-prediction**: Plains near settlements have GT Sett=24-61%, model predicts 3-13%
+- **Forest over-prediction**: Forest near settlements has GT Forest=13-41%, model predicts 47-90%
+
+**Implemented and improved:**
+- **Rate-adaptive port calibration** ✅: Uses observed `port_formation_rate` to scale port minimums (was fixed 5%/3%). Extends to d≤5. R8 improved -7.9% (survival calibration also now tested in backtest).
+- **Prob floor 0.001 → 0.0005** ✅: KL 0.0442 → 0.0442... wait, the improvement was -0.7% from previous baseline. All rounds improved, zero regressions. Monotonic trend continues (0.0002 and 0.0001 also improve in backtest but risky in production).
+- **Focused query strategy** ✅: Half queries for coverage, half for repeating high-settlement tiles. -2.1% in simulated production. Gives 2-3x observations of high-entropy cells.
+- **Monte Carlo forward simulator** ✅: Simplified Norse world sim (growth, expansion, ports, winter, environment). 80 runs × 50 years. Blended at 5% weight only when survival_rate > 0.50. R12 improved -7.4%. Overall -1.7%. Zero regressions.
+
+**MC simulator details:**
+- Helps dramatically on R7 (-14% at 10% weight in isolation) and R12 (-7.4%)
+- Hurts on R1/R2/R6 when applied with survival > 0.25 threshold (mechanics are uncalibrated for moderate survival)
+- Current threshold of survival > 0.50 is safe — only catches R12-type rounds
+- Calibration challenge: per-year rates are hard to derive from 50-year outcome rates
+
+**Current backtest: 0.0435 avg KL** (was 0.0446 at start of session, -2.5% total)
+
+**Remaining promising directions:**
+1. Better MC calibration → lower threshold to 0.40 to catch R7
+2. Ensemble of 2-3 model configurations
+3. Better production pipeline (already have focused queries)
+4. Participation in later rounds (weight compounds 5%/round)
 
 ---
 

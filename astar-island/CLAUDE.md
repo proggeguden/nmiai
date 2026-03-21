@@ -83,60 +83,56 @@ position, population, food, wealth, defense, tech level, port status, longship o
 **Current approach**: Allocate queries proportional to settlement density across all 5 seeds →
 learn spatial transition model P(final_class | bucket_key) with Bayesian smoothing → apply to all seeds.
 Per-cell observations blended with adaptive k (terrain-dependent).
+On high-survival rounds (>50%), Monte Carlo simulation blended at 5% weight.
 
 **Why this works**: Hidden parameters are shared across all seeds. More seeds give
 more diverse terrain layouts → better spatial bucket coverage → better model.
 
 **Key spatial features (implemented)**:
 - Manhattan distance to nearest settlement: 3-level bucket (≤2, 3-4, 5+) with continuous interpolation
-- Settlement cluster density: binary `is_clustered` for Settlement and Plains bucket keys
+- Settlement cluster density: binary `is_clustered` for Settlement, Plains, and Forest bucket keys
 - Binary forest adjacency for settlements, coastal-only for ports (~25-28 buckets)
 - Coastal adjacency for plains and settlements
 - Adjacent forest for plains, empty cells
 - 3-level adjacent settlement for forest (0/1/2+), interior flag (adj_forest≥4)
+- Adjacent settlement count for plains (0/1/2+)
 - Adjacent settlement for ruin cells
 - BFS-precomputed distances for efficiency
-- Bayesian smoothing towards global prior (K=5)
+- Bayesian smoothing towards global prior (K=3-10 per terrain)
 
 **Post-model adjustments (applied after spatial model, before floor)**:
-- Port probability boost: coastal cells near settlements (d≤3) get minimum 5%/3% Port mass
-- Winter severity calibration: estimate settlement survival rate from observations, scale predictions
+- Rate-adaptive port calibration (Step 1.5): uses observed port_formation_rate to scale port minimums for coastal cells d≤5. On high-port rounds boosts to 15-30%.
+- Winter severity calibration (Step 1.6): estimate survival rate from observations, scale settlement/port predictions. Harsh winter → boost Ruin+Forest.
 - Continuous distance interpolation: blend between adjacent distance brackets based on raw distance
-- Expansion modulation (Step 1.75): scale Settlement+Port predictions for d≤8 cells, wider clamp [0.3, 3.5]
+- Expansion modulation (Step 1.75): scale Settlement+Port predictions for d≤8 cells, clamp [0.3, 3.5]
 - Forest entropy injection (Step 1.85): shrink over-confident Forest predictions when observed retention < 0.85
 - Distance-based temperature scaling (Step 1.8): T=1.10 near settlements (spread), T=0.92 far (sharpen)
+- Monte Carlo blending (Step 2.5): on high-survival rounds (>50%), blend 5% MC simulation predictions. Captures spatial correlations missing from bucket model.
+
+**Query strategy**: Focused observation — uses half of queries for map coverage, half for repeating high-settlement tiles. Gives 2-3x observations per cell for high-entropy areas, improving per-cell blending.
 
 **Adaptive smoothing**: Per-cell blending uses terrain-dependent k values:
 - Settlements/ports k=8 (high variance → trust model more)
 - Plains/forest/empty k=3 (predictable → trust observations more)
 
+**Monte Carlo simulator** (`monte_carlo_predict`):
+- Simplified Norse world simulation: growth → expansion → port formation → winter → environment
+- 80 runs × 50 years per seed. Runs in ~1-3s.
+- Only activated when survival_rate > 0.50 (high-survival rounds with complex dynamics)
+- Blended at 5% weight with bucket model. R12 improved -7.4%.
+
 **Backtest performance** (weighted KL, lower is better):
-- Rounds 1–12 avg: ~0.0446
-- Best: 0.018 (R8), Worst: 0.121 (R12), 0.101 (R7)
-- Rounds 1–6 avg: ~0.038
-- Probability floor: 0.001 (optimized down from 0.003)
-
-**Settlement cluster density** (Phase 4f):
-- Binary `is_clustered` (≥2 settlements within Manhattan d≤5) added to Settlement, Plains, and Forest bucket keys
-- Helps most on harsh winter rounds (R7: 0.147→0.142)
-
-**Settlement stats extraction** (Phase 4g):
-- Parses food/population/wealth from simulate query responses
-- Modulates winter calibration scale based on avg food (±20%)
-- Schema discovery pending (rate-limited), wired but no-op until confirmed
-
-**Forward model** (Phase 4h):
-- Rate estimation functions implemented (expansion, port_formation, forest_reclamation, ruin)
-- Physics-based forward probabilities computed but NOT applied in production
-- Backtesting showed consistent regression — bucket model is more accurate
-- Code kept for potential future use with better rate formulas
+- Rounds 1–12 avg: **0.0435**
+- Best: 0.016 (R8), Worst: 0.112 (R12), 0.101 (R7)
+- Rounds 1–6 avg: ~0.035
+- Probability floor: 0.0005
 
 **Known issues**:
 - Plains cells are largest error source (~60% of KL loss)
-- R7 and R12 are 2-3x worse than other rounds (KL ~0.10-0.12) — moderate expansion rounds
-- Within-bucket variance is the dominant remaining error source
-- Forward model doesn't improve on data-driven bucket model
-- Post-model adjustments have diminishing returns — need better features for next step change
+- R7 and R12 are 2-3x worse than other rounds — high-survival, moderate expansion
+- Port under-prediction is the single biggest cell-level error (GT 20-45%, pred 1-2%)
+- Backtest→production gap is ~53% (KL 0.044 backtest vs ~0.066 production)
+- MC simulator helps only on highest-survival rounds due to uncalibrated mechanics
 - Gap to top teams: ~11 raw points (we score ~82, top teams ~93)
 
 See `PLAN.md` for error analysis, improvement roadmap, and round-by-round changelog.
