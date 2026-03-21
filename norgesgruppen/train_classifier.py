@@ -267,6 +267,7 @@ def main():
                         help="Train on ALL data (no validation holdout) for final submission")
     args = parser.parse_args()
 
+    global NUM_EPOCHS, BATCH_SIZE
     if args.epochs is not None:
         NUM_EPOCHS = args.epochs
     if args.batch_size is not None:
