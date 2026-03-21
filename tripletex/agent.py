@@ -606,12 +606,17 @@ def _path_to_template(path: str) -> str:
 
 
 def _ensure_bank_account(call_api_tool, error_count: int) -> tuple[str, dict, int]:
-    """Ensure the company has a bank account registered.
+    """Ensure the company has a bank account registered for invoicing.
 
-    Searches for existing bank accounts first; only creates one if none found.
+    Two things are needed:
+    1. A ledger account 1920 with isBankAccount=true (chart of accounts)
+    2. The company itself must have bankAccounts registered (PUT /company)
+
     Returns (result_str, parsed, error_count).
     """
-    # Step 1: Check for existing bank account
+    BANK_ACCOUNT_NUMBER = "12345678903"
+
+    # Step 1: Ensure ledger account 1920 exists with bank account number
     search_result = call_api_tool.invoke(
         {
             "method": "GET",
@@ -625,44 +630,68 @@ def _ensure_bank_account(call_api_tool, error_count: int) -> tuple[str, dict, in
         }
     )
 
+    ledger_ok = False
     try:
         parsed = json.loads(search_result)
         values = parsed.get("values", [])
-        if values:
-            log.info(
-                f"Bank account already exists: account {values[0].get('number', '?')}"
-            )
-            return search_result, parsed, error_count
+        if values and values[0].get("bankAccountNumber"):
+            log.info(f"Ledger bank account exists: {values[0].get('number', '?')}")
+            ledger_ok = True
+        elif values:
+            # Account exists but no bank account number — update it
+            acct_id = values[0].get("id")
+            if acct_id:
+                log.info(f"Ledger account exists but missing bankAccountNumber, updating")
+                call_api_tool.invoke({
+                    "method": "PUT",
+                    "path": f"/ledger/account/{acct_id}",
+                    "body": {
+                        "id": acct_id,
+                        "number": values[0].get("number", 1920),
+                        "name": values[0].get("name", "Bankkonto"),
+                        "isBankAccount": True,
+                        "bankAccountNumber": BANK_ACCOUNT_NUMBER,
+                    },
+                })
+                ledger_ok = True
     except (json.JSONDecodeError, TypeError):
         pass
 
-    # Step 2: No bank account found — create one (account 1920 = standard Norwegian bank account)
-    log.info("No bank account found, creating account 1920")
-    create_result = call_api_tool.invoke(
-        {
+    if not ledger_ok:
+        log.info("No bank account found, creating ledger account 1920")
+        call_api_tool.invoke({
             "method": "POST",
             "path": "/ledger/account",
             "body": {
                 "number": 1920,
                 "name": "Bankkonto",
                 "isBankAccount": True,
-                "bankAccountNumber": "12345678903",
+                "bankAccountNumber": BANK_ACCOUNT_NUMBER,
             },
-        }
-    )
+        })
+
+    # Step 2: Register bank account on the COMPANY itself (required for invoicing)
+    log.info("Registering bank account on company via PUT /company")
+    company_result = call_api_tool.invoke({
+        "method": "PUT",
+        "path": "/company",
+        "body": {
+            "bankAccounts": [BANK_ACCOUNT_NUMBER],
+        },
+    })
 
     try:
-        parsed = json.loads(create_result)
+        parsed = json.loads(company_result)
         status = parsed.get("status", 0)
         if isinstance(status, int) and status >= 400:
-            log.warning(f"Failed to create bank account: {create_result[:500]}")
+            log.warning(f"Failed to register bank account on company: {company_result[:500]}")
             error_count += 1
         else:
-            log.info("Bank account 1920 created successfully")
+            log.info("Company bank account registered successfully")
     except (json.JSONDecodeError, TypeError):
-        parsed = {"raw": create_result}
+        parsed = {"raw": company_result}
 
-    return create_result, parsed, error_count
+    return company_result, parsed, error_count
 
 
 def _ensure_division(call_api_tool, error_count: int) -> tuple[str, dict, int]:
