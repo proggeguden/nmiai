@@ -205,9 +205,10 @@ def backtest_round_enhanced(round_id, verbose=True):
 
     # Score all seeds with model variants
     model_variants = {}
-    for model_name, gm, sm, fr, er in [
-        ("5seed-Spatial", global_model, spatial_model, None, gt_expansion_rate),
-        ("5seed-Sp+Forward", global_model, spatial_model, forward_rates, gt_expansion_rate),
+    for model_name, gm, sm, fr, er, mcr in [
+        ("5seed-Spatial", global_model, spatial_model, None, gt_expansion_rate, None),
+        ("5seed-Sp+Forward", global_model, spatial_model, forward_rates, gt_expansion_rate, None),
+        ("5seed-Sp+MC", global_model, spatial_model, None, gt_expansion_rate, forward_rates),
     ]:
         kl_scores = []
         for seed_idx in range(seeds_count):
@@ -218,7 +219,8 @@ def backtest_round_enhanced(round_id, verbose=True):
                                     forward_rates=fr, spatial_obs=spatial_obs,
                                     expansion_rate=er,
                                     survival_rate=gt_survival_rate,
-                                    port_formation_rate=gt_port_formation_rate)
+                                    port_formation_rate=gt_port_formation_rate,
+                                    mc_rates=mcr)
             wkl, _ = score_predictions(pred, gt)
             kl_scores.append(float(wkl))
         model_variants[model_name] = float(np.mean(kl_scores))
@@ -236,7 +238,8 @@ def backtest_round_enhanced(round_id, verbose=True):
                                 spatial_obs=spatial_obs,
                                 expansion_rate=gt_expansion_rate,
                                 survival_rate=gt_survival_rate,
-                                port_formation_rate=gt_port_formation_rate)
+                                port_formation_rate=gt_port_formation_rate,
+                                mc_rates=forward_rates)
         wkl, _ = score_predictions(pred, gt)
         per_seed_kl.append(float(wkl))
 

@@ -178,7 +178,8 @@ def run_pipeline(round_id):
                                 settlement_stats=settlement_stats,
                                 spatial_obs=spatial_obs,
                                 expansion_rate=expansion_rate,
-                                port_formation_rate=port_formation_rate)
+                                port_formation_rate=port_formation_rate,
+                                mc_rates=forward_rates)
         pred_list = predictions_to_list(pred)
         validate_predictions(pred_list, height, width)
 
