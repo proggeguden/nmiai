@@ -104,47 +104,34 @@ async def solve(request: Request, body: SolveRequest):
         session_token=body.tripletex_credentials.session_token,
     )
 
-    # Build file context string for the agent
-    file_context = ""
+    # Build file attachments list for the agent (passed as multimodal content to Gemini)
+    file_attachments = []
     for f in body.files or []:
         try:
-            content = base64.b64decode(f.content_base64)
-            if f.mime_type.startswith("text/") or f.mime_type == "application/json":
-                decoded = content.decode("utf-8", errors="replace")
-                log.info(f"File decoded: {f.filename}", mime_type=f.mime_type, size_bytes=len(content), request_id=request_id)
-                file_context += f"\n[File: {f.filename}]\n{decoded}\n"
-            elif f.mime_type == "application/pdf":
-                # Extract text from PDF
-                try:
-                    import fitz  # pymupdf
-                    doc = fitz.open(stream=content, filetype="pdf")
-                    pdf_text = ""
-                    for page in doc:
-                        pdf_text += page.get_text()
-                    doc.close()
-                    log.info(f"PDF extracted: {f.filename}", pages=len(doc), chars=len(pdf_text), request_id=request_id)
-                    file_context += f"\n[File: {f.filename}]\n{pdf_text}\n"
-                except Exception as pdf_err:
-                    log.warning(f"PDF extraction failed: {f.filename}", error=str(pdf_err), request_id=request_id)
-                    file_context += f"\n[File: {f.filename} (PDF, {len(content)} bytes) — could not extract text]\n"
-            else:
-                log.info(f"File attached (binary): {f.filename}", mime_type=f.mime_type, size_bytes=len(content), request_id=request_id)
-                file_context += f"\n[File: {f.filename} ({f.mime_type}, {len(content)} bytes) — binary file, extract relevant data if needed]\n"
-        except Exception as e:
-            log.warning(f"Could not decode file: {f.filename}", error=str(e), request_id=request_id)
-            file_context += f"\n[File: {f.filename} — could not decode]\n"
+            content_bytes = base64.b64decode(f.content_base64)
+            log.info(f"File attached: {f.filename}", mime_type=f.mime_type, size_bytes=len(content_bytes), request_id=request_id)
 
-    if file_context:
-        log.info(
-            ">>>FILES_START<<<\n"
-            f"{file_context}\n"
-            ">>>FILES_END<<<",
-            request_id=request_id,
-        )
+            if f.mime_type.startswith("text/") or f.mime_type == "application/json":
+                # Text files: decode and pass as text
+                decoded = content_bytes.decode("utf-8", errors="replace")
+                file_attachments.append({"type": "text", "filename": f.filename, "text": decoded})
+            else:
+                # PDFs, images, etc: pass as base64 for Gemini multimodal
+                file_attachments.append({
+                    "type": "binary",
+                    "filename": f.filename,
+                    "content_base64": f.content_base64,
+                    "mime_type": f.mime_type,
+                })
+        except Exception as e:
+            log.warning(f"Could not process file: {f.filename}", error=str(e), request_id=request_id)
+
+    if file_attachments:
+        log.info(f"Passing {len(file_attachments)} file(s) to agent", filenames=[a['filename'] for a in file_attachments], request_id=request_id)
 
     # Run the agent
     try:
-        run_agent(_agent, body.prompt, file_context)
+        run_agent(_agent, body.prompt, file_attachments)
     except Exception as e:
         elapsed_ms = round((time.monotonic() - t_start) * 1000)
         log.error(

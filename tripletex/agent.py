@@ -1855,23 +1855,44 @@ def build_agent():
     return graph.compile()
 
 
-def run_agent(agent, prompt: str, file_context: str = "") -> None:
-    """Run the agent with the given prompt."""
-    user_message = prompt
-    if file_context:
-        user_message = f"{prompt}\n\n--- Attached Files ---\n{file_context}"
+def run_agent(agent, prompt: str, file_attachments: list = None) -> None:
+    """Run the agent with the given prompt and optional file attachments.
 
-    log.info("Invoking agent", prompt_length=len(user_message))
+    file_attachments: list of dicts, each with:
+      - type: "text" or "binary"
+      - filename: str
+      - text: str (for text files)
+      - content_base64: str (for binary files — PDFs, images)
+      - mime_type: str (for binary files)
+    """
+    # Build multimodal message content
+    if file_attachments:
+        content_parts = [{"type": "text", "text": prompt}]
+        for f in file_attachments:
+            if f["type"] == "text":
+                content_parts.append({"type": "text", "text": f"\n[File: {f['filename']}]\n{f['text']}"})
+            else:
+                # Binary file (PDF, image) — pass as inline data for Gemini
+                data_url = f"data:{f['mime_type']};base64,{f['content_base64']}"
+                content_parts.append({"type": "image_url", "image_url": {"url": data_url}})
+                content_parts.append({"type": "text", "text": f"[The above is file: {f['filename']}]"})
+        message = HumanMessage(content=content_parts)
+        original_prompt = prompt  # Keep clean prompt for replan/verify context
+    else:
+        message = HumanMessage(content=prompt)
+        original_prompt = prompt
+
+    log.info("Invoking agent", prompt_length=len(prompt), files=len(file_attachments or []))
 
     initial_state = {
-        "messages": [HumanMessage(content=user_message)],
+        "messages": [message],
         "plan": [],
         "current_step": 0,
         "results": {},
         "completed_steps": [],
         "error_count": 0,
         "replan_count": 0,
-        "original_prompt": user_message,
+        "original_prompt": original_prompt,
         "verification_attempts": 0,
     }
 
