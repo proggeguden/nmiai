@@ -1375,22 +1375,20 @@ def build_prediction(height, width, initial_grid, observations,
                             + (1 - alpha[r, c, 0]) * predictions[r, c]
                         )
 
-    # Step 2.5: Monte Carlo blending (adaptive weight based on survival rate)
-    # MC captures spatial correlations missing from bucket model.
-    # Helps most on high-expansion rounds; hurts on harsh winter rounds.
-    if mc_rates is not None:
-        sr = mc_rates.get("survival") or 0.0
-        if sr > 0.50:
-            # Very high survival → complex dynamics, MC adds value
-            # Only for the hardest rounds (R12-type with 50%+ survival)
-            mc_weight = 0.05
-            mc_pred = monte_carlo_predict(initial_grid, mc_rates,
-                                          n_runs=80, n_years=50)
-            mc_pred = apply_floor(mc_pred, floor=0.001)
-            predictions = (1 - mc_weight) * predictions + mc_weight * mc_pred
-            # Re-normalize
-            sums = predictions.sum(axis=2, keepdims=True)
-            predictions = predictions / sums
+    # Step 2.5: Monte Carlo blending — DISABLED
+    # Simulated-production testing shows MC hurts by +1.1% avg (+3.7% on R12).
+    # The uncalibrated per-year rates add noise rather than correcting errors.
+    # Kept as dead code for potential future calibration improvement.
+    # if mc_rates is not None:
+    #     sr = mc_rates.get("survival") or 0.0
+    #     if sr > 0.50:
+    #         mc_weight = 0.05
+    #         mc_pred = monte_carlo_predict(initial_grid, mc_rates,
+    #                                       n_runs=80, n_years=50)
+    #         mc_pred = apply_floor(mc_pred, floor=0.001)
+    #         predictions = (1 - mc_weight) * predictions + mc_weight * mc_pred
+    #         sums = predictions.sum(axis=2, keepdims=True)
+    #         predictions = predictions / sums
 
     # Step 3: Apply probability floor
     predictions = apply_floor(predictions)
