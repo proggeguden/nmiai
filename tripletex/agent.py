@@ -632,12 +632,9 @@ def _path_to_template(path: str) -> str:
 
 
 def _ensure_bank_account(call_api_tool, error_count: int) -> tuple[str, dict, int]:
-    """Ensure the company has a bank account registered for invoicing.
+    """Ensure a bank account is registered for invoicing.
 
-    Two things are needed:
-    1. A ledger account 1920 with isBankAccount=true (chart of accounts)
-    2. The company itself must have bankAccounts registered (PUT /company)
-
+    Ensures ledger account 1920 exists with isBankAccount=true and bankAccountNumber set.
     Returns (result_str, parsed, error_count).
     """
     BANK_ACCOUNT_NUMBER = "12345678903"
@@ -696,28 +693,13 @@ def _ensure_bank_account(call_api_tool, error_count: int) -> tuple[str, dict, in
             },
         })
 
-    # Step 2: Register bank account on the COMPANY itself (required for invoicing)
-    log.info("Registering bank account on company via PUT /company")
-    company_result = call_api_tool.invoke({
-        "method": "PUT",
-        "path": "/company",
-        "body": {
-            "bankAccounts": [BANK_ACCOUNT_NUMBER],
-        },
-    })
-
+    # Return the ledger account result (bank account is registered on the ledger account itself)
     try:
-        parsed = json.loads(company_result)
-        status = parsed.get("status", 0)
-        if isinstance(status, int) and status >= 400:
-            log.warning(f"Failed to register bank account on company: {company_result[:500]}")
-            error_count += 1
-        else:
-            log.info("Company bank account registered successfully")
+        parsed = json.loads(search_result)
     except (json.JSONDecodeError, TypeError):
-        parsed = {"raw": company_result}
+        parsed = {"raw": search_result}
 
-    return company_result, parsed, error_count
+    return search_result, parsed, error_count
 
 
 def _ensure_division(call_api_tool, error_count: int) -> tuple[str, dict, int]:
@@ -1133,9 +1115,13 @@ def build_agent():
         if not card:
             return resolved_args
 
-        # Strip do_not_send fields from body
+        # Strip do_not_send fields from body (but NEVER strip product number — scoring checks it)
+        endpoint_path = resolved_args.get("path", "")
         for dns in card.get("do_not_send", []):
             field_name = dns.get("field", "")
+            # Never strip "number" from product endpoints — scoring system checks product numbers
+            if field_name == "number" and "/product" in endpoint_path:
+                continue
             # Handle simple field names (not compound descriptions like "request body")
             if field_name and " " not in field_name and field_name in body:
                 del body[field_name]

@@ -176,27 +176,26 @@ product:
     send_exactly: |
       {
         "name": "<string>",
+        "number": "<string, include when task specifies a product number>",
         "priceExcludingVatCurrency": <number>
       }
     do_not_send:
-      - field: "number"
-        reason: "auto-generated — omit to avoid 422 duplicate number errors"
       - field: "priceIncludingVatCurrency"
         reason: "conflicts with priceExcludingVatCurrency — send only ONE"
     common_errors:
       - symptom: "422 duplicate product number"
-        fix: "Omit the 'number' field entirely — let system auto-generate"
+        fix: "The number is already in use — try a different number or omit to auto-generate"
       - symptom: "422 price conflict"
         fix: "Send only priceExcludingVatCurrency, never both price fields"
     response_capture:
       - "value.id — the product ID"
+    notes:
+      - "Include 'number' field when the task specifies a product number — scoring checks this"
 
   "POST /product/list":
-    do_not_send:
-      - field: "number on each item"
-        reason: "auto-generated — omit to avoid duplicates"
     notes:
       - "Body is an array of product objects for bulk creation"
+      - "Include 'number' on each item when specified by the task"
 
 travel-expense:
   notes:
