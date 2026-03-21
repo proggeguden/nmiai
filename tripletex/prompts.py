@@ -136,7 +136,7 @@ Return ONLY a JSON object:
 - Skip: {{"action": "skip", "reason": "..."}}
 - Replace: {{"action": "replace", "steps": [{{"step_number": N, "tool_name": "call_api", "args": {{}}, "description": "..."}}]}}
 
-For "replace", start step_number from {next_step_number}. Use $step_N.value.id to reference results from completed steps.
+For "replace", start step_number from {next_step_number}. Use $step_N.id to reference results from completed steps.
 Paths must NOT start with /v2/. Action endpoint paths keep the colon: /:invoice, /:payment.
 """
 
@@ -167,7 +167,7 @@ Return ONLY a JSON object:
 - If task is incomplete: {{"verified": false, "corrective_steps": [...]}}
 
 Each corrective step: {{"step_number": N, "tool_name": "call_api", "args": {{"method": "...", "path": "...", "query_params": {{}}, "body": {{}}}}, "description": "..."}}
-Start step_number from {next_step_number}. Use $step_N.value.id to reference completed steps.
+Start step_number from {next_step_number}. Use $step_N.id to reference completed steps.
 """
 
 FIX_ARGS_PROMPT = """A Tripletex API call failed. Fix the call_api arguments to avoid the error.

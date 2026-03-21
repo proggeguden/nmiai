@@ -169,7 +169,7 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 },
             )
             # Always override division ref with guaranteed result
-            emp_body["division"] = {"id": f"$step_{div_step_number}.value.id"}
+            emp_body["division"] = {"id": f"$step_{div_step_number}.id"}
             log.info("Validation: prepended ensure_division step for employment plan")
 
     # (A3 moved to A2a — strip /division before injection, not after)
@@ -204,7 +204,7 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         emp_step = plan[employee_post_idx + 1]
         emp_body = emp_step.get("args", {}).get("body", {})
         if isinstance(emp_body, dict):
-            emp_body["department"] = {"id": f"$step_{dept_step_number}.value.id"}
+            emp_body["department"] = {"id": f"$step_{dept_step_number}.id"}
         log.info(
             "Validation: injected ensure_department step for POST /employee"
         )
@@ -1079,10 +1079,10 @@ def _find_unresolved_refs(obj, results: dict) -> list[str]:
             unresolved.append(f"{ref} (step {m.group(1)} has no result)")
         elif isinstance(step_result, dict) and step_result.get("skipped"):
             unresolved.append(f"{ref} (step {m.group(1)} was skipped)")
-        elif isinstance(step_result, dict) and "values" in step_result:
-            vals = step_result["values"]
-            if isinstance(vals, list) and len(vals) == 0:
-                unresolved.append(f"{ref} (step {m.group(1)} returned empty list)")
+        elif isinstance(step_result, dict) and step_result.get("_empty"):
+            unresolved.append(f"{ref} (step {m.group(1)} returned empty list)")
+        elif isinstance(step_result, dict) and "error" in step_result:
+            unresolved.append(f"{ref} (step {m.group(1)} returned error: {str(step_result.get('error', ''))[:80]})")
     return unresolved or ["unknown"]
 
 
@@ -1457,7 +1457,7 @@ def build_agent():
                 result_str, parsed, error_count = _ensure_bank_account(
                     call_api_tool, error_count
                 )
-                results[f"step_{step['step_number']}"] = parsed
+                results[f"step_{step['step_number']}"] = _normalize_result(parsed)
                 log.info(f"Step {step['step_number']} completed: bank account ensured")
                 completed.append(step["step_number"])
                 return {
@@ -1480,7 +1480,7 @@ def build_agent():
                 result_str, parsed, error_count = _ensure_department(
                     call_api_tool, error_count
                 )
-                results[f"step_{step['step_number']}"] = parsed
+                results[f"step_{step['step_number']}"] = _normalize_result(parsed)
                 log.info(f"Step {step['step_number']} completed: department ensured")
                 completed.append(step["step_number"])
                 return {
@@ -1503,7 +1503,7 @@ def build_agent():
                 result_str, parsed, error_count = _ensure_division(
                     call_api_tool, error_count
                 )
-                results[f"step_{step['step_number']}"] = parsed
+                results[f"step_{step['step_number']}"] = _normalize_result(parsed)
                 log.info(f"Step {step['step_number']} completed: division ensured")
                 completed.append(step["step_number"])
                 return {
@@ -1566,7 +1566,8 @@ def build_agent():
                 for prev_key, prev_result in results.items():
                     if not isinstance(prev_result, dict):
                         continue
-                    prev_values = prev_result.get("values", [])
+                    # After normalization, GET results have _all list; single entities have id directly
+                    prev_values = prev_result.get("_all", [prev_result] if "id" in prev_result else [])
                     if isinstance(prev_values, list) and prev_values:
                         for v in prev_values:
                             if (
@@ -1576,8 +1577,8 @@ def build_agent():
                                 log.info(
                                     f"Employee already exists (from {prev_key}, id={v.get('id')}), skipping POST /employee"
                                 )
-                                # Store the GET result as this step's result so downstream $step refs work
-                                results[f"step_{step['step_number']}"] = {"value": v}
+                                # Store normalized so $step_N.id works
+                                results[f"step_{step['step_number']}"] = _normalize_result({"value": v})
                                 completed.append(step["step_number"])
                                 return {
                                     "current_step": step_idx + 1,
