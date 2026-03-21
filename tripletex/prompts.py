@@ -74,7 +74,8 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - **GET /invoice** REQUIRES invoiceDateFrom + invoiceDateTo params
 - **Voucher postings**: debit=positive, credit=negative, must sum to 0. Do NOT send number or voucherType.
 - **Supplier invoice voucher**: AP (credit) posting MUST include supplier:{{"id": N}}
-- **Product**: omit "number" field (auto-gen). NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency.
+- **Products with numbers in parentheses ALREADY EXIST** — e.g. "Analysis Report (2823)" means product number 2823 exists. Look them up: `GET /product?productNumber=2823,2035` (comma-separated). Use the product ID in order lines. Only CREATE products when explicitly told to.
+- **Product (creating new)**: omit "number" field (auto-gen). NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency.
 - **Employee for payroll**: dateOfBirth REQUIRED. salary/transaction specifications MUST have rate, count, AND amount.
 - **Travel expenses**: costs + perDiemCompensations can be inlined in POST /travelExpense body. Each cost needs paymentType (GET /travelExpense/paymentType first).
 - **Timesheet entries**: need an activity linked to the project (POST /activity → POST /project/projectActivity). Use POST /timesheet/entry/list for bulk.
@@ -114,14 +115,16 @@ Task: "Run payroll for Lucy Walker (lucy.walker@example.org) for this month. Bas
 ]
 ```
 
-### Example 2: Project with fixed price + invoice
-Task: "Set a fixed price of 150000 NOK on project 'Data Migration' for customer Solberg AS (org 123456789)."
+### Example 2: Order with existing products + invoice + payment
+Task: "Create an order for customer Solberg AS (org 123456789) with products Consulting (1234) at 50000 NOK and Training (5678) at 25000 NOK. Invoice and record full payment."
 ```json
 [
   {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "POST", "path": "/customer", "body": {{"name": "Solberg AS", "organizationNumber": "123456789"}}}}, "description": "Create customer"}},
-  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "POST", "path": "/project", "body": {{"name": "Data Migration", "startDate": "{today}", "isInternal": false}}}}, "description": "Create project"}},
-  {{"step_number": 3, "tool_name": "call_api", "args": {{"method": "POST", "path": "/order", "body": {{"customer": {{"id": "$step_1.value.id"}}, "orderDate": "{today}", "deliveryDate": "{today}", "project": {{"id": "$step_2.value.id"}}, "orderLines": [{{"description": "Data Migration — Fixed price", "count": 1, "unitPriceExcludingVatCurrency": 150000.0}}]}}}}, "description": "Create order with fixed price"}},
-  {{"step_number": 4, "tool_name": "call_api", "args": {{"method": "PUT", "path": "/order/$step_3.value.id/:invoice", "query_params": {{"invoiceDate": "{today}"}}}}, "description": "Invoice the order"}}
+  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "GET", "path": "/product", "query_params": {{"productNumber": "1234,5678", "count": 10}}}}, "description": "Look up existing products by number"}},
+  {{"step_number": 3, "tool_name": "call_api", "args": {{"method": "POST", "path": "/order", "body": {{"customer": {{"id": "$step_1.value.id"}}, "orderDate": "{today}", "deliveryDate": "{today}", "orderLines": [{{"product": {{"id": "$step_2.values[0].id"}}, "count": 1, "unitPriceExcludingVatCurrency": 50000}}, {{"product": {{"id": "$step_2.values[1].id"}}, "count": 1, "unitPriceExcludingVatCurrency": 25000}}]}}}}, "description": "Create order with product references"}},
+  {{"step_number": 4, "tool_name": "call_api", "args": {{"method": "PUT", "path": "/order/$step_3.value.id/:invoice", "query_params": {{"invoiceDate": "{today}"}}}}, "description": "Invoice the order"}},
+  {{"step_number": 5, "tool_name": "call_api", "args": {{"method": "GET", "path": "/invoice/paymentType", "query_params": {{"count": 1}}}}, "description": "Get payment type"}},
+  {{"step_number": 6, "tool_name": "call_api", "args": {{"method": "PUT", "path": "/invoice/$step_4.value.id/:payment", "query_params": {{"paymentDate": "{today}", "paymentTypeId": "$step_5.values[0].id", "paidAmount": "$step_4.value.amount"}}}}, "description": "Record full payment using exact invoice amount"}}
 ]
 ```
 
