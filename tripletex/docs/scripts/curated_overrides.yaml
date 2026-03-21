@@ -77,14 +77,9 @@ invoice-actions:
     do_not_send:
       - field: "request body"
         reason: "ALL params go in query_params. Body must be empty/null."
-    common_errors:
-      - symptom: "500 Internal Server Error"
-        fix: "All 3 query_params are REQUIRED: paymentDate (YYYY-MM-DD), paymentTypeId (from GET /invoice/paymentType), paidAmount (exact invoice amount). Missing any causes 500. paymentTypeId 0 is INVALID."
     notes:
-      - "ALL params in query_params: paymentDate=YYYY-MM-DD, paymentTypeId=N, paidAmount=N"
-      - "paymentTypeId must be looked up: GET /invoice/paymentType?count=1 — NEVER use 0"
-      - "paidAmount must match the invoice's amount field exactly"
       - "To reverse/cancel a payment: use negative paidAmount"
+      - "paymentTypeId 0 = default payment type"
 
   "PUT /invoice/{id}/:send":
     do_not_send:
@@ -181,27 +176,26 @@ product:
     send_exactly: |
       {
         "name": "<string>",
+        "number": "<string, include when task specifies a product number>",
         "priceExcludingVatCurrency": <number>
       }
     do_not_send:
-      - field: "number"
-        reason: "auto-generated — omit to avoid 422 duplicate number errors"
       - field: "priceIncludingVatCurrency"
         reason: "conflicts with priceExcludingVatCurrency — send only ONE"
     common_errors:
       - symptom: "422 duplicate product number"
-        fix: "Omit the 'number' field entirely — let system auto-generate"
+        fix: "The number is already in use — try a different number or omit to auto-generate"
       - symptom: "422 price conflict"
         fix: "Send only priceExcludingVatCurrency, never both price fields"
     response_capture:
       - "value.id — the product ID"
+    notes:
+      - "Include 'number' field when the task specifies a product number — scoring checks this"
 
   "POST /product/list":
-    do_not_send:
-      - field: "number on each item"
-        reason: "auto-generated — omit to avoid duplicates"
     notes:
       - "Body is an array of product objects for bulk creation"
+      - "Include 'number' on each item when specified by the task"
 
 travel-expense:
   notes:
@@ -316,7 +310,7 @@ voucher:
 ledger-lookup:
   "GET /ledger/account":
     notes:
-      - "Supports comma-separated numbers: ?number=1920,2400,6030 returns all in ONE call"
+      - "Use query_params {number: 'NNNN'} to look up by account number"
       - "Account numbers (1920, 2400, etc.) are NOT the same as the id field"
     response_capture:
       - "values[0].id — the account ID (use this in voucher postings, NOT the account number)"
@@ -393,21 +387,6 @@ company:
       - symptom: "404 not found"
         fix: "Do NOT include an ID in the path — it's PUT /company, not PUT /company/123"
 
-division:
-  "POST /division":
-    send_exactly: |
-      {
-        "name": "<string>",
-        "startDate": "YYYY-MM-DD",
-        "organizationNumber": "999999999",
-        "municipality": {"id": 1},
-        "municipalityDate": "YYYY-MM-DD"
-      }
-    notes:
-      - "ALL fields are REQUIRED: name, startDate, organizationNumber, municipality, municipalityDate"
-      - "organizationNumber must be a sub-unit number, NOT the company's own org number"
-      - "municipality.id=1 is a safe default"
-
 department:
   "POST /department":
     send_exactly: |
@@ -428,7 +407,7 @@ customer:
         "name": "<string>"
       }
     notes:
-      - "Sandbox starts empty — always CREATE, never search for existing customers"
+      - "Production may have pre-existing data — search first (GET /customer?name=X), create only if not found"
     response_capture:
       - "value.id — the customer ID"
 
@@ -439,6 +418,6 @@ supplier:
         "name": "<string>"
       }
     notes:
-      - "Sandbox starts empty — always CREATE, never search for existing suppliers"
+      - "Production may have pre-existing data — search first (GET /supplier?name=X), create only if not found"
     response_capture:
       - "value.id — the supplier ID"

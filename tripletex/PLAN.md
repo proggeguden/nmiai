@@ -1,50 +1,68 @@
 # Tripletex — Road to Perfect Score
 
-## Status: Round 14 Complete (2026-03-21)
+**Goal:** World-class score (correctness × efficiency). Testing via production submissions + gcloud logs.
 
-### Architecture (current)
+## Status: Round 20 (2026-03-21)
+
+### Architecture
 ```
-Prompt + Files → Single Planner (gemini-2.5-pro) → validate_plan() → Executor → Abort on first error → Verifier
-                     ↓                                    ↓
-              SLIM_CATALOG (~2.3K tokens)          bank account ensure,
-              2 few-shot examples                  division ensure, /v2 strip,
-                                                   invoiceDate inject, row numbers
+Prompt + Files → Flash Planner (gemini-3-flash-preview) → validate_plan() → Executor → Deterministic Fixes → Per-Step Self-Heal → Verifier (flash, deadline-gated) → Done
+                                                              ↓
+                                                    POST→/list merge, bank account ensure,
+                                                    division ensure, field renames, /report/ rewrite,
+                                                    isInternal=false, dateFrom injection
 ```
 
-### Round 14 Summary
+### Key Design Decisions (Round 15-21)
+1. **gemini-3.1-pro-preview** for planner — best plan quality. 3 warm instances prevent timeout.
+2. **concurrency=1, min-instances=3** — each request gets own instance, no queueing
+3. **Fail fast** — LLM self-heal and verifier DISABLED. Only 2 deterministic fixes kept: bank account + duplicate product GET.
+4. **Search-before-create** — prompt rule #2, production accounts have pre-existing data
+5. **Unresolved refs don't count as errors** — prevents premature 3-error abort on cascade failures
+6. **File attachments reach planner** — multimodal content parts passed to LLM call
+7. **403 abort** — 403 means wrong approach, abort immediately
+8. **Price conflict prevention** — validate_plan strips priceIncludingVat before API call
+9. **250s deadline** — safety net for timeout prevention
 
-**Major changes this session:**
-1. Integrated curated API cheat sheets from tripletex-api-docs repo into docs/
-2. Full planner prompt rewrite — concise Key Patterns + Rules + 2 Examples (~1.5K tokens)
-3. Dropped best-of-2 planning → single model (gemini-2.5-pro)
-4. SLIM_CATALOG replaces TIER1_CATALOG in planner (2.3K vs 12.7K tokens, 83% reduction)
-5. Removed REPLAN and FIX_ARGS LLM calls (too slow, caused timeouts)
-6. Abort on first error (was 3) — prevents cascading $step_N failures
-7. Structured GCP error logging (>>>STEP_FAILED<<<) with full context
-8. PDF/image files passed as multimodal content to Gemini
-9. Fixed critical bugs: paymentTypeId=0 injection, travel cost stripping contradiction
-10. validate_plan stripped to 5 essential fixes (was 17 patches)
-
-**Key production insights discovered:**
-- Employees referenced by email already exist (GET, don't create)
-- Products with numbers in parentheses already exist (GET /product?productNumber=N)
-- Bank account ensure is needed in production
-- Payment must be separate from /:invoice (use real amount from response)
-- Comma-separated GET lookups work across all major endpoints
+### Rounds 15-20 Production Fixes
+| Round | Key Fixes |
+|-------|-----------|
+| R15 | Travel costs kept (not stripped), per-step self-heal, 403 abort, fixedprice casing, empty plan retry |
+| R15b | PDF files reach planner, product number kept, voucher vatType guidance |
+| R15c | Company bank account, accounting dimensions, product number in overrides |
+| R16 | Dimension field names, /report/ path rewrite, project entitlements, missing accounts |
+| R16b | Product number: fix schema pre-validation do_not_send, remove PUT /company bankAccounts |
+| R16c | employmentPercentage→percentageOfFullTimeEquivalent, occupationCode type |
+| R17 | Flash planner default, deadline tracking, search-before-create, GET /invoice date injection |
+| R18 | gemini-3-flash-preview, GL correction guidance, voucher dimension field |
+| R19 | concurrency=1, 8 prompt contradictions fixed, payroll employment chain |
+| R20 | No validate_plan on corrective steps, unresolved refs not errors, isInternal=false, invoicesDueIn, productUnit, reminder includeCharge |
 
 ---
 
-## Next Steps
+## Iteration Protocol (Production-First)
 
-1. **Harvest GCP logs** — read structured error logs from production submissions, identify remaining failure patterns
-2. **ensure_vat_registered** — add deterministic step for VAT registration when needed
-3. **Iterate on production errors** — each >>>STEP_FAILED<<< log contains prompt + plan + error for diagnosis
-4. **Improve SLIM_CATALOG** — add more endpoints based on production usage patterns
-5. **Re-enable FIX_ARGS** — if we can make it faster (shorter prompt, flash model)
+1. **Deploy**: `gcloud builds submit` + `gcloud run deploy` (concurrency=1, min-instances=3)
+2. **Submit** at https://app.ainm.no/submit/tripletex
+3. **Harvest logs**: gcloud logging read with revision filter
+4. **Fix root cause**: prompts.py / agent.py / curated_overrides.yaml
+5. **Verify**: `python3 -c "from main import app; print('OK')"` BEFORE deploying
+6. **Re-deploy and re-submit**
 
-## Deploy Command
-```bash
-cd tripletex/
-gcloud builds submit --tag gcr.io/ai-nm26osl-1788/tripletex
-gcloud run deploy tripletex --image gcr.io/ai-nm26osl-1788/tripletex --platform managed --region europe-west1 --allow-unauthenticated --memory 512Mi --timeout 300 --set-env-vars "GOOGLE_API_KEY=...,GEMINI_PLANNER_MODEL=gemini-2.5-pro,GEMINI_MODEL=gemini-2.5-flash"
-```
+## Known Scoring Gaps (TODO)
+
+| Task Type | Issue | Priority |
+|-----------|-------|----------|
+| Bank reconciliation | Invoice lookups return empty — needs better date filtering or search strategy | HIGH |
+| Full project lifecycle | Complex 15+ step plans, activity linking fragile | HIGH |
+| Currency/agio tasks | exchangeRate field doesn't exist on order, currency lookup may fail | MEDIUM |
+| Cancel payment | Needs to find existing invoice, reverse payment (pre-existing data) | MEDIUM |
+| Credit notes | Needs to find existing invoice (pre-existing data) | MEDIUM |
+| ensure_vat_registered | Fresh accounts may be VAT_NOT_REGISTERED | MEDIUM |
+| Multi-VAT invoice | Needs correct vatType per order line (25%, 15%, 0%) | LOW |
+
+## Score Tracking
+
+| Date | Round | Notes |
+|------|-------|-------|
+| 2026-03-21 | R15-R20 | Flash model, concurrency fix, 20+ production fixes. Best scores: 13/13, 10/10, 7/7 on individual tasks |

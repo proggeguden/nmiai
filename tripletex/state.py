@@ -21,6 +21,8 @@ class AgentState(TypedDict):
     results: dict[str, Any]  # "step_1" -> parsed JSON response
     completed_steps: list[int]
     error_count: int
-    replan_count: int
+    healed_steps: list[int]  # step numbers that already used FIX_ARGS
     original_prompt: str
+    file_content_parts: list[dict]  # multimodal file parts for planner LLM calls
+    deadline: float  # time.monotonic() deadline — skip verifier if past this
     verification_attempts: int
