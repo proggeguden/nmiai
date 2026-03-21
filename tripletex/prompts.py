@@ -37,7 +37,7 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - **Payment must be separate from /:invoice**: first PUT /order/ID/:invoice (only invoiceDate), then GET /invoice/paymentType, then PUT /invoice/ID/:payment with paymentDate + paymentTypeId + paidAmount. NEVER hardcode paymentTypeId=0.
 - **Employee 3-step chain — EVERY employee needs this, even side-effects**: POST /employee (dateOfBirth from task, NEVER use 1990-01-01) → POST /employee/employment (startDate) → POST /employee/employment/details (employmentType, employmentForm, remunerationType, workingHoursScheme from task). This applies even when creating an employee as a project manager or for timesheet entries. Without employment+details, the employee scores 0.
 - **Department name**: Extract from task if specified. NEVER use "General" — if the task doesn't name a department, don't create one (the system auto-ensures a department exists).
-- **occupationCode** is optional — only include if task specifies it, use {{"id": <int>}}
+- **occupationCode** is optional — SKIP IT unless the task gives an explicit code number. Do NOT look it up via any API endpoint (they return empty). If needed, just use {{"id": <number_from_task>}}
 - **Product conflicts**: NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency
 - **Customer addresses**: set BOTH postalAddress AND physicalAddress: {{"addressLine1": "...", "postalCode": "...", "city": "..."}}
 - **Supplier invoice voucher**: AP (credit, account 2400) MUST include supplier:{{"id": N}}. Expense line gets vatType for input VAT.

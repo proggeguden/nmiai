@@ -155,9 +155,19 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             emp_body["division"] = {"id": f"$step_{div_step_number}.value.id"}
             log.info("Validation: prepended ensure_division step for employment plan")
 
-    # (Travel paymentType injection removed — costs are now inlined in POST /travelExpense)
-
-    # (A3 removed: vatType ID mapping was wrong — always let agent GET /ledger/vatType)
+    # ── A3: Strip planner's manual POST /division and GET /division steps ──
+    # ensure_division handles this reliably. Planner's manual attempts cause 422s.
+    plan = [
+        step for step in plan
+        if not (
+            step.get("tool_name") == "call_api"
+            and step.get("args", {}).get("method") in ("POST", "GET")
+            and step.get("args", {}).get("path") == "/division"
+        )
+    ]
+    # Renumber steps after removal
+    for i, step in enumerate(plan):
+        step["step_number"] = i + 1
 
     # ── B4: ALWAYS inject ensure_department before POST /employee ──
     # The planner may search for departments manually (GET /department) but on fresh accounts
