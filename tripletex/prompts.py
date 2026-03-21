@@ -44,11 +44,15 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - **Credit note**: PUT /invoice/ID/:createCreditNote with query_params date={today}
 - **Paths** must NOT include /v2 prefix
 
-## ID Resolution
-- POST single → $step_N.value.id
-- GET search → $step_N.values[0].id
-- POST /X/list bulk → $step_N.values[0].id, $step_N.values[1].id
-- Reference format: {{"id": $step_N.value.id}}
+## ID Resolution — IMPORTANT: use exactly these patterns
+API responses have a fixed structure. You MUST use these exact patterns:
+- **POST** single entity → response is {{"value": {{"id": N, ...}}}} → access as **$step_N.value.id**
+- **GET** search → response is {{"values": [{{"id": N, ...}}, ...]}} → access as **$step_N.values[0].id**
+- **POST /X/list** bulk → same as GET: **$step_N.values[0].id**, $step_N.values[1].id
+- **analyze_response** → returns a JSON object with your requested fields → access as **$step_N.fieldName** (e.g. $step_4.supplier_id)
+- Reference format in bodies: {{"id": $step_N.value.id}}
+- OR fallback: $step_1.values[0].id || $step_2.value.id (use first non-empty)
+- Do NOT invent field names like $step_N.invoice_id on call_api results — only analyze_response results have custom fields
 - vatType OUTPUT IDs: 3=25%, 31=15%(food), 32=12%(transport), 5=0%(exempt), 6=0%(outside VAT)
 
 ## Vocabulary

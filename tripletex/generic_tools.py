@@ -211,7 +211,26 @@ Return ONLY valid JSON with your answer. No explanation, no markdown — just th
 
         try:
             response = llm.invoke(prompt)
-            return response.content.strip()
+            raw = response.content.strip()
+            # Strip markdown code blocks if present
+            import re
+            md_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', raw, re.DOTALL)
+            if md_match:
+                raw = md_match.group(1).strip()
+            # Validate it's actually JSON
+            json.loads(raw)
+            return raw
+        except json.JSONDecodeError:
+            # Try to extract any JSON object or array from the response
+            import re
+            json_match = re.search(r'[\[{].*[\]}]', raw, re.DOTALL)
+            if json_match:
+                try:
+                    json.loads(json_match.group(0))
+                    return json_match.group(0)
+                except json.JSONDecodeError:
+                    pass
+            return json.dumps({"error": f"Could not parse JSON from response: {raw[:200]}"})
         except Exception as e:
             return json.dumps({"error": str(e)})
 

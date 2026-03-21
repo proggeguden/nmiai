@@ -78,26 +78,22 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         )
         log.info("Validation: prepended ensure_bank_account step for invoicing plan")
 
-    # ── A2: Auto-inject division + link for employment plans ──
-    # Employment must have a division. We inject: ensure_division meta-step before POST /employee/employment,
-    # and add division:{id} to the employment body.
-    has_employment = False
+    # ── A2: ALWAYS inject ensure_division before POST /employee/employment ──
+    # The planner may search for divisions manually but on fresh accounts they don't exist.
+    # ensure_division safely creates one if none exist. Always override the division ref.
     employment_idx = None
     for i, step in enumerate(plan):
         if step.get("tool_name") != "call_api":
             continue
         args = step.get("args", {})
         if args.get("method") == "POST" and args.get("path") == "/employee/employment":
-            has_employment = True
             employment_idx = i
             break
 
-    if has_employment and employment_idx is not None:
+    if employment_idx is not None:
         emp_step = plan[employment_idx]
         emp_body = emp_step.get("args", {}).get("body", {})
-        # Only inject if division is not already in the body
-        if isinstance(emp_body, dict) and "division" not in emp_body:
-            # Insert ensure_division meta-step right before the employment step
+        if isinstance(emp_body, dict):
             div_step_number = emp_step["step_number"]
             for step in plan[employment_idx:]:
                 step["step_number"] += 1
@@ -111,7 +107,7 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                     "description": "Ensure company division exists (required for employment)",
                 },
             )
-            # Add division ref to the employment body
+            # Always override division ref with guaranteed result
             emp_body["division"] = {"id": f"$step_{div_step_number}.value.id"}
             log.info("Validation: prepended ensure_division step for employment plan")
 
@@ -119,31 +115,19 @@ def validate_plan(plan: list[dict]) -> list[dict]:
 
     # (A3 removed: vatType ID mapping was wrong — always let agent GET /ledger/vatType)
 
-    # ── B4: Auto-inject ensure_department for POST /employee ──
-    has_employee_post = False
+    # ── B4: ALWAYS inject ensure_department before POST /employee ──
+    # The planner may search for departments manually (GET /department) but on fresh accounts
+    # these return empty. ensure_department safely creates one if none exist.
     employee_post_idx = None
-    has_department_in_plan = False
     for i, step in enumerate(plan):
         if step.get("tool_name") != "call_api":
             continue
         args = step.get("args", {})
-        method = args.get("method", "")
-        path = args.get("path", "")
-        body = args.get("body", {})
-        if method == "POST" and path == "/employee" and isinstance(body, dict):
-            has_employee_post = True
+        if args.get("method") == "POST" and args.get("path") == "/employee":
             employee_post_idx = i
-            if "department" in body:
-                has_department_in_plan = True
-        if method == "POST" and ("/department" in path):
-            has_department_in_plan = True
+            break
 
-    if (
-        has_employee_post
-        and not has_department_in_plan
-        and employee_post_idx is not None
-    ):
-        # Prepend ensure_department meta-step (searches first, creates if empty — never fails)
+    if employee_post_idx is not None:
         dept_step_number = plan[employee_post_idx]["step_number"]
         for step in plan[employee_post_idx:]:
             step["step_number"] += 1
@@ -157,10 +141,10 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 "description": "Ensure a department exists (required for employee)",
             },
         )
-        # Inject department ref into employee body
+        # Inject/override department ref into employee body — always use the guaranteed result
         emp_step = plan[employee_post_idx + 1]
         emp_body = emp_step.get("args", {}).get("body", {})
-        if isinstance(emp_body, dict) and "department" not in emp_body:
+        if isinstance(emp_body, dict):
             emp_body["department"] = {"id": f"$step_{dept_step_number}.value.id"}
         log.info(
             "Validation: injected ensure_department step for POST /employee"
