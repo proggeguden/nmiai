@@ -9,3 +9,6 @@ weights/
 __pycache__/
 *.pyc
 .DS_Store
+_knn_blob.txt
+_knn_meta.json
+_knn_data.json
