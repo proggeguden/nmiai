@@ -188,6 +188,9 @@ All 4 priority items implemented and submitted:
 - **Adjacent settlement count for Plains** ✅: Added adj_sett_level (0/1/2+) to Plains bucket key. KL 0.0435→0.0428 (-1.6%). R7 -2.1%, R3 -6.9%. Cells adjacent to 2+ settlements have much higher expansion probability — this feature directly captures expansion pressure.
 - **Cluster density for Forest** ✅: Added is_clustered to Forest bucket key. KL 0.0428→0.0415 (-3.0%). All rounds improved, best R8 -4.0%, R9 -2.4%, R7 -1.9%. Forest near clustered settlements gets cleared more due to higher food demand.
 - **Cluster density for Ruin** ➖: Added is_clustered to Ruin bucket key. Zero effect — Ruin cells are too few (~200 per map) to benefit from additional bucket features with 5 seeds of GT data.
+- **Plains K increase (3→5)** ➖: Zero effect — with 5 seeds of GT data, buckets have hundreds of obs so K barely matters (same as forest K dead end).
+- **Prob floor increase (0.003→0.005)** ❌: Regressed +7.8% — mass stolen from correct predictions outweighs safety net for rare events.
+- **Prob floor decrease (0.003→0.002)** ✅: KL 0.0476→0.0459 (-3.6%). Uniform improvement across all 12 rounds. Lower floor preserves more mass for dominant class.
 
 **Promising directions not yet tried:**
 - Plains bucket refinement: split by distance + cluster density interaction
