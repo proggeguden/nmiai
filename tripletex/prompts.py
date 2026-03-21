@@ -44,15 +44,14 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - **Credit note**: PUT /invoice/ID/:createCreditNote with query_params date={today}
 - **Paths** must NOT include /v2 prefix
 
-## ID Resolution — IMPORTANT: use exactly these patterns
-API responses have a fixed structure. You MUST use these exact patterns:
-- **POST** single entity → response is {{"value": {{"id": N, ...}}}} → access as **$step_N.value.id**
-- **GET** search → response is {{"values": [{{"id": N, ...}}, ...]}} → access as **$step_N.values[0].id**
-- **POST /X/list** bulk → same as GET: **$step_N.values[0].id**, $step_N.values[1].id
-- **analyze_response** → returns a JSON object with your requested fields → access as **$step_N.fieldName** (e.g. $step_4.supplier_id)
-- Reference format in bodies: {{"id": $step_N.value.id}}
-- OR fallback: $step_1.values[0].id || $step_2.value.id (use first non-empty)
-- Do NOT invent field names like $step_N.invoice_id on call_api results — only analyze_response results have custom fields
+## ID Resolution — SIMPLE
+All step results are normalized. Use these simple patterns:
+- **$step_N.id** — the ID of the entity from step N (works for POST, GET, and /list — always the same!)
+- **$step_N.fieldName** — any field on the entity (e.g. $step_N.name, $step_N.amount)
+- **$step_N._all[1].id** — second item from a search or /list result (first item is $step_N.id)
+- Reference format in bodies: {{"id": $step_N.id}}
+- OR fallback: $step_1.id || $step_2.id (use first non-empty)
+- For analyze_response results: $step_N.fieldName (the fields you asked for)
 - vatType OUTPUT IDs: 3=25%, 31=15%(food), 32=12%(transport), 5=0%(exempt), 6=0%(outside VAT)
 
 ## Vocabulary
@@ -65,8 +64,8 @@ API responses have a fixed structure. You MUST use these exact patterns:
 ## Output format
 Return ONLY a JSON array of steps:
 [
-  {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "GET", "path": "/customer", "query_params": {{"organizationNumber": "123456789", "count": 1}}}}, "description": "Search for customer"}},
-  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "POST", "path": "/customer", "body": {{"name": "Example AS", "organizationNumber": "123456789"}}}}, "description": "Create customer if not found"}}
+  {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "POST", "path": "/customer", "body": {{"name": "Example AS", "organizationNumber": "123456789"}}}}, "description": "Create customer"}},
+  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "POST", "path": "/order", "body": {{"customer": {{"id": "$step_1.id"}}, "orderDate": "{today}", "deliveryDate": "{today}", "orderLines": [{{"description": "Consulting", "count": 1, "unitPriceExcludingVatCurrency": 25000}}]}}}}, "description": "Create order using $step_N.id"}}
 ]
 
 ## Task:

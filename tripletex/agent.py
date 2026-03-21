@@ -31,6 +31,49 @@ _UNRESOLVED = "__UNRESOLVED__"
 MAX_REPLANS = 3  # max replan attempts per invocation (FIX_ARGS → REPLAN → REPLAN)
 
 
+def _normalize_result(raw: dict) -> dict:
+    """Normalize Tripletex API response so $step_N.id always works.
+
+    Raw formats:
+      POST single:  {"value": {"id": 42, ...}, "status": 200}
+      GET search:   {"values": [{"id": 42, ...}], "count": 1, "status": 200}
+      POST /list:   {"values": [{"id": 42, ...}, {"id": 43, ...}]}
+      PUT action:   {"value": {"id": 42, ...}} or bare response
+
+    Normalized to:
+      {"id": 42, "name": "...", ...}                       (single entity — $step_N.id works)
+      {"id": 42, ..., "_all": [{...}, {...}]}               (search/list — first promoted, _all has rest)
+      {"_empty": True, "_all": []}                          (empty search)
+    """
+    if not isinstance(raw, dict):
+        return raw
+
+    # Already normalized (has _all or _empty) or is an error/skip
+    if "_all" in raw or "_empty" in raw or "skipped" in raw or "error" in raw:
+        return raw
+
+    # POST/PUT single entity: {"value": {"id": N, ...}}
+    if "value" in raw and isinstance(raw["value"], dict):
+        result = dict(raw["value"])
+        return result
+
+    # GET search / POST list: {"values": [...]}
+    if "values" in raw and isinstance(raw["values"], list):
+        values = raw["values"]
+        if not values:
+            return {"_empty": True, "_all": []}
+        # Promote first item to top level, keep full list as _all
+        first = values[0]
+        if isinstance(first, dict):
+            result = dict(first)
+            result["_all"] = values
+            return result
+        return {"_all": values}
+
+    # Passthrough (already flat, analyze_response result, or unknown shape)
+    return raw
+
+
 def validate_plan(plan: list[dict]) -> list[dict]:
     """Validate and auto-fix plan steps against endpoint cards.
 
@@ -647,37 +690,45 @@ def _merge_consecutive_posts_to_list(
 
 
 def _rewrite_list_refs(obj, ref_mapping: dict):
-    """Rewrite $step_N.value.id → $step_M.values[idx].id for merged /list steps."""
+    """Rewrite refs for merged /list steps.
+
+    After normalization, results are flat: {id: N, _all: [{id: N}, {id: M}]}.
+    For merged steps: item 0 → $step_M.id, item 1+ → $step_M._all[idx].id.
+    Old refs: $step_N.value.id or $step_N.id → $step_M._all[idx].id (for idx > 0)
+                                               → $step_M.id (for idx == 0)
+    """
+    def _rewrite_str(v):
+        for old_sn, (new_sn, arr_idx) in ref_mapping.items():
+            if arr_idx == 0:
+                # First item: just renumber the step
+                for pattern in [f"$step_{old_sn}.value.", f"$step_{old_sn}."]:
+                    if pattern in v:
+                        v = v.replace(pattern, f"$step_{new_sn}.")
+                        break
+                bare = f"$step_{old_sn}"
+                if v == bare:
+                    v = f"$step_{new_sn}"
+            else:
+                # Non-first item: point to _all[idx]
+                for pattern in [f"$step_{old_sn}.value.", f"$step_{old_sn}."]:
+                    if pattern in v:
+                        v = v.replace(pattern, f"$step_{new_sn}._all[{arr_idx}].")
+                        break
+                bare = f"$step_{old_sn}"
+                if v == bare:
+                    v = f"$step_{new_sn}._all[{arr_idx}]"
+        return v
+
     if isinstance(obj, dict):
         for k, v in list(obj.items()):
             if isinstance(v, str):
-                for old_sn, (new_sn, arr_idx) in ref_mapping.items():
-                    # Replace .value.id with .values[idx].id
-                    old_ref = f"$step_{old_sn}.value."
-                    new_ref = f"$step_{new_sn}.values[{arr_idx}]."
-                    if old_ref in v:
-                        v = v.replace(old_ref, new_ref)
-                    # Also handle bare $step_N.value (without trailing field)
-                    old_bare = f"$step_{old_sn}.value"
-                    if v.endswith(old_bare):
-                        v = v[: -len(old_bare)] + f"$step_{new_sn}.values[{arr_idx}]"
-                obj[k] = v
+                obj[k] = _rewrite_str(v)
             else:
                 _rewrite_list_refs(v, ref_mapping)
     elif isinstance(obj, list):
         for i, item in enumerate(obj):
             if isinstance(item, str):
-                for old_sn, (new_sn, arr_idx) in ref_mapping.items():
-                    old_ref = f"$step_{old_sn}.value."
-                    new_ref = f"$step_{new_sn}.values[{arr_idx}]."
-                    if old_ref in item:
-                        item = item.replace(old_ref, new_ref)
-                    old_bare = f"$step_{old_sn}.value"
-                    if item.endswith(old_bare):
-                        item = (
-                            item[: -len(old_bare)] + f"$step_{new_sn}.values[{arr_idx}]"
-                        )
-                obj[i] = item
+                obj[i] = _rewrite_str(item)
             else:
                 _rewrite_list_refs(item, ref_mapping)
 
@@ -1562,10 +1613,10 @@ def build_agent():
                 parsed = json.loads(result_str)
             except (json.JSONDecodeError, TypeError):
                 parsed = {"raw": result_str}
-            results[f"step_{step['step_number']}"] = parsed
+            results[f"step_{step['step_number']}"] = _normalize_result(parsed)
             log.info(
                 f"Step {step['step_number']} completed",
-                result_preview=str(parsed)[:500],
+                result_preview=str(results[f"step_{step['step_number']}"])[:500],
             )
             completed.append(step["step_number"])
             return {

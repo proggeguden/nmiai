@@ -211,7 +211,12 @@ Return ONLY valid JSON with your answer. No explanation, no markdown — just th
 
         try:
             response = llm.invoke(prompt)
-            raw = response.content.strip()
+            # response.content may be a string OR a list of content parts (Gemini SDK)
+            content = response.content
+            if isinstance(content, list):
+                raw = "".join(str(part) for part in content).strip()
+            else:
+                raw = str(content).strip()
             # Strip markdown code blocks if present
             import re
             md_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', raw, re.DOTALL)
