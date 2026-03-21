@@ -61,7 +61,7 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - Use `lookup_endpoint` if you're unsure which endpoint to use.
 
 ### API Constraints (hard rules from real errors)
-- **deliveryDate** is REQUIRED on orders — use orderDate if not specified
+- **deliveryDate** is REQUIRED on orders — use orderDate if not specified. Also set invoicesDueIn (e.g. 30) and invoicesDueInType ("DAYS") when payment terms are specified.
 - **amountGross + amountGrossCurrency** must be set to the same value on every voucher posting
 - **Action endpoints** (/:invoice, /:payment, /:send, /:createCreditNote): params go in query_params, NOT body
 - **paymentTypeId** must be looked up via GET /invoice/paymentType — do NOT hardcode 0
@@ -72,8 +72,9 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - **GET /invoice** REQUIRES invoiceDateFrom + invoiceDateTo params
 - **Voucher postings**: debit=positive, credit=negative, must sum to 0. Do NOT send number or voucherType. For purchase/expense vouchers, include vatType on the expense line: INPUT VAT IDs: 1=25%, 11=15%, 13=12%. Bank/payment lines can omit vatType.
 - **Supplier invoice voucher**: AP (credit) posting MUST include supplier:{{"id": N}}
-- **Product**: include "number" field when the task specifies a product number. NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency.
-- **Employee for payroll**: dateOfBirth REQUIRED. Employee MUST have an active employment (POST /employee/employment) and employment details (POST /employee/employment/details) BEFORE creating salary transactions. salary/transaction specifications MUST have rate, count, AND amount.
+- **Product**: include "number" field when task specifies it. NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency. Set vatType:{{"id": 3}} for 25% VAT (or other rate if specified). If a unit is mentioned (stk, timer, kg), look up with GET /product/unit then set productUnit:{{"id": N}}.
+- **Employee for payroll**: dateOfBirth REQUIRED. Employee MUST have an active employment (POST /employee/employment with startDate on or before the pay period) and employment details (POST /employee/employment/details with percentageOfFullTimeEquivalent) BEFORE creating salary transactions. salary/transaction specifications MUST have rate, count, AND amount. If employee already exists (GET found them), still check if they have employment (GET /employee/employment?employeeId=N) — create if missing.
+- **Reminders**: Use PUT /invoice/{{id}}/:createReminder with query_params type=REMINDER, date=today, includeCharge=true, includeInterest=true. Do NOT create manual vouchers for reminder fees — Tripletex handles the accounting automatically.
 - **Employment details**: POST /employee/employment/details — use **percentageOfFullTimeEquivalent** (NOT employmentPercentage). occupationCode must be {{"id": <int>}} not bare string.
 - **Project-specific activities**: POST /project/projectActivity needs activity:{{"id": N}} — create the activity first with POST /activity (activityType: GENERAL_ACTIVITY), then link it.
 - **Travel expenses**: costs + perDiemCompensations can be inlined in POST /travelExpense body. Each cost needs paymentType (GET /travelExpense/paymentType first).

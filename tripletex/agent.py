@@ -62,7 +62,8 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         )
         for s in plan
     )
-    if has_invoice_action:
+    has_bank_ensure = any(s.get("tool_name") == "ensure_bank_account" for s in plan)
+    if has_invoice_action and not has_bank_ensure:
         for step in plan:
             step["step_number"] += 1
             _shift_step_refs(step, offset=1)
@@ -308,14 +309,21 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         # Only strip if we get a duplicate-number error at runtime (deterministic fix below).
 
         # Fix fixedPrice → fixedprice on POST /project (API uses lowercase 'p')
-        if method == "POST" and path == "/project" and isinstance(body, dict):
-            if "fixedPrice" in body:
-                body["fixedprice"] = body.pop("fixedPrice")
-                log.info("Validation: fixed fixedPrice → fixedprice on POST /project")
-            # Ensure isFixedPrice=true when fixedprice amount is set
-            if "fixedprice" in body and not body.get("isFixedPrice"):
-                body["isFixedPrice"] = True
-                log.info("Validation: set isFixedPrice=true on POST /project")
+        if method == "POST" and path in ("/project", "/project/list") and isinstance(body, dict):
+            project_bodies = body if isinstance(body, list) else [body]
+            for pb in project_bodies:
+                if not isinstance(pb, dict):
+                    continue
+                if "fixedPrice" in pb:
+                    pb["fixedprice"] = pb.pop("fixedPrice")
+                    log.info("Validation: fixed fixedPrice → fixedprice on POST /project")
+                if "fixedprice" in pb and not pb.get("isFixedPrice"):
+                    pb["isFixedPrice"] = True
+                    log.info("Validation: set isFixedPrice=true on POST /project")
+                # Ensure isInternal=false when project has a customer (required for invoicing)
+                if "customer" in pb and "isInternal" not in pb:
+                    pb["isInternal"] = False
+                    log.info("Validation: set isInternal=false on customer-facing project")
 
         # Fix field names on accounting dimension endpoints
         if method == "POST" and "/ledger/accountingDimension" in path and isinstance(body, dict):
@@ -1323,7 +1331,9 @@ def build_agent():
                 "skipped": True,
                 "reason": f"unresolved: {unresolved_refs}",
             }
-            error_count += 1
+            # NOTE: Don't increment error_count for unresolved refs — these are
+            # cascade failures from an earlier step, not new errors. Counting them
+            # triggers premature 3-error abort on long plans.
             completed.append(step["step_number"])
             return {
                 "current_step": step_idx + 1,
@@ -1942,7 +1952,9 @@ def build_agent():
                                 log.info(
                                     f"Verifier: fixed malformed step format (endpoint → method+path)"
                                 )
-                        corrective_steps = validate_plan(corrective_steps)
+                        # NOTE: Do NOT call validate_plan on corrective steps — it would
+                        # inject ensure_bank_account/division and shift $step_N refs that
+                        # reference original plan results, corrupting them.
                         log.info(
                             f"Verifier: task incomplete, adding {len(corrective_steps)} corrective steps"
                         )
