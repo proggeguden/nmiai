@@ -191,6 +191,7 @@ All 4 priority items implemented and submitted:
 - **Plains K increase (3→5)** ➖: Zero effect — with 5 seeds of GT data, buckets have hundreds of obs so K barely matters (same as forest K dead end).
 - **Prob floor increase (0.003→0.005)** ❌: Regressed +7.8% — mass stolen from correct predictions outweighs safety net for rare events.
 - **Prob floor decrease (0.003→0.002)** ✅: KL 0.0476→0.0459 (-3.6%). Uniform improvement across all 12 rounds. Lower floor preserves more mass for dominant class.
+- **Prob floor decrease (0.002→0.001)** ✅: KL 0.0459→0.0446 (-2.8%). All rounds improved again. Monotonic trend. May try 0.0005 next.
 
 **Promising directions not yet tried:**
 - Plains bucket refinement: split by distance + cluster density interaction
