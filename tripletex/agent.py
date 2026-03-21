@@ -1057,8 +1057,8 @@ def build_agent():
     tools, tool_summaries = load_tools()
     tool_map = {t.name: t for t in tools}
 
-    planner_model = os.environ.get("GEMINI_PLANNER_MODEL", "gemini-2.5-flash")
-    heal_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    planner_model = os.environ.get("GEMINI_PLANNER_MODEL", "gemini-3-flash-preview")
+    heal_model = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
     api_key = os.environ["GOOGLE_API_KEY"]
 
     planner_llm = ChatGoogleGenerativeAI(

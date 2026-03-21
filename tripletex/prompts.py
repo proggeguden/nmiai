@@ -85,6 +85,8 @@ Read the prompt carefully. Determine what already exists vs what needs to be cre
 - **Ledger accounts**: Not all standard accounts exist in fresh environments. If GET /ledger/account?number=NNNN returns empty, CREATE it with POST /ledger/account {{number, name}}.
 - **Project**: POST /project REQUIRES projectManager:{{"id": N}}. Always GET /employee first, then PUT /employee/entitlement/:grantEntitlementsByTemplate?employeeId=N&template=ALL_PRIVILEGES before creating the project.
 - **Voucher account 2400**: Postings to account 2400 (AP/leverandorgjeld) MUST include supplier:{{"id": N}} — otherwise 422.
+- **GL error corrections**: When asked to find and correct errors in the ledger, ALWAYS first GET /ledger/posting?dateFrom=YYYY-01-01&dateTo=YYYY-12-31 to review existing postings. Use the ACTUAL counter-accounts from the postings (do NOT guess 1920). Create correction vouchers that reverse the wrong posting and create the correct one.
+- **Voucher dimension field**: On voucher postings, the accounting dimension field is `freeAccountingDimension1` (NOT freeDimension1). Use {{"id": dimension_value_id}}.
 
 ## ID Resolution
 - POST creates → use $step_N.value.id
