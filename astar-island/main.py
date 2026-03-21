@@ -207,11 +207,10 @@ def observe_seed(round_id, seed_index, height, width, max_queries,
                  initial_grid=None):
     """Query viewports to observe the map for a given seed.
 
-    Strategy: maximize spatial coverage. All queries go to unique tile positions,
-    sorted by dynamic cell count (settlement-heavy tiles first).
-    Simulated-production testing shows full coverage beats focused/repeat strategy
-    by 5-23% across all rounds — bucket model needs broad spatial coverage more
-    than per-cell blending needs repeated observations.
+    Strategy: full coverage first, then repeat highest-value tiles.
+    All unique tile positions are queried first (sorted by settlement density),
+    then any remaining queries repeat the top tiles for extra observations.
+    Every allocated query MUST be used — wasting queries is never acceptable.
     """
     from predictor import STATIC_CODES
 
@@ -250,14 +249,16 @@ def observe_seed(round_id, seed_index, height, width, max_queries,
 
         scored_tiles = sorted(zip(tile_scores, positions), reverse=True)
         coverage_tiles = [(s, pos) for s, pos in scored_tiles if s > 0]
-
-        print(f"  Tiles: {len(coverage_tiles)} dynamic (of {len(positions)}), "
-              f"using {min(len(coverage_tiles), max_queries)} for full coverage")
     else:
         coverage_tiles = [(1, pos) for pos in positions]
 
-    # Use all queries for unique tile coverage
-    for _, (x, y) in coverage_tiles[:max_queries]:
+    unique_count = min(len(coverage_tiles), max_queries)
+    repeat_count = max_queries - unique_count
+    print(f"  Tiles: {len(coverage_tiles)} dynamic (of {len(positions)}), "
+          f"using {unique_count} coverage + {repeat_count} repeats = {max_queries} total")
+
+    # Phase 1: Cover all unique tile positions
+    for _, (x, y) in coverage_tiles[:unique_count]:
         try:
             result = api_client.query_seed(round_id, seed_index,
                                            viewport_x=x, viewport_y=y,
@@ -266,5 +267,20 @@ def observe_seed(round_id, seed_index, height, width, max_queries,
         except Exception as e:
             print(f"  Query error at ({x},{y}): {e}")
             break
+
+    # Phase 2: Use remaining queries on highest-value tiles (extra observations)
+    remaining = max_queries - len(observations)
+    if remaining > 0 and coverage_tiles:
+        top_tiles = [pos for _, pos in coverage_tiles[:max(3, unique_count // 2)]]
+        for i in range(remaining):
+            x, y = top_tiles[i % len(top_tiles)]
+            try:
+                result = api_client.query_seed(round_id, seed_index,
+                                               viewport_x=x, viewport_y=y,
+                                               viewport_w=vp_w, viewport_h=vp_h)
+                observations.append(result)
+            except Exception as e:
+                print(f"  Query error repeat ({x},{y}): {e}")
+                break
 
     return observations

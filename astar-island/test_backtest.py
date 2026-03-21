@@ -421,47 +421,39 @@ def _simulate_observations(gt, initial_grid, height, width, n_queries, rng):
 
     scored_tiles = sorted(zip(tile_scores, positions), reverse=True)
     coverage_tiles = [(s, pos) for s, pos in scored_tiles if s > 0]
-    coverage_count = min(len(coverage_tiles), max(n_queries // 2, 5))
-    repeat_count = n_queries - coverage_count
+    unique_count = min(len(coverage_tiles), n_queries)
+    repeat_count = n_queries - unique_count
 
     observations = []
 
-    # Phase 1: Coverage
-    for _, (x, y) in coverage_tiles[:coverage_count]:
+    def _make_obs(x, y):
         sampled_grid = _sample_terrain_grid(gt, height, width, rng)
-        # Extract viewport region
         vp_grid = []
         for r in range(y, min(y + vp_h, height)):
             row = []
             for c in range(x, min(x + vp_w, width)):
                 row.append(sampled_grid[r][c])
             vp_grid.append(row)
-        observations.append({
+        return {
             "viewport": {"x": x, "y": y, "w": len(vp_grid[0]) if vp_grid else 0,
                           "h": len(vp_grid)},
             "grid": vp_grid,
             "settlements": [],
-        })
+        }
 
-    # Phase 2: Repeat high-value tiles
-    if coverage_tiles:
-        top_tiles = [pos for _, pos in coverage_tiles[:max(3, coverage_count // 2)]]
+    # Phase 1: Cover all unique tile positions
+    for _, (x, y) in coverage_tiles[:unique_count]:
+        observations.append(_make_obs(x, y))
+
+    # Phase 2: Use remaining queries on highest-value tiles
+    if repeat_count > 0 and coverage_tiles:
+        top_tiles = [pos for _, pos in coverage_tiles[:max(3, unique_count // 2)]]
         for i in range(repeat_count):
             x, y = top_tiles[i % len(top_tiles)]
-            sampled_grid = _sample_terrain_grid(gt, height, width, rng)
-            vp_grid = []
-            for r in range(y, min(y + vp_h, height)):
-                row = []
-                for c in range(x, min(x + vp_w, width)):
-                    row.append(sampled_grid[r][c])
-                vp_grid.append(row)
-            observations.append({
-                "viewport": {"x": x, "y": y,
-                              "w": len(vp_grid[0]) if vp_grid else 0,
-                              "h": len(vp_grid)},
-                "grid": vp_grid,
-                "settlements": [],
-            })
+            observations.append(_make_obs(x, y))
+
+    assert len(observations) == n_queries, \
+        f"Bug: used {len(observations)} queries, expected {n_queries}"
 
     return observations
 
