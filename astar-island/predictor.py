@@ -32,7 +32,7 @@ TERRAIN_TO_CLASS = {
 STATIC_CODES = {10, 5}  # Ocean → always Empty, Mountain → always Mountain
 
 # Probability floor to avoid KL divergence → infinity
-PROB_FLOOR = 0.003
+PROB_FLOOR = 0.002
 
 # Adaptive smoothing: k controls how much we trust the bucket model vs per-cell observations
 # High k → trust bucket model more; Low k → trust empirical observations more
