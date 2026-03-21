@@ -303,32 +303,19 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 del body["number"]
                 log.info("Validation: stripped 'number' from POST /product body")
 
-        # Quick fix: strip inline costs/perDiems from POST /travelExpense
-        if method == "POST" and path == "/travelExpense" and isinstance(body, dict):
-            for inline_field in ("costs", "perDiemCompensations"):
-                if inline_field in body:
-                    del body[inline_field]
-                    log.info(
-                        f"Validation: stripped inline '{inline_field}' from POST /travelExpense"
-                    )
+        # (Travel cost stripping removed — costs + perDiemCompensations can be inlined)
 
         # Fix PUT /company/{id} → PUT /company (singleton endpoint, no ID in path)
         if method == "PUT" and re.match(r"^/company/\d+$", path):
             args["path"] = "/company"
             log.info("Validation: fixed PUT /company/{id} → PUT /company (singleton)")
 
-        # Fix 3b: Auto-inject paymentTypeId when paidAmount present on /:invoice
+        # Auto-inject invoiceDate for /:invoice if missing (but NEVER inject paymentTypeId)
         if method == "PUT" and "/:invoice" in path:
             qp = args.get("query_params", {})
-            if isinstance(qp, dict):
-                if "paidAmount" in qp and "paymentTypeId" not in qp:
-                    qp["paymentTypeId"] = 0
-                    log.info(
-                        "Validation: auto-injected paymentTypeId=0 for /:invoice (required with paidAmount)"
-                    )
-                if "invoiceDate" not in qp:
-                    qp["invoiceDate"] = date.today().isoformat()
-                    log.info("Validation: auto-injected invoiceDate for /:invoice")
+            if isinstance(qp, dict) and "invoiceDate" not in qp:
+                qp["invoiceDate"] = date.today().isoformat()
+                log.info("Validation: auto-injected invoiceDate for /:invoice")
 
         if not body or not isinstance(body, dict):
             continue
