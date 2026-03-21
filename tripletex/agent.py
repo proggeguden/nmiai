@@ -1045,7 +1045,7 @@ def build_agent():
         log.info(
             f">>>PLAN_START<<<\n{json.dumps(best, indent=2)}\n>>>PLAN_END<<<",
             steps=len(best),
-            score=max(score_a, score_b),
+            steps_count=len(best),
         )
 
         return {
