@@ -45,6 +45,11 @@ class LookupEndpointArgs(BaseModel):
     query: str = Field(description="Search keywords, e.g. 'supplier', 'payment type', 'voucher posting'")
 
 
+class AnalyzeResponseArgs(BaseModel):
+    previous_step_results: str = Field(description="JSON string of API response data from previous steps to analyze")
+    question: str = Field(description="What to compute/extract, e.g. 'Find the 3 expense accounts with the largest increase. Return JSON array [{name, number, increase}]'")
+
+
 def _format_card_for_lookup(card: dict) -> str:
     """Format a rich endpoint card as readable text for lookup results."""
     lines = [f"{card['op']} [{card['tag']}]", f"  Summary: {card['summary']}"]
@@ -184,6 +189,32 @@ def build_generic_tools(make_request_fn):
                 results.append(_format_index_entry(op_key, idx))
         return "\n\n".join(results) if results else "No matching endpoints found."
 
+    def analyze_response(previous_step_results: str, question: str) -> str:
+        """Analyze data from previous API responses. Use when you need to compute, filter, sort,
+        or extract specific values from API response data (e.g., 'find the 3 accounts with the largest increase').
+        Returns JSON with the extracted/computed answer."""
+        import os
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        api_key = os.environ.get("GOOGLE_API_KEY", "")
+        model_name = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+        llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key, temperature=0)
+
+        prompt = f"""Analyze the following API response data and answer the question.
+
+DATA:
+{previous_step_results[:30000]}
+
+QUESTION: {question}
+
+Return ONLY valid JSON with your answer. No explanation, no markdown — just the JSON object or array."""
+
+        try:
+            response = llm.invoke(prompt)
+            return response.content.strip()
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     call_api_tool = StructuredTool.from_function(
         func=call_api,
         name="call_api",
@@ -198,7 +229,14 @@ def build_generic_tools(make_request_fn):
         args_schema=LookupEndpointArgs,
     )
 
-    return [call_api_tool, lookup_tool]
+    analyze_tool = StructuredTool.from_function(
+        func=analyze_response,
+        name="analyze_response",
+        description="Analyze data from previous API responses. Use to compute, filter, sort, or find top-N items from response data. Returns JSON.",
+        args_schema=AnalyzeResponseArgs,
+    )
+
+    return [call_api_tool, lookup_tool, analyze_tool]
 
 
 def get_tier1_catalog() -> str:

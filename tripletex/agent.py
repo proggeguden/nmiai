@@ -1467,6 +1467,22 @@ def build_agent():
 
         tool = tool_map[tool_name]
 
+        # Special handling for analyze_response: inject full step results as JSON
+        if tool_name == "analyze_response" and isinstance(resolved_args, dict):
+            step_refs = resolved_args.get("previous_step_results", "")
+            if isinstance(step_refs, str) and "$step_" in step_refs:
+                # Collect all referenced step results
+                import re as _re
+                step_nums = _re.findall(r'\$step_(\d+)', step_refs)
+                collected = {}
+                for sn in step_nums:
+                    key = f"step_{sn}"
+                    if key in results:
+                        collected[key] = results[key]
+                resolved_args["previous_step_results"] = json.dumps(collected, default=str)[:30000]
+            elif isinstance(step_refs, dict):
+                resolved_args["previous_step_results"] = json.dumps(step_refs, default=str)[:30000]
+
         # Schema pre-validation (auto-fix before hitting the API)
         if tool_name == "call_api":
             resolved_args = _validate_step_against_schema(resolved_args)
