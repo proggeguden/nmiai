@@ -1356,6 +1356,7 @@ def build_prediction(height, width, initial_grid, observations,
                       where=(cell_totals > 0))
 
             # Adaptive k per terrain type, scaled by spatial model confidence
+            # and observation sparsity (prevent single-outlier distortion)
             k_grid = np.full((height, width), K_DEFAULT)
             for r in range(height):
                 for c in range(width):
@@ -1365,6 +1366,13 @@ def build_prediction(height, width, initial_grid, observations,
                         bucket_n = spatial_obs[fmap[r][c]]
                         confidence_scale = 1.0 + 0.5 * min(bucket_n / 100.0, 3.0)
                         base_k *= confidence_scale
+                    # Boost k for sparsely-observed non-settlement cells.
+                    # With 1-2 observations, a single outlier (e.g., Ruin on Plains)
+                    # gets 25% weight → wildly inflated rare-class predictions.
+                    # Higher k trusts the bucket model more for these cells.
+                    n_obs = cell_obs_count[r, c]
+                    if n_obs <= 2 and initial_grid[r][c] in (0, 11, 4):
+                        base_k *= 3.0  # k=9 for Plains/Forest/Empty with ≤2 obs
                     k_grid[r, c] = base_k
 
             alpha = cell_obs_count / (cell_obs_count + k_grid)
