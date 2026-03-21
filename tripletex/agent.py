@@ -17,6 +17,7 @@ from prompts import (
     FIX_ARGS_PROMPT,
     PLANNER_PROMPT,
     PLANNER_PROFILE,
+    PLANNER_PROFILES,
     REPLAN_PROMPT,
     VERIFY_PROMPT,
 )
@@ -1227,17 +1228,20 @@ def build_agent():
 
     llm = heal_llm
 
-    # --- Node: planner (single model) ---
+    # --- Node: planner (multi-persona) ---
     def planner(state: AgentState) -> dict:
+        import random
+        profile = random.choice(PLANNER_PROFILES)
+
         prompt_text = PLANNER_PROMPT.format(
             today=date.today().isoformat(),
             tool_summaries=tool_summaries,
             task=state["original_prompt"],
         )
 
-        full_prompt = PLANNER_PROFILE["prefix"] + "\n\n" + prompt_text
+        full_prompt = profile["prefix"] + "\n\n" + prompt_text
         file_parts = state.get("file_content_parts", [])
-        log.info("Planner invoked", model=planner_model, prompt_length=len(full_prompt), file_parts=len(file_parts))
+        log.info(f"Planner invoked — persona: {profile['name']}", model=planner_model, temperature=profile["temperature"], prompt_length=len(full_prompt), file_parts=len(file_parts))
 
         # Build multimodal message if files are attached
         if file_parts:
@@ -1245,20 +1249,27 @@ def build_agent():
         else:
             planner_content = full_prompt
 
+        # Create planner LLM with persona-specific temperature
+        persona_llm = ChatGoogleGenerativeAI(
+            model=planner_model,
+            google_api_key=api_key,
+            temperature=profile["temperature"],
+        )
+
         try:
-            response = planner_llm.invoke([HumanMessage(content=planner_content)])
+            response = persona_llm.invoke([HumanMessage(content=planner_content)])
             raw = _extract_text(response.content)
             best = _parse_plan_json(raw)
-            log.info(f"Planner returned {len(best)} steps")
+            log.info(f"Planner ({profile['name']}) returned {len(best)} steps")
         except Exception as e:
-            log.warning(f"Planner failed: {e}")
+            log.warning(f"Planner ({profile['name']}) failed: {e}")
             best = []
 
-        # Retry with fallback model if planner returned empty plan
+        # Retry with fallback model (precise, temp=0) if planner returned empty plan
         if not best:
-            log.warning("Empty plan from primary model — retrying with fallback model")
+            log.warning("Empty plan — retrying with fallback model (precise)")
             try:
-                response = heal_llm.invoke([HumanMessage(content=planner_content)])
+                response = planner_llm.invoke([HumanMessage(content=planner_content)])
                 raw = _extract_text(response.content)
                 best = _parse_plan_json(raw)
                 log.info(f"Fallback planner returned {len(best)} steps")

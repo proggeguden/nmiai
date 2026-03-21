@@ -72,17 +72,27 @@ Return ONLY a JSON array of steps:
 {task}
 """
 
-PLANNER_PROFILE = {
-    "name": "efficient",
-    "temperature": 0,
-    "prefix": "Read the task carefully. Extract ALL values from the task — names, dates of birth, amounts, emails, org numbers, addresses. Use exactly what the task says. Search before creating. Minimize write calls. Use lookup_endpoint for unfamiliar endpoints.",
-}
+PLANNER_PROFILES = [
+    {
+        "name": "precise",
+        "temperature": 0,
+        "prefix": "You are a PRECISE planner. Extract ALL values from the task — names, dates of birth, amounts, emails, org numbers, addresses. Use EXACTLY what the task says, never invent defaults. Search before creating. Minimize write calls.",
+    },
+    {
+        "name": "thorough",
+        "temperature": 0.3,
+        "prefix": "You are a THOROUGH planner. Prioritize correctness over efficiency. Include EVERY field mentioned in the task. Double-check that all required API fields are set. Search before creating. Use lookup_endpoint for any endpoint you're unsure about.",
+    },
+    {
+        "name": "creative",
+        "temperature": 0.7,
+        "prefix": "You are a CREATIVE planner. Think carefully about the best approach for this specific task. Consider alternative workflows. Use lookup_endpoint freely to discover the right endpoints. Search before creating. Don't be afraid to use more steps if it improves correctness.",
+    },
+]
 
-CHALLENGER_PROFILE = {
-    "name": "challenger",
-    "temperature": 0.3,
-    "prefix": "Prioritize correctness over efficiency. Make sure every required field from the task is included. Read the task carefully. Search before creating. Use lookup_endpoint for unfamiliar endpoints.",
-}
+# Keep legacy names for backwards compatibility
+PLANNER_PROFILE = PLANNER_PROFILES[0]
+CHALLENGER_PROFILE = PLANNER_PROFILES[1]
 
 EXECUTOR_FALLBACK_PROMPT = """Given this API response, extract the requested value.
 
