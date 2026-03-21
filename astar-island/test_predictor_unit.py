@@ -482,7 +482,7 @@ class TestValidatePredictions:
 
     def test_below_floor_raises(self):
         pred = np.full((3, 3, 6), 1/6)
-        pred[0, 0, 0] = 0.001  # below PROB_FLOOR (0.003)
+        pred[0, 0, 0] = 0.0005  # below PROB_FLOOR (0.001)
         pred[0, 0, 1:] = (1 - 0.001) / 5
         with pytest.raises(AssertionError):
             validate_predictions(pred, 3, 3)
