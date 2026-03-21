@@ -122,6 +122,23 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         )
         log.info("Validation: prepended ensure_bank_account step for invoicing plan")
 
+    # ── A2a: Strip planner's manual POST/GET /division steps BEFORE injecting ensure_division ──
+    # ensure_division handles this reliably. Planner's manual attempts cause 422s.
+    pre_strip_len = len(plan)
+    plan = [
+        step for step in plan
+        if not (
+            step.get("tool_name") == "call_api"
+            and step.get("args", {}).get("method") in ("POST", "GET")
+            and step.get("args", {}).get("path") in ("/division", "/division/list")
+        )
+    ]
+    if len(plan) < pre_strip_len:
+        # Renumber after stripping
+        for i, step in enumerate(plan):
+            step["step_number"] = i + 1
+        log.info(f"Validation: stripped {pre_strip_len - len(plan)} manual /division steps")
+
     # ── A2: ALWAYS inject ensure_division before POST /employee/employment ──
     # The planner may search for divisions manually but on fresh accounts they don't exist.
     # ensure_division safely creates one if none exist. Always override the division ref.
@@ -155,19 +172,7 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             emp_body["division"] = {"id": f"$step_{div_step_number}.value.id"}
             log.info("Validation: prepended ensure_division step for employment plan")
 
-    # ── A3: Strip planner's manual POST /division and GET /division steps ──
-    # ensure_division handles this reliably. Planner's manual attempts cause 422s.
-    plan = [
-        step for step in plan
-        if not (
-            step.get("tool_name") == "call_api"
-            and step.get("args", {}).get("method") in ("POST", "GET")
-            and step.get("args", {}).get("path") == "/division"
-        )
-    ]
-    # Renumber steps after removal
-    for i, step in enumerate(plan):
-        step["step_number"] = i + 1
+    # (A3 moved to A2a — strip /division before injection, not after)
 
     # ── B4: ALWAYS inject ensure_department before POST /employee ──
     # The planner may search for departments manually (GET /department) but on fresh accounts
@@ -435,9 +440,13 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             if "employmentPercentage" in body and "percentageOfFullTimeEquivalent" not in body:
                 body["percentageOfFullTimeEquivalent"] = body.pop("employmentPercentage")
                 log.info("Validation: fixed employmentPercentage → percentageOfFullTimeEquivalent")
-            # Fix occupationCode: bare string → {"id": <int>}
+            # Strip occupationCode if it references a $step_N (lookup that will likely fail)
+            # Occupation code is optional and lookup endpoints return empty — better to skip
             oc = body.get("occupationCode")
-            if isinstance(oc, str):
+            if isinstance(oc, dict) and isinstance(oc.get("id"), str) and "$step_" in str(oc.get("id", "")):
+                del body["occupationCode"]
+                log.info("Validation: stripped occupationCode with $step ref (lookup unreliable)")
+            elif isinstance(oc, str):
                 try:
                     body["occupationCode"] = {"id": int(oc)}
                     log.info(f"Validation: fixed occupationCode string → {{id: {oc}}}")
