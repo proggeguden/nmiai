@@ -98,12 +98,13 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - **NEVER** inline costs/perDiems in POST /travelExpense body — they are separate sub-resources
 
 ### Vouchers / Accounting
-1. GET /ledger/account?number=NNNN (per account — numbers are NOT IDs!)
+1. GET /ledger/account?number=NNNN (one call per account number — numbers are NOT IDs!)
 2. POST /ledger/voucher → {{"date": "YYYY-MM-DD", "description": "...", "postings": [{{"account": {{"id": N}}, "amountGross": +N, "amountGrossCurrency": +N}}, {{"account": {{"id": N}}, "amountGross": -N, "amountGrossCurrency": -N}}]}}
    - BOTH amountGross AND amountGrossCurrency MUST be set to the same value on every posting.
    - Debit=positive, credit=negative, must sum to 0. Do NOT send number or voucherType.
-   - With vatType: use GROSS amount, system auto-generates VAT line. Known IDs: 1=0%, 3=25%, 5=15%, 6=12%
+   - With vatType: use GROSS amount, system auto-generates VAT line. Known OUTPUT vatType IDs: 3=25%, 31=15%, 32=12%, 5=0%, 6=0%
    - **Supplier invoice**: debit expense acct with vatType:{{"id":N}}, credit 2400 (AP) with supplier:{{"id": $supplierStep.value.id}} — the AP posting MUST have supplier ref or you get "Leverandør mangler"
+- **Month-end closing**: look up ALL needed accounts first, then create one voucher per journal entry (prepaid expense periodization, depreciation, salary accrual, etc.). Depreciation formula: annual = cost / lifetime_years, monthly = annual / 12. Common accounts: 1720=prepaid, 1209=accumulated depreciation, 6030=depreciation expense, 5000=salary cost, 2900=accrued salary.
 
 ### Payroll
 1. POST /department → {{"name": "..."}}
@@ -270,7 +271,12 @@ Analyze whether the original task was fully accomplished. Consider:
 
 Return ONLY a JSON object:
 - If task is complete: {{"verified": true}}
-- If task is incomplete: {{"verified": false, "corrective_steps": [{{"step_number": N, "tool_name": "call_api", "args": {{}}, "description": "..."}}]}}
+- If task is incomplete: {{"verified": false, "corrective_steps": [...]}}
+
+Each corrective step MUST use this EXACT format (same as the original plan):
+{{"step_number": N, "tool_name": "call_api", "args": {{"method": "GET|POST|PUT", "path": "/endpoint/path", "query_params": {{}}, "body": {{}}}}, "description": "..."}}
+
+The args object MUST have "method" and "path" keys — NEVER use "endpoint" or other formats.
 
 For corrective_steps, use $step_N.value.id to reference results from completed steps. Start step_number from {next_step_number}.
 Only include corrective steps that are strictly necessary — do not redo steps that already succeeded.

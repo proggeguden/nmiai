@@ -12,7 +12,14 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 
 from logger import get_logger
-from prompts import CHALLENGER_PROFILE, FIX_ARGS_PROMPT, PLANNER_PROMPT, PLANNER_PROFILE, REPLAN_PROMPT, VERIFY_PROMPT
+from prompts import (
+    CHALLENGER_PROFILE,
+    FIX_ARGS_PROMPT,
+    PLANNER_PROMPT,
+    PLANNER_PROFILE,
+    REPLAN_PROMPT,
+    VERIFY_PROMPT,
+)
 from state import AgentState
 from tools import load_tools
 
@@ -48,20 +55,28 @@ def validate_plan(plan: list[dict]) -> list[dict]:
     # ── A1: Proactive bank account ensure for invoicing plans ──
     has_invoice_action = any(
         s.get("tool_name") == "call_api"
-        and ("/:invoice" in s.get("args", {}).get("path", "")
-             or (s.get("args", {}).get("method") == "POST" and s.get("args", {}).get("path") == "/invoice"))
+        and (
+            "/:invoice" in s.get("args", {}).get("path", "")
+            or (
+                s.get("args", {}).get("method") == "POST"
+                and s.get("args", {}).get("path") == "/invoice"
+            )
+        )
         for s in plan
     )
     if has_invoice_action:
         for step in plan:
             step["step_number"] += 1
             _shift_step_refs(step, offset=1)
-        plan.insert(0, {
-            "step_number": 1,
-            "tool_name": "ensure_bank_account",
-            "args": {},
-            "description": "Ensure company bank account exists (required for invoicing)",
-        })
+        plan.insert(
+            0,
+            {
+                "step_number": 1,
+                "tool_name": "ensure_bank_account",
+                "args": {},
+                "description": "Ensure company bank account exists (required for invoicing)",
+            },
+        )
         log.info("Validation: prepended ensure_bank_account step for invoicing plan")
 
     # ── A2: Auto-inject division + link for employment plans ──
@@ -88,12 +103,15 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             for step in plan[employment_idx:]:
                 step["step_number"] += 1
                 _shift_step_refs(step, offset=1, min_step=div_step_number)
-            plan.insert(employment_idx, {
-                "step_number": div_step_number,
-                "tool_name": "ensure_division",
-                "args": {},
-                "description": "Ensure company division exists (required for employment)",
-            })
+            plan.insert(
+                employment_idx,
+                {
+                    "step_number": div_step_number,
+                    "tool_name": "ensure_division",
+                    "args": {},
+                    "description": "Ensure company division exists (required for employment)",
+                },
+            )
             # Add division ref to the employment body
             emp_body["division"] = {"id": f"$step_{div_step_number}.value.id"}
             log.info("Validation: prepended ensure_division step for employment plan")
@@ -120,7 +138,9 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             if step.get("tool_name") != "call_api":
                 continue
             args = step.get("args", {})
-            if args.get("method") == "POST" and "/travelExpense/cost" in args.get("path", ""):
+            if args.get("method") == "POST" and "/travelExpense/cost" in args.get(
+                "path", ""
+            ):
                 first_cost_idx = i
                 break
 
@@ -133,7 +153,11 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 "args": {
                     "method": "GET",
                     "path": "/travelExpense/paymentType",
-                    "query_params": {"showOnEmployeeExpenses": True, "count": 1, "fields": "id"},
+                    "query_params": {
+                        "showOnEmployeeExpenses": True,
+                        "count": 1,
+                        "fields": "id",
+                    },
                 },
                 "description": "Get travel expense payment type (required for costs)",
             }
@@ -147,16 +171,20 @@ def validate_plan(plan: list[dict]) -> list[dict]:
 
             # Inject/fix paymentType reference in all travel cost bodies
             pt_ref = f"$step_{pt_step_number}.values[0].id"
-            for step in plan[first_cost_idx + 1:]:
+            for step in plan[first_cost_idx + 1 :]:
                 if step.get("tool_name") != "call_api":
                     continue
                 args = step.get("args", {})
-                if args.get("method") == "POST" and "/travelExpense/cost" in args.get("path", ""):
+                if args.get("method") == "POST" and "/travelExpense/cost" in args.get(
+                    "path", ""
+                ):
                     body = args.get("body", {})
                     if isinstance(body, dict):
                         body["paymentType"] = {"id": pt_ref}  # Always set correct ref
 
-            log.info("Validation: injected GET /travelExpense/paymentType step and paymentType refs for travel costs")
+            log.info(
+                "Validation: injected GET /travelExpense/paymentType step and paymentType refs for travel costs"
+            )
 
     # (A3 removed: vatType ID mapping was wrong — always let agent GET /ledger/vatType)
 
@@ -179,7 +207,11 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         if method == "POST" and path == "/department":
             has_department_in_plan = True
 
-    if has_employee_post and not has_department_in_plan and employee_post_idx is not None:
+    if (
+        has_employee_post
+        and not has_department_in_plan
+        and employee_post_idx is not None
+    ):
         # Prepend GET /department?count=1 before the employee POST
         dept_step_number = plan[employee_post_idx]["step_number"]
         dept_step = {
@@ -203,7 +235,9 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         emp_body = emp_step.get("args", {}).get("body", {})
         if isinstance(emp_body, dict) and "department" not in emp_body:
             emp_body["department"] = {"id": f"$step_{dept_step_number}.values[0].id"}
-        log.info("Validation: injected GET /department step and department ref for POST /employee")
+        log.info(
+            "Validation: injected GET /department step and department ref for POST /employee"
+        )
 
     for step in plan:
         if step.get("tool_name") != "call_api":
@@ -223,7 +257,11 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         # ── B0b: Strip vatType from order lines ONLY if it's a hardcoded wrong ID ──
         # Keep vatType if it references a $step_N lookup (planner looked it up correctly)
         # or uses a known valid ID. Only strip bare integer IDs that may be wrong mappings.
-        if method == "POST" and path in ("/order", "/order/list") and isinstance(body, (dict, list)):
+        if (
+            method == "POST"
+            and path in ("/order", "/order/list")
+            and isinstance(body, (dict, list))
+        ):
             bodies = body if isinstance(body, list) else [body]
             for b in bodies:
                 if isinstance(b, dict):
@@ -231,20 +269,33 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                         if isinstance(ol, dict) and "vatType" in ol:
                             vat_ref = ol["vatType"]
                             # Keep if it's a $step_N reference (planner did a lookup)
-                            if isinstance(vat_ref, dict) and isinstance(vat_ref.get("id"), str) and "$step_" in str(vat_ref.get("id", "")):
+                            if (
+                                isinstance(vat_ref, dict)
+                                and isinstance(vat_ref.get("id"), str)
+                                and "$step_" in str(vat_ref.get("id", ""))
+                            ):
                                 continue
                             # Keep if it's a known valid OUTPUT vatType ID
                             # 3=25%, 31=15%(food), 32=12%(transport), 5=0%(exempt), 6=0%(exempt)
-                            if isinstance(vat_ref, dict) and vat_ref.get("id") in (3, 5, 6, 31, 32):
+                            if isinstance(vat_ref, dict) and vat_ref.get("id") in (
+                                3,
+                                5,
+                                6,
+                                31,
+                                32,
+                            ):
                                 continue
                             # Strip anything else (likely wrong hardcoded ID)
                             del ol["vatType"]
-                            log.info("Validation: stripped unknown vatType from order line")
+                            log.info(
+                                "Validation: stripped unknown vatType from order line"
+                            )
 
         # ── B0c: Auto-inject invoiceDueDate for POST /invoice ──
         if method == "POST" and path == "/invoice" and isinstance(body, dict):
             if "invoiceDueDate" not in body:
                 from datetime import timedelta
+
                 inv_date = body.get("invoiceDate", date.today().isoformat())
                 try:
                     due = date.fromisoformat(inv_date) + timedelta(days=14)
@@ -261,7 +312,9 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 fixed = _fix_fields_dots(fields_val)
                 if fixed != fields_val:
                     query_params["fields"] = fixed
-                    log.info(f"Validation: fixed fields filter dots→parentheses: {fields_val} → {fixed}")
+                    log.info(
+                        f"Validation: fixed fields filter dots→parentheses: {fields_val} → {fixed}"
+                    )
 
         # ── B2: Fix date range From < To ──
         if method == "GET" and isinstance(query_params, dict):
@@ -277,7 +330,9 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 if isinstance(pm_id, str) and "$step_" in pm_id:
                     # Keep it — the planner intended to use a created employee
                     # But log for monitoring
-                    log.info(f"Validation: POST /project has projectManager ref {pm_id}")
+                    log.info(
+                        f"Validation: POST /project has projectManager ref {pm_id}"
+                    )
 
         # Quick fix: POST /project — add startDate if missing
         if method == "POST" and path == "/project" and isinstance(body, dict):
@@ -293,14 +348,16 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             # B3: Fix null postings
             if body.get("postings") is None:
                 body["postings"] = []
-                log.info("Validation: converted null postings to empty array in POST /ledger/voucher")
+                log.info(
+                    "Validation: converted null postings to empty array in POST /ledger/voucher"
+                )
             # Add explicit row numbers starting from 1 (row 0 is reserved for system-generated VAT lines)
             postings = body.get("postings", [])
             if isinstance(postings, list):
                 for idx, posting in enumerate(postings):
                     if isinstance(posting, dict) and "row" not in posting:
                         posting["row"] = idx + 1
-                        log.info(f"Validation: added row={idx+1} to voucher posting")
+                        log.info(f"Validation: added row={idx + 1} to voucher posting")
 
         # Quick fix: strip product "number" field from POST /product or /product/list
         if method == "POST" and path in ("/product", "/product/list"):
@@ -308,7 +365,9 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 for item in body:
                     if isinstance(item, dict) and "number" in item:
                         del item["number"]
-                        log.info("Validation: stripped 'number' from product in POST /product/list")
+                        log.info(
+                            "Validation: stripped 'number' from product in POST /product/list"
+                        )
             elif isinstance(body, dict) and "number" in body:
                 del body["number"]
                 log.info("Validation: stripped 'number' from POST /product body")
@@ -318,10 +377,12 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             for inline_field in ("costs", "perDiemCompensations"):
                 if inline_field in body:
                     del body[inline_field]
-                    log.info(f"Validation: stripped inline '{inline_field}' from POST /travelExpense")
+                    log.info(
+                        f"Validation: stripped inline '{inline_field}' from POST /travelExpense"
+                    )
 
         # Fix PUT /company/{id} → PUT /company (singleton endpoint, no ID in path)
-        if method == "PUT" and re.match(r'^/company/\d+$', path):
+        if method == "PUT" and re.match(r"^/company/\d+$", path):
             args["path"] = "/company"
             log.info("Validation: fixed PUT /company/{id} → PUT /company (singleton)")
 
@@ -331,7 +392,9 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             if isinstance(qp, dict):
                 if "paidAmount" in qp and "paymentTypeId" not in qp:
                     qp["paymentTypeId"] = 0
-                    log.info("Validation: auto-injected paymentTypeId=0 for /:invoice (required with paidAmount)")
+                    log.info(
+                        "Validation: auto-injected paymentTypeId=0 for /:invoice (required with paidAmount)"
+                    )
                 if "invoiceDate" not in qp:
                     qp["invoiceDate"] = date.today().isoformat()
                     log.info("Validation: auto-injected invoiceDate for /:invoice")
@@ -352,7 +415,9 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 default = field_info.get("default")
                 if default:
                     body[field_name] = default
-                    log.info(f"Validation: added missing {field_name}={default} to {key}")
+                    log.info(
+                        f"Validation: added missing {field_name}={default} to {key}"
+                    )
                 # Special case: deliveryDate copies from orderDate
                 if field_name == "deliveryDate" and "orderDate" in body:
                     body["deliveryDate"] = body["orderDate"]
@@ -387,19 +452,29 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                         if len(cpresent) > 1:
                             for f in cpresent[1:]:
                                 del item[f]
-                                log.info(f"Validation: removed conflicting {f} from {field_name} item in {key}")
+                                log.info(
+                                    f"Validation: removed conflicting {f} from {field_name} item in {key}"
+                                )
 
         # Check 3: Validate enum values (log warning only)
         for field_name, field_info in card.get("fields", {}).items():
             if "enum" in field_info and field_name in body:
                 val = body[field_name]
-                if isinstance(val, str) and not val.startswith("$step_") and val not in field_info["enum"]:
-                    log.warning(f"Validation: {field_name}={val} not in {field_info['enum']}")
+                if (
+                    isinstance(val, str)
+                    and not val.startswith("$step_")
+                    and val not in field_info["enum"]
+                ):
+                    log.warning(
+                        f"Validation: {field_name}={val} not in {field_info['enum']}"
+                    )
 
     return plan
 
 
-def _merge_consecutive_posts_to_list(plan: list[dict], endpoint_cards: dict) -> list[dict]:
+def _merge_consecutive_posts_to_list(
+    plan: list[dict], endpoint_cards: dict
+) -> list[dict]:
     """Merge consecutive POST /X steps into a single POST /X/list when possible.
 
     Only merges when:
@@ -410,8 +485,15 @@ def _merge_consecutive_posts_to_list(plan: list[dict], endpoint_cards: dict) -> 
     # Known paths that support POST /X/list (from swagger.json)
     # Use hardcoded set because not all /list endpoints are in Tier 1 ENDPOINT_CARDS
     KNOWN_LIST_PATHS = {
-        "/customer", "/supplier", "/department", "/product", "/employee",
-        "/project", "/order", "/contact", "/order/orderline",
+        "/customer",
+        "/supplier",
+        "/department",
+        "/product",
+        "/employee",
+        "/project",
+        "/order",
+        "/contact",
+        "/order/orderline",
     }
     # Also add any from endpoint_cards dynamically
     mergeable_paths = set(KNOWN_LIST_PATHS)
@@ -499,10 +581,10 @@ def _merge_consecutive_posts_to_list(plan: list[dict], endpoint_cards: dict) -> 
             ref_mapping[old_sn] = (merged_step_num, arr_idx)
 
         # Replace the group with the merged step
-        plan[group[0]:group[-1] + 1] = [merged_step]
+        plan[group[0] : group[-1] + 1] = [merged_step]
 
         # Fix downstream $step refs for merged steps
-        for step in plan[group[0] + 1:]:
+        for step in plan[group[0] + 1 :]:
             _rewrite_list_refs(step, ref_mapping)
 
         # Renumber: steps after the merged one need to shift down
@@ -521,10 +603,12 @@ def _merge_consecutive_posts_to_list(plan: list[dict], endpoint_cards: dict) -> 
                 if s["step_number"] in old_to_new:
                     s["step_number"] = old_to_new[s["step_number"]]
             # Shift refs in all steps after the merged one
-            for s in plan[group[0] + 1:]:
+            for s in plan[group[0] + 1 :]:
                 _renumber_step_refs(s, old_to_new)
 
-        log.info(f"Validation: merged {len(group)}x POST {path} → 1x POST {path}/list (steps {old_step_nums} → step {merged_step_num})")
+        log.info(
+            f"Validation: merged {len(group)}x POST {path} → 1x POST {path}/list (steps {old_step_nums} → step {merged_step_num})"
+        )
 
         # Don't advance i — re-check from same position in case of further merges
         i += 1
@@ -546,7 +630,7 @@ def _rewrite_list_refs(obj, ref_mapping: dict):
                     # Also handle bare $step_N.value (without trailing field)
                     old_bare = f"$step_{old_sn}.value"
                     if v.endswith(old_bare):
-                        v = v[:-len(old_bare)] + f"$step_{new_sn}.values[{arr_idx}]"
+                        v = v[: -len(old_bare)] + f"$step_{new_sn}.values[{arr_idx}]"
                 obj[k] = v
             else:
                 _rewrite_list_refs(v, ref_mapping)
@@ -560,7 +644,9 @@ def _rewrite_list_refs(obj, ref_mapping: dict):
                         item = item.replace(old_ref, new_ref)
                     old_bare = f"$step_{old_sn}.value"
                     if item.endswith(old_bare):
-                        item = item[:-len(old_bare)] + f"$step_{new_sn}.values[{arr_idx}]"
+                        item = (
+                            item[: -len(old_bare)] + f"$step_{new_sn}.values[{arr_idx}]"
+                        )
                 obj[i] = item
             else:
                 _rewrite_list_refs(item, ref_mapping)
@@ -572,8 +658,10 @@ def _renumber_step_refs(obj, old_to_new: dict):
         for k, v in list(obj.items()):
             if isinstance(v, str):
                 obj[k] = re.sub(
-                    r'\$step_(\d+)',
-                    lambda m: f'$step_{old_to_new.get(int(m.group(1)), int(m.group(1)))}',
+                    r"\$step_(\d+)",
+                    lambda m: (
+                        f"$step_{old_to_new.get(int(m.group(1)), int(m.group(1)))}"
+                    ),
                     v,
                 )
             else:
@@ -582,8 +670,10 @@ def _renumber_step_refs(obj, old_to_new: dict):
         for i, item in enumerate(obj):
             if isinstance(item, str):
                 obj[i] = re.sub(
-                    r'\$step_(\d+)',
-                    lambda m: f'$step_{old_to_new.get(int(m.group(1)), int(m.group(1)))}',
+                    r"\$step_(\d+)",
+                    lambda m: (
+                        f"$step_{old_to_new.get(int(m.group(1)), int(m.group(1)))}"
+                    ),
                     item,
                 )
             else:
@@ -592,7 +682,7 @@ def _renumber_step_refs(obj, old_to_new: dict):
 
 def _path_to_template(path: str) -> str:
     """Convert /customer/123 → /customer/{id}, /order/456/:invoice → /order/{id}/:invoice"""
-    return re.sub(r'/(\d+)', '/{id}', path)
+    return re.sub(r"/(\d+)", "/{id}", path)
 
 
 def _ensure_bank_account(call_api_tool, error_count: int) -> tuple[str, dict, int]:
@@ -602,33 +692,44 @@ def _ensure_bank_account(call_api_tool, error_count: int) -> tuple[str, dict, in
     Returns (result_str, parsed, error_count).
     """
     # Step 1: Check for existing bank account
-    search_result = call_api_tool.invoke({
-        "method": "GET",
-        "path": "/ledger/account",
-        "query_params": {"isBankAccount": True, "from": 0, "count": 1, "fields": "id,number,bankAccountNumber"},
-    })
+    search_result = call_api_tool.invoke(
+        {
+            "method": "GET",
+            "path": "/ledger/account",
+            "query_params": {
+                "isBankAccount": True,
+                "from": 0,
+                "count": 1,
+                "fields": "id,number,bankAccountNumber",
+            },
+        }
+    )
 
     try:
         parsed = json.loads(search_result)
         values = parsed.get("values", [])
         if values:
-            log.info(f"Bank account already exists: account {values[0].get('number', '?')}")
+            log.info(
+                f"Bank account already exists: account {values[0].get('number', '?')}"
+            )
             return search_result, parsed, error_count
     except (json.JSONDecodeError, TypeError):
         pass
 
     # Step 2: No bank account found — create one (account 1920 = standard Norwegian bank account)
     log.info("No bank account found, creating account 1920")
-    create_result = call_api_tool.invoke({
-        "method": "POST",
-        "path": "/ledger/account",
-        "body": {
-            "number": 1920,
-            "name": "Bankkonto",
-            "isBankAccount": True,
-            "bankAccountNumber": "12345678903",
-        },
-    })
+    create_result = call_api_tool.invoke(
+        {
+            "method": "POST",
+            "path": "/ledger/account",
+            "body": {
+                "number": 1920,
+                "name": "Bankkonto",
+                "isBankAccount": True,
+                "bankAccountNumber": "12345678903",
+            },
+        }
+    )
 
     try:
         parsed = json.loads(create_result)
@@ -653,17 +754,21 @@ def _ensure_division(call_api_tool, error_count: int) -> tuple[str, dict, int]:
     from datetime import date
 
     # Step 1: Check for existing division
-    search_result = call_api_tool.invoke({
-        "method": "GET",
-        "path": "/division",
-        "query_params": {"from": 0, "count": 1, "fields": "id,name"},
-    })
+    search_result = call_api_tool.invoke(
+        {
+            "method": "GET",
+            "path": "/division",
+            "query_params": {"from": 0, "count": 1, "fields": "id,name"},
+        }
+    )
 
     try:
         parsed = json.loads(search_result)
         values = parsed.get("values", [])
         if values:
-            log.info(f"Division already exists: {values[0].get('name', '?')} (id={values[0].get('id')})")
+            log.info(
+                f"Division already exists: {values[0].get('name', '?')} (id={values[0].get('id')})"
+            )
             return search_result, {"value": values[0]}, error_count
     except (json.JSONDecodeError, TypeError):
         pass
@@ -672,17 +777,19 @@ def _ensure_division(call_api_tool, error_count: int) -> tuple[str, dict, int]:
     # (company's own org number is a legal entity and cannot be used for divisions)
     today = date.today().isoformat()
     log.info("Creating division with dummy sub-unit org number")
-    create_result = call_api_tool.invoke({
-        "method": "POST",
-        "path": "/division",
-        "body": {
-            "name": "Hovedvirksomhet",
-            "startDate": today,
-            "organizationNumber": "999999999",
-            "municipality": {"id": 1},
-            "municipalityDate": today,
-        },
-    })
+    create_result = call_api_tool.invoke(
+        {
+            "method": "POST",
+            "path": "/division",
+            "body": {
+                "name": "Hovedvirksomhet",
+                "startDate": today,
+                "organizationNumber": "999999999",
+                "municipality": {"id": 1},
+                "municipalityDate": today,
+            },
+        }
+    )
 
     try:
         parsed = json.loads(create_result)
@@ -691,7 +798,9 @@ def _ensure_division(call_api_tool, error_count: int) -> tuple[str, dict, int]:
             log.warning(f"Failed to create division: {create_result[:500]}")
             error_count += 1
         else:
-            log.info(f"Division created successfully (id={parsed.get('value', {}).get('id')})")
+            log.info(
+                f"Division created successfully (id={parsed.get('value', {}).get('id')})"
+            )
     except (json.JSONDecodeError, TypeError):
         parsed = {"raw": create_result}
 
@@ -700,22 +809,24 @@ def _ensure_division(call_api_tool, error_count: int) -> tuple[str, dict, int]:
 
 def _shift_step_refs(obj, offset: int, min_step: int = 0):
     """Shift $step_N references by offset, but only for N >= min_step (in-place mutation)."""
+
     def _replace(m):
         n = int(m.group(1))
-        return f'$step_{n + offset}' if n >= min_step else m.group(0)
+        return f"$step_{n + offset}" if n >= min_step else m.group(0)
 
     if isinstance(obj, dict):
         for k, v in list(obj.items()):
             if isinstance(v, str):
-                obj[k] = re.sub(r'\$step_(\d+)', _replace, v)
+                obj[k] = re.sub(r"\$step_(\d+)", _replace, v)
             else:
                 _shift_step_refs(v, offset, min_step)
     elif isinstance(obj, list):
         for i, item in enumerate(obj):
             if isinstance(item, str):
-                obj[i] = re.sub(r'\$step_(\d+)', _replace, item)
+                obj[i] = re.sub(r"\$step_(\d+)", _replace, item)
             else:
                 _shift_step_refs(item, offset, min_step)
+
 
 def _fix_fields_dots(fields: str) -> str:
     """Convert dot-notation fields to parentheses: orders.orderLines.desc → orders(orderLines(desc))"""
@@ -742,12 +853,15 @@ def _fix_date_range(query_params: dict, from_key: str, to_key: str):
     if from_val and to_val and isinstance(from_val, str) and isinstance(to_val, str):
         try:
             from datetime import timedelta
+
             from_date = date.fromisoformat(from_val)
             to_date = date.fromisoformat(to_val)
             if from_date >= to_date:
                 new_to = (from_date + timedelta(days=1)).isoformat()
                 query_params[to_key] = new_to
-                log.info(f"Validation: bumped {to_key} from {to_val} to {new_to} (must be > {from_key})")
+                log.info(
+                    f"Validation: bumped {to_key} from {to_val} to {new_to} (must be > {from_key})"
+                )
         except ValueError:
             pass
 
@@ -782,6 +896,26 @@ def _replace_ref_in_obj(obj, ref_pattern: str, replacement: int):
 
 # Status codes worth retrying with LLM fix (body/param errors)
 RETRYABLE_STATUS_CODES = {400, 422}
+
+
+def _find_unresolved_refs(obj, results: dict) -> list[str]:
+    """Find all $step_N refs in obj that can't resolve from results."""
+    import re
+    unresolved = []
+    text = json.dumps(obj, default=str)
+    for m in re.finditer(r'\$step_(\d+)\.\S+', text):
+        ref = m.group(0)
+        step_key = f"step_{m.group(1)}"
+        step_result = results.get(step_key)
+        if step_result is None:
+            unresolved.append(f"{ref} (step {m.group(1)} has no result)")
+        elif isinstance(step_result, dict) and step_result.get("skipped"):
+            unresolved.append(f"{ref} (step {m.group(1)} was skipped)")
+        elif isinstance(step_result, dict) and "values" in step_result:
+            vals = step_result["values"]
+            if isinstance(vals, list) and len(vals) == 0:
+                unresolved.append(f"{ref} (step {m.group(1)} returned empty list)")
+    return unresolved or ["unknown"]
 
 
 def _contains_unresolved(obj) -> bool:
@@ -869,7 +1003,8 @@ def _score_plan(plan: list[dict], prompt: str) -> float:
             has_emp_get = any(
                 s.get("args", {}).get("method") == "GET"
                 and s.get("args", {}).get("path") == "/employee"
-                for s in plan if s.get("tool_name") == "call_api"
+                for s in plan
+                if s.get("tool_name") == "call_api"
             )
             if not has_emp_get:
                 score -= 10
@@ -888,9 +1023,17 @@ def _score_plan(plan: list[dict], prompt: str) -> float:
     # Penalty: consecutive same-path POSTs that could use /list
     try:
         from endpoint_catalog import ENDPOINT_CARDS
+
         KNOWN_LIST_PATHS = {
-            "/customer", "/supplier", "/department", "/product", "/employee",
-            "/project", "/order", "/contact", "/order/orderline",
+            "/customer",
+            "/supplier",
+            "/department",
+            "/product",
+            "/employee",
+            "/project",
+            "/order",
+            "/contact",
+            "/order/orderline",
         }
         mergeable_paths = set(KNOWN_LIST_PATHS)
         for key in ENDPOINT_CARDS:
@@ -923,14 +1066,13 @@ def _score_plan(plan: list[dict], prompt: str) -> float:
     return score
 
 
-
 def build_agent():
     """Build the planner/executor StateGraph."""
     tools, tool_summaries = load_tools()
     tool_map = {t.name: t for t in tools}
 
-    planner_model = os.environ.get("GEMINI_PLANNER_MODEL", "gemini-2.5-pro")
-    heal_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    planner_model = os.environ.get("GEMINI_PLANNER_MODEL", "gemini-3.1-pro-preview")
+    heal_model = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
     api_key = os.environ["GOOGLE_API_KEY"]
 
     planner_llm = ChatGoogleGenerativeAI(
@@ -979,14 +1121,23 @@ def build_agent():
 
         # Generate plans in parallel
         with ThreadPoolExecutor(max_workers=2) as pool:
-            pro_future = pool.submit(_generate_plan, planner_llm, pro_prompt, f"Plan-A ({planner_model})")
-            challenger_future = pool.submit(_generate_plan, challenger_llm, challenger_prompt, f"Plan-B ({heal_model})")
+            pro_future = pool.submit(
+                _generate_plan, planner_llm, pro_prompt, f"Plan-A ({planner_model})"
+            )
+            challenger_future = pool.submit(
+                _generate_plan,
+                challenger_llm,
+                challenger_prompt,
+                f"Plan-B ({heal_model})",
+            )
             plan_a = pro_future.result()
             plan_b = challenger_future.result()
 
         score_a = _score_plan(plan_a, state["original_prompt"])
         score_b = _score_plan(plan_b, state["original_prompt"])
-        log.info(f"Plan scores: A={score_a:.1f} ({len(plan_a)} steps), B={score_b:.1f} ({len(plan_b)} steps)")
+        log.info(
+            f"Plan scores: A={score_a:.1f} ({len(plan_a)} steps), B={score_b:.1f} ({len(plan_b)} steps)"
+        )
 
         # Pick winner: prefer pro plan if within 5 points
         if score_b > score_a + 5:
@@ -1029,6 +1180,7 @@ def build_agent():
 
         try:
             from generic_tools import get_endpoint_card
+
             card = get_endpoint_card(method, path)
         except Exception:
             return resolved_args
@@ -1042,7 +1194,9 @@ def build_agent():
             # Handle simple field names (not compound descriptions like "request body")
             if field_name and " " not in field_name and field_name in body:
                 del body[field_name]
-                log.info(f"Schema pre-validation: stripped do_not_send field '{field_name}' — {dns.get('reason', '')}")
+                log.info(
+                    f"Schema pre-validation: stripped do_not_send field '{field_name}' — {dns.get('reason', '')}"
+                )
 
         if not card.get("fields"):
             return resolved_args
@@ -1055,7 +1209,9 @@ def build_agent():
                 default = finfo.get("default")
                 if default:
                     body[fname] = default
-                    log.info(f"Schema pre-validation: added missing required {fname}={default}")
+                    log.info(
+                        f"Schema pre-validation: added missing required {fname}={default}"
+                    )
                 elif fname == "deliveryDate" and "orderDate" in body:
                     body["deliveryDate"] = body["orderDate"]
                     log.info("Schema pre-validation: set deliveryDate=orderDate")
@@ -1089,7 +1245,9 @@ def build_agent():
                         if len(cpresent) > 1:
                             for f in cpresent[1:]:
                                 del item[f]
-                                log.info(f"Schema pre-validation: removed conflicting {f} from {fname} item")
+                                log.info(
+                                    f"Schema pre-validation: removed conflicting {f} from {fname} item"
+                                )
 
         # Validate reference format: {id: value} should have integer id
         for fname, finfo in fields.items():
@@ -1101,9 +1259,13 @@ def build_agent():
                         # Try to coerce string numbers to int
                         try:
                             ref["id"] = int(ref_id)
-                            log.info(f"Schema pre-validation: coerced {fname}.id to int")
+                            log.info(
+                                f"Schema pre-validation: coerced {fname}.id to int"
+                            )
                         except ValueError:
-                            log.warning(f"Schema pre-validation: {fname}.id='{ref_id}' is not a valid integer")
+                            log.warning(
+                                f"Schema pre-validation: {fname}.id='{ref_id}' is not a valid integer"
+                            )
 
         return resolved_args
 
@@ -1146,7 +1308,11 @@ def build_agent():
                     "completed_steps": completed,
                     "error_count": error_count,
                     "replan_count": replan_count,
-                    "messages": [AIMessage(content=f"Step {step['step_number']} done: bank account ensured")],
+                    "messages": [
+                        AIMessage(
+                            content=f"Step {step['step_number']} done: bank account ensured"
+                        )
+                    ],
                 }
 
         # Handle ensure_division meta-step
@@ -1165,16 +1331,29 @@ def build_agent():
                     "completed_steps": completed,
                     "error_count": error_count,
                     "replan_count": replan_count,
-                    "messages": [AIMessage(content=f"Step {step['step_number']} done: division ensured")],
+                    "messages": [
+                        AIMessage(
+                            content=f"Step {step['step_number']} done: division ensured"
+                        )
+                    ],
                 }
 
         # Resolve $step_N placeholders recursively through nested dicts/lists
         resolved_args = _resolve_placeholders_deep(args, results, llm)
 
-        # Skip steps with unresolved dependencies (e.g. empty search results)
+        # Fail steps with unresolved dependencies — log exactly which ref failed
         if _contains_unresolved(resolved_args):
-            log.warning(f"Step {step['step_number']} skipped: unresolved dependency from previous step")
-            results[f"step_{step['step_number']}"] = {"skipped": True, "reason": "unresolved_dependency"}
+            # Find which $step_N refs are unresolved
+            unresolved_refs = _find_unresolved_refs(args, results)
+            log.warning(
+                f"Step {step['step_number']} FAILED: unresolved refs: {unresolved_refs}. "
+                f"Original args: {json.dumps(args, default=str)[:300]}"
+            )
+            results[f"step_{step['step_number']}"] = {
+                "skipped": True,
+                "reason": f"unresolved: {unresolved_refs}",
+            }
+            error_count += 1
             completed.append(step["step_number"])
             return {
                 "current_step": step_idx + 1,
@@ -1182,11 +1361,19 @@ def build_agent():
                 "error_count": error_count,
                 "replan_count": replan_count,
                 "completed_steps": completed,
-                "messages": [AIMessage(content=f"Step {step['step_number']} skipped: dependency unresolved")],
+                "messages": [
+                    AIMessage(
+                        content=f"Step {step['step_number']} failed: unresolved {unresolved_refs}"
+                    )
+                ],
             }
 
         # Employee dedup: skip POST /employee if GET already found the employee
-        if tool_name == "call_api" and resolved_args.get("method") == "POST" and resolved_args.get("path") == "/employee":
+        if (
+            tool_name == "call_api"
+            and resolved_args.get("method") == "POST"
+            and resolved_args.get("path") == "/employee"
+        ):
             emp_email = None
             emp_body = resolved_args.get("body", {})
             if isinstance(emp_body, dict):
@@ -1199,8 +1386,13 @@ def build_agent():
                     prev_values = prev_result.get("values", [])
                     if isinstance(prev_values, list) and prev_values:
                         for v in prev_values:
-                            if isinstance(v, dict) and v.get("email", "").lower() == emp_email:
-                                log.info(f"Employee already exists (from {prev_key}, id={v.get('id')}), skipping POST /employee")
+                            if (
+                                isinstance(v, dict)
+                                and v.get("email", "").lower() == emp_email
+                            ):
+                                log.info(
+                                    f"Employee already exists (from {prev_key}, id={v.get('id')}), skipping POST /employee"
+                                )
                                 # Store the GET result as this step's result so downstream $step refs work
                                 results[f"step_{step['step_number']}"] = {"value": v}
                                 completed.append(step["step_number"])
@@ -1210,7 +1402,11 @@ def build_agent():
                                     "completed_steps": completed,
                                     "error_count": error_count,
                                     "replan_count": replan_count,
-                                    "messages": [AIMessage(content=f"Step {step['step_number']} skipped: employee {emp_email} already exists (id={v.get('id')})")],
+                                    "messages": [
+                                        AIMessage(
+                                            content=f"Step {step['step_number']} skipped: employee {emp_email} already exists (id={v.get('id')})"
+                                        )
+                                    ],
                                 }
 
         # Call the tool
@@ -1262,7 +1458,10 @@ def build_agent():
             except (json.JSONDecodeError, TypeError):
                 parsed = {"raw": result_str}
             results[f"step_{step['step_number']}"] = parsed
-            log.info(f"Step {step['step_number']} completed", result_preview=str(parsed)[:500])
+            log.info(
+                f"Step {step['step_number']} completed",
+                result_preview=str(parsed)[:500],
+            )
             completed.append(step["step_number"])
             return {
                 "current_step": step_idx + 1,
@@ -1270,7 +1469,11 @@ def build_agent():
                 "completed_steps": completed,
                 "error_count": error_count,
                 "replan_count": replan_count,
-                "messages": [AIMessage(content=f"Step {step['step_number']} done: {str(parsed)[:200]}")],
+                "messages": [
+                    AIMessage(
+                        content=f"Step {step['step_number']} done: {str(parsed)[:200]}"
+                    )
+                ],
             }
 
         # API error — try deterministic fixes first, then LLM replan
@@ -1278,7 +1481,9 @@ def build_agent():
 
         # Deterministic fix: bank account not registered
         if status_code in RETRYABLE_STATUS_CODES and "bankkontonummer" in error_lower:
-            log.info("Deterministic fix: bank account missing, running ensure_bank_account and retrying")
+            log.info(
+                "Deterministic fix: bank account missing, running ensure_bank_account and retrying"
+            )
             call_api_tool = tool_map.get("call_api")
             if call_api_tool:
                 _, _, error_count = _ensure_bank_account(call_api_tool, error_count)
@@ -1291,7 +1496,9 @@ def build_agent():
                         except (json.JSONDecodeError, TypeError):
                             parsed = {"raw": retry_result_str}
                         results[f"step_{step['step_number']}"] = parsed
-                        log.info(f"Step {step['step_number']} succeeded after bank account fix")
+                        log.info(
+                            f"Step {step['step_number']} succeeded after bank account fix"
+                        )
                         completed.append(step["step_number"])
                         return {
                             "current_step": step_idx + 1,
@@ -1299,20 +1506,31 @@ def build_agent():
                             "completed_steps": completed,
                             "error_count": error_count,
                             "replan_count": replan_count,
-                            "messages": [AIMessage(content=f"Step {step['step_number']} done (bank account fixed): {str(parsed)[:200]}")],
+                            "messages": [
+                                AIMessage(
+                                    content=f"Step {step['step_number']} done (bank account fixed): {str(parsed)[:200]}"
+                                )
+                            ],
                         }
                 except Exception:
                     pass  # fall through to LLM replan
 
         # Deterministic fix: missing department.id on employee
-        if status_code in RETRYABLE_STATUS_CODES and "department" in error_lower and "/employee" in resolved_args.get("path", ""):
+        if (
+            status_code in RETRYABLE_STATUS_CODES
+            and "department" in error_lower
+            and "/employee" in resolved_args.get("path", "")
+        ):
             log.info("Deterministic fix: missing department.id, fetching department")
             call_api_tool = tool_map.get("call_api")
             if call_api_tool:
-                dept_result = call_api_tool.invoke({
-                    "method": "GET", "path": "/department",
-                    "query_params": {"from": 0, "count": 1, "fields": "id"},
-                })
+                dept_result = call_api_tool.invoke(
+                    {
+                        "method": "GET",
+                        "path": "/department",
+                        "query_params": {"from": 0, "count": 1, "fields": "id"},
+                    }
+                )
                 try:
                     dept_parsed = json.loads(dept_result)
                     dept_values = dept_parsed.get("values", [])
@@ -1328,7 +1546,9 @@ def build_agent():
                                 except (json.JSONDecodeError, TypeError):
                                     parsed = {"raw": retry_result_str}
                                 results[f"step_{step['step_number']}"] = parsed
-                                log.info(f"Step {step['step_number']} succeeded after department fix")
+                                log.info(
+                                    f"Step {step['step_number']} succeeded after department fix"
+                                )
                                 completed.append(step["step_number"])
                                 return {
                                     "current_step": step_idx + 1,
@@ -1336,14 +1556,24 @@ def build_agent():
                                     "completed_steps": completed,
                                     "error_count": error_count,
                                     "replan_count": replan_count,
-                                    "messages": [AIMessage(content=f"Step {step['step_number']} done (department fixed)")],
+                                    "messages": [
+                                        AIMessage(
+                                            content=f"Step {step['step_number']} done (department fixed)"
+                                        )
+                                    ],
                                 }
                 except (json.JSONDecodeError, TypeError, Exception):
                     pass  # fall through to LLM replan
 
         # Deterministic fix: duplicate product number
-        if status_code in RETRYABLE_STATUS_CODES and "produktnummeret" in error_lower and "er i bruk" in error_lower:
-            log.info("Deterministic fix: duplicate product number, stripping number field")
+        if (
+            status_code in RETRYABLE_STATUS_CODES
+            and "produktnummeret" in error_lower
+            and "er i bruk" in error_lower
+        ):
+            log.info(
+                "Deterministic fix: duplicate product number, stripping number field"
+            )
             body = resolved_args.get("body")
             if isinstance(body, list):
                 for item in body:
@@ -1360,7 +1590,9 @@ def build_agent():
                     except (json.JSONDecodeError, TypeError):
                         parsed = {"raw": retry_result_str}
                     results[f"step_{step['step_number']}"] = parsed
-                    log.info(f"Step {step['step_number']} succeeded after product number fix")
+                    log.info(
+                        f"Step {step['step_number']} succeeded after product number fix"
+                    )
                     completed.append(step["step_number"])
                     return {
                         "current_step": step_idx + 1,
@@ -1368,7 +1600,11 @@ def build_agent():
                         "completed_steps": completed,
                         "error_count": error_count,
                         "replan_count": replan_count,
-                        "messages": [AIMessage(content=f"Step {step['step_number']} done (product number fixed)")],
+                        "messages": [
+                            AIMessage(
+                                content=f"Step {step['step_number']} done (product number fixed)"
+                            )
+                        ],
                     }
             except Exception:
                 pass  # fall through to LLM replan
@@ -1376,7 +1612,9 @@ def build_agent():
         # (Duplicate email handler removed — executor-level employee dedup skip prevents this)
 
         # Deterministic fix: price field conflict (priceIncludingVatCurrency vs priceExcludingVatCurrency)
-        if status_code in RETRYABLE_STATUS_CODES and ("priceincludingvat" in error_lower or "price" in error_lower):
+        if status_code in RETRYABLE_STATUS_CODES and (
+            "priceincludingvat" in error_lower or "price" in error_lower
+        ):
             body = resolved_args.get("body")
             fixed = False
             items_to_check = []
@@ -1387,12 +1625,19 @@ def build_agent():
                 # Also check nested arrays like orderLines
                 for v in body.values():
                     if isinstance(v, list):
-                        items_to_check.extend(item for item in v if isinstance(item, dict))
+                        items_to_check.extend(
+                            item for item in v if isinstance(item, dict)
+                        )
             for item in items_to_check:
-                if "priceIncludingVatCurrency" in item and "priceExcludingVatCurrency" in item:
+                if (
+                    "priceIncludingVatCurrency" in item
+                    and "priceExcludingVatCurrency" in item
+                ):
                     del item["priceIncludingVatCurrency"]
                     fixed = True
-                    log.info("Deterministic fix: removed priceIncludingVatCurrency (conflicts with priceExcludingVatCurrency)")
+                    log.info(
+                        "Deterministic fix: removed priceIncludingVatCurrency (conflicts with priceExcludingVatCurrency)"
+                    )
             if fixed:
                 try:
                     retry_result_str = tool.invoke(resolved_args)
@@ -1403,7 +1648,9 @@ def build_agent():
                         except (json.JSONDecodeError, TypeError):
                             parsed = {"raw": retry_result_str}
                         results[f"step_{step['step_number']}"] = parsed
-                        log.info(f"Step {step['step_number']} succeeded after price field conflict fix")
+                        log.info(
+                            f"Step {step['step_number']} succeeded after price field conflict fix"
+                        )
                         completed.append(step["step_number"])
                         return {
                             "current_step": step_idx + 1,
@@ -1411,13 +1658,25 @@ def build_agent():
                             "completed_steps": completed,
                             "error_count": error_count,
                             "replan_count": replan_count,
-                            "messages": [AIMessage(content=f"Step {step['step_number']} done (price conflict fixed)")],
+                            "messages": [
+                                AIMessage(
+                                    content=f"Step {step['step_number']} done (price conflict fixed)"
+                                )
+                            ],
                         }
                 except Exception:
                     pass
 
         # Deterministic fix: voucher posting row numbering error
-        if status_code in RETRYABLE_STATUS_CODES and ("rad 0" in error_lower or "guirow" in error_lower or "row" in error_lower) and "/ledger/voucher" in resolved_args.get("path", ""):
+        if (
+            status_code in RETRYABLE_STATUS_CODES
+            and (
+                "rad 0" in error_lower
+                or "guirow" in error_lower
+                or "row" in error_lower
+            )
+            and "/ledger/voucher" in resolved_args.get("path", "")
+        ):
             body = resolved_args.get("body")
             if isinstance(body, dict) and "postings" in body:
                 postings = body["postings"]
@@ -1425,7 +1684,9 @@ def build_agent():
                     for idx_p, posting in enumerate(postings):
                         if isinstance(posting, dict):
                             posting["row"] = idx_p + 1
-                    log.info(f"Deterministic fix: re-numbered {len(postings)} voucher postings from row 1")
+                    log.info(
+                        f"Deterministic fix: re-numbered {len(postings)} voucher postings from row 1"
+                    )
                     try:
                         retry_result_str = tool.invoke(resolved_args)
                         retry_is_error, _ = _is_api_error(retry_result_str)
@@ -1435,7 +1696,9 @@ def build_agent():
                             except (json.JSONDecodeError, TypeError):
                                 parsed = {"raw": retry_result_str}
                             results[f"step_{step['step_number']}"] = parsed
-                            log.info(f"Step {step['step_number']} succeeded after row numbering fix")
+                            log.info(
+                                f"Step {step['step_number']} succeeded after row numbering fix"
+                            )
                             completed.append(step["step_number"])
                             return {
                                 "current_step": step_idx + 1,
@@ -1443,196 +1706,46 @@ def build_agent():
                                 "completed_steps": completed,
                                 "error_count": error_count,
                                 "replan_count": replan_count,
-                                "messages": [AIMessage(content=f"Step {step['step_number']} done (row numbering fixed)")],
+                                "messages": [
+                                    AIMessage(
+                                        content=f"Step {step['step_number']} done (row numbering fixed)"
+                                    )
+                                ],
                             }
                     except Exception:
                         pass
 
-        # ── Self-heal cascade: FIX_ARGS → REPLAN → REPLAN ──
-        # Skip self-heal in local testing for fast iteration
-        skip_self_heal = os.environ.get("SKIP_SELF_HEAL", "").lower() in ("1", "true", "yes")
-        if skip_self_heal:
-            log.warning(f"SKIP_SELF_HEAL: API error {status_code} on {resolved_args.get('method')} {resolved_args.get('path')}: {result_str[:500]}")
-            error_count += 1
-            return {
-                "current_step": step_idx + 1,
-                "results": results,
-                "completed_steps": completed,
-                "error_count": error_count,
-                "replan_count": replan_count,
-                "messages": [AIMessage(content=f"Step {step['step_number']} failed: {result_str[:200]}")],
-            }
-        if status_code in RETRYABLE_STATUS_CODES and replan_count < MAX_REPLANS:
-            # Attempt 1: Quick FIX_ARGS (fast, targeted fix)
-            if replan_count == 0:
-                log.warning(f"API error {status_code}, attempting FIX_ARGS fast path (attempt 1/{MAX_REPLANS})")
-                fixed_args = _ask_llm_to_fix_args(heal_llm, resolved_args, result_str)
-                if fixed_args:
-                    _log_self_heal(tool.name, resolved_args, result_str, fixed_args, retry_succeeded=True)
+        # ── Self-heal: FIX_ARGS only (1 attempt, no REPLAN) ──
+        if status_code in RETRYABLE_STATUS_CODES and replan_count == 0:
+            log.warning(f"API error {status_code}, attempting FIX_ARGS")
+            fixed_args = _ask_llm_to_fix_args(heal_llm, resolved_args, result_str)
+            if fixed_args:
+                _log_self_heal(tool.name, resolved_args, result_str, fixed_args, retry_succeeded=True)
+                try:
+                    retry_result_str = tool.invoke(fixed_args)
+                except Exception as e:
+                    retry_result_str = json.dumps({"error": str(e)})
+
+                retry_is_error, retry_status = _is_api_error(retry_result_str)
+                if not retry_is_error:
                     try:
-                        retry_result_str = tool.invoke(fixed_args)
-                    except Exception as e:
-                        retry_result_str = json.dumps({"error": str(e)})
-
-                    retry_is_error, retry_status = _is_api_error(retry_result_str)
-                    if not retry_is_error:
-                        try:
-                            parsed = json.loads(retry_result_str)
-                        except (json.JSONDecodeError, TypeError):
-                            parsed = {"raw": retry_result_str}
-                        results[f"step_{step['step_number']}"] = parsed
-                        log.info(f"Step {step['step_number']} succeeded after FIX_ARGS")
-                        completed.append(step["step_number"])
-                        return {
-                            "current_step": step_idx + 1,
-                            "results": results,
-                            "completed_steps": completed,
-                            "error_count": error_count,
-                            "replan_count": replan_count + 1,
-                            "messages": [AIMessage(content=f"Step {step['step_number']} done (FIX_ARGS): {str(parsed)[:200]}")],
-                        }
-                    else:
-                        log.warning(f"FIX_ARGS retry failed with status {retry_status}, escalating to REPLAN")
-                        _log_self_heal(tool.name, resolved_args, result_str, fixed_args, retry_succeeded=False)
-                        # Update error context for next attempt
-                        result_str = retry_result_str
-                        replan_count += 1
-
-            # Attempts 2-3: Full REPLAN (retry/skip/replace)
-            if replan_count < MAX_REPLANS:
-                log.warning(f"API error {status_code}, attempting REPLAN ({replan_count+1}/{MAX_REPLANS})")
-
-                replan_result = _ask_llm_to_replan(
-                    heal_llm, resolved_args, result_str,
-                    plan[step_idx + 1:],
-                    results,
-                    state["original_prompt"],
-                    step["step_number"] + 1,
-                )
-
-                if replan_result and replan_result.get("action") == "retry":
-                    fixed_args = replan_result.get("args", {})
-                    _log_self_heal(tool.name, resolved_args, result_str, fixed_args, retry_succeeded=True)
-                    try:
-                        retry_result_str = tool.invoke(fixed_args)
-                    except Exception as e:
-                        retry_result_str = json.dumps({"error": str(e)})
-
-                    retry_is_error, retry_status = _is_api_error(retry_result_str)
-                    if not retry_is_error:
-                        try:
-                            parsed = json.loads(retry_result_str)
-                        except (json.JSONDecodeError, TypeError):
-                            parsed = {"raw": retry_result_str}
-                        results[f"step_{step['step_number']}"] = parsed
-                        log.info(f"Step {step['step_number']} succeeded after REPLAN retry")
-                        completed.append(step["step_number"])
-                        return {
-                            "current_step": step_idx + 1,
-                            "results": results,
-                            "completed_steps": completed,
-                            "error_count": error_count,
-                            "replan_count": replan_count + 1,
-                            "messages": [AIMessage(content=f"Step {step['step_number']} done (REPLAN retry): {str(parsed)[:200]}")],
-                        }
-                    else:
-                        log.warning(f"REPLAN retry also failed with status {retry_status}")
-                        _log_self_heal(tool.name, resolved_args, result_str, fixed_args, retry_succeeded=False)
-                        # If we still have budget, loop back for another REPLAN
-                        replan_count += 1
-                        result_str = retry_result_str
-                        if replan_count < MAX_REPLANS:
-                            log.warning(f"Escalating to REPLAN attempt {replan_count+1}/{MAX_REPLANS}")
-                            replan_result2 = _ask_llm_to_replan(
-                                heal_llm, resolved_args, result_str,
-                                plan[step_idx + 1:],
-                                results,
-                                state["original_prompt"],
-                                step["step_number"] + 1,
-                            )
-                            if replan_result2 and replan_result2.get("action") == "retry":
-                                fixed_args2 = replan_result2.get("args", {})
-                                try:
-                                    retry_result_str2 = tool.invoke(fixed_args2)
-                                except Exception as e:
-                                    retry_result_str2 = json.dumps({"error": str(e)})
-                                retry_is_error2, _ = _is_api_error(retry_result_str2)
-                                if not retry_is_error2:
-                                    try:
-                                        parsed = json.loads(retry_result_str2)
-                                    except (json.JSONDecodeError, TypeError):
-                                        parsed = {"raw": retry_result_str2}
-                                    results[f"step_{step['step_number']}"] = parsed
-                                    log.info(f"Step {step['step_number']} succeeded on REPLAN attempt 3")
-                                    completed.append(step["step_number"])
-                                    return {
-                                        "current_step": step_idx + 1,
-                                        "results": results,
-                                        "completed_steps": completed,
-                                        "error_count": error_count,
-                                        "replan_count": replan_count + 1,
-                                        "messages": [AIMessage(content=f"Step {step['step_number']} done (REPLAN 3): {str(parsed)[:200]}")],
-                                    }
-                            elif replan_result2 and replan_result2.get("action") == "skip":
-                                reason = replan_result2.get("reason", "replan decided to skip")
-                                log.info(f"Replan 3: skipping step {step['step_number']} — {reason}")
-                                results[f"step_{step['step_number']}"] = {"skipped": True, "reason": reason}
-                                completed.append(step["step_number"])
-                                return {
-                                    "current_step": step_idx + 1,
-                                    "results": results,
-                                    "completed_steps": completed,
-                                    "error_count": error_count + 1,
-                                    "replan_count": replan_count + 1,
-                                    "messages": [AIMessage(content=f"Step {step['step_number']} skipped by replan 3: {reason}")],
-                                }
-                            elif replan_result2 and replan_result2.get("action") == "replace":
-                                new_steps = replan_result2.get("steps", [])
-                                log.info(f"Replan 3: replacing with {len(new_steps)} new steps")
-                                new_plan = plan[:step_idx] + new_steps
-                                results[f"step_{step['step_number']}"] = {"skipped": True, "reason": "replaced by replan"}
-                                completed.append(step["step_number"])
-                                return {
-                                    "plan": new_plan,
-                                    "current_step": step_idx + 1 if not new_steps else step_idx,
-                                    "results": results,
-                                    "completed_steps": completed,
-                                    "error_count": error_count + 1,
-                                    "replan_count": replan_count + 1,
-                                    "messages": [AIMessage(content=f"Step {step['step_number']} replaced by replan 3 ({len(new_steps)} new steps)")],
-                                }
-
-                elif replan_result and replan_result.get("action") == "skip":
-                    reason = replan_result.get("reason", "replan decided to skip")
-                    log.info(f"Replan: skipping step {step['step_number']} — {reason}")
-                    results[f"step_{step['step_number']}"] = {"skipped": True, "reason": reason}
+                        parsed = json.loads(retry_result_str)
+                    except (json.JSONDecodeError, TypeError):
+                        parsed = {"raw": retry_result_str}
+                    results[f"step_{step['step_number']}"] = parsed
+                    log.info(f"Step {step['step_number']} succeeded after FIX_ARGS")
                     completed.append(step["step_number"])
                     return {
                         "current_step": step_idx + 1,
                         "results": results,
                         "completed_steps": completed,
-                        "error_count": error_count + 1,
-                        "replan_count": replan_count + 1,
-                        "messages": [AIMessage(content=f"Step {step['step_number']} skipped by replan: {reason}")],
+                        "error_count": error_count,
+                        "replan_count": 1,
+                        "messages": [AIMessage(content=f"Step {step['step_number']} done (FIX_ARGS): {str(parsed)[:200]}")],
                     }
-
-                elif replan_result and replan_result.get("action") == "replace":
-                    new_steps = replan_result.get("steps", [])
-                    log.info(f"Replan: replacing step {step['step_number']} + remaining with {len(new_steps)} new steps")
-                    new_plan = plan[:step_idx] + new_steps
-                    results[f"step_{step['step_number']}"] = {"skipped": True, "reason": "replaced by replan"}
-                    completed.append(step["step_number"])
-                    return {
-                        "plan": new_plan,
-                        "current_step": step_idx + 1 if not new_steps else step_idx,
-                        "results": results,
-                        "completed_steps": completed,
-                        "error_count": error_count + 1,
-                        "replan_count": replan_count + 1,
-                        "messages": [AIMessage(content=f"Step {step['step_number']} replaced by replan ({len(new_steps)} new steps)")],
-                    }
-        elif status_code not in RETRYABLE_STATUS_CODES:
-            log.warning(f"API error {status_code} — not retryable, skipping self-heal")
+                else:
+                    log.warning(f"FIX_ARGS retry also failed with status {retry_status}")
+                    _log_self_heal(tool.name, resolved_args, result_str, fixed_args, retry_succeeded=False)
 
         # Out of replans or non-retryable — record error and move on
         log.warning(f"Step {step['step_number']} failed with status {status_code}")
@@ -1649,7 +1762,11 @@ def build_agent():
             "completed_steps": completed,
             "error_count": error_count,
             "replan_count": replan_count,
-            "messages": [AIMessage(content=f"Step {step['step_number']} failed: {str(parsed)[:200]}")],
+            "messages": [
+                AIMessage(
+                    content=f"Step {step['step_number']} failed: {str(parsed)[:200]}"
+                )
+            ],
         }
 
     # --- Node: check_done ---
@@ -1670,7 +1787,12 @@ def build_agent():
         results = state.get("results", {})
         plan = state.get("plan", [])
         has_failures = any(
-            isinstance(r, dict) and (r.get("skipped") or r.get("error") or (isinstance(r.get("status"), int) and r["status"] >= 400))
+            isinstance(r, dict)
+            and (
+                r.get("skipped")
+                or r.get("error")
+                or (isinstance(r.get("status"), int) and r["status"] >= 400)
+            )
             for r in results.values()
         )
 
@@ -1698,8 +1820,14 @@ def build_agent():
         for s in plan:
             key = f"step_{s['step_number']}"
             r = results.get(key, {})
-            if isinstance(r, dict) and (r.get("skipped") or r.get("error") or (isinstance(r.get("status"), int) and r["status"] >= 400)):
-                failed_steps_list.append(f"  Step {s['step_number']}: {s.get('description', '?')} — {json.dumps(r, default=str)[:200]}")
+            if isinstance(r, dict) and (
+                r.get("skipped")
+                or r.get("error")
+                or (isinstance(r.get("status"), int) and r["status"] >= 400)
+            ):
+                failed_steps_list.append(
+                    f"  Step {s['step_number']}: {s.get('description', '?')} — {json.dumps(r, default=str)[:200]}"
+                )
         failed_str = "\n".join(failed_steps_list) if failed_steps_list else "  (none)"
 
         next_step = max((s["step_number"] for s in plan), default=0) + 1
@@ -1724,17 +1852,42 @@ def build_agent():
                 else:
                     corrective_steps = parsed.get("corrective_steps", [])
                     if corrective_steps:
+                        # Fix malformed corrective steps (e.g., "endpoint" instead of "method"+"path")
+                        for cs in corrective_steps:
+                            args = cs.get("args", {})
+                            if "endpoint" in args and "method" not in args:
+                                ep = args.pop("endpoint", "")
+                                parts = ep.strip().split(" ", 1)
+                                if len(parts) == 2:
+                                    args["method"] = parts[0]
+                                    args["path"] = parts[1]
+                                elif ep.startswith("/"):
+                                    args["method"] = "GET"
+                                    args["path"] = ep
+                                log.info(
+                                    f"Verifier: fixed malformed step format (endpoint → method+path)"
+                                )
                         corrective_steps = validate_plan(corrective_steps)
-                        log.info(f"Verifier: task incomplete, adding {len(corrective_steps)} corrective steps")
+                        log.info(
+                            f"Verifier: task incomplete, adding {len(corrective_steps)} corrective steps"
+                        )
                         new_plan = plan + corrective_steps
                         return {
                             "plan": new_plan,
-                            "current_step": len(plan),  # start executing from the new steps
+                            "current_step": len(
+                                plan
+                            ),  # start executing from the new steps
                             "verification_attempts": verification_attempts + 1,
-                            "messages": [AIMessage(content=f"Verifier adding {len(corrective_steps)} corrective steps")],
+                            "messages": [
+                                AIMessage(
+                                    content=f"Verifier adding {len(corrective_steps)} corrective steps"
+                                )
+                            ],
                         }
                     else:
-                        log.info("Verifier: task incomplete but no corrective steps suggested")
+                        log.info(
+                            "Verifier: task incomplete but no corrective steps suggested"
+                        )
                         return {"verification_attempts": verification_attempts + 1}
         except Exception as e:
             log.warning(f"Verifier LLM call failed: {e}")
@@ -1896,6 +2049,7 @@ def _ask_llm_to_replan(
     # Get endpoint schema for rich context
     try:
         from generic_tools import get_endpoint_schema, get_common_errors
+
         endpoint_schema = get_endpoint_schema(method, path)
         common_errors = get_common_errors(method, path)
     except Exception:
@@ -1903,7 +2057,11 @@ def _ask_llm_to_replan(
         common_errors = "(none)"
 
     # Format remaining steps and previous results compactly
-    remaining_str = json.dumps(remaining_steps, indent=2, default=str)[:2000] if remaining_steps else "[]"
+    remaining_str = (
+        json.dumps(remaining_steps, indent=2, default=str)[:2000]
+        if remaining_steps
+        else "[]"
+    )
     results_str = json.dumps(
         {k: str(v)[:200] for k, v in results.items()},
         indent=2,
@@ -1952,6 +2110,7 @@ def _ask_llm_to_fix_args(
 
     try:
         from generic_tools import get_endpoint_schema, get_common_errors
+
         endpoint_schema = get_endpoint_schema(method, path)
         common_errors = get_common_errors(method, path)
     except Exception:
@@ -1961,7 +2120,9 @@ def _ask_llm_to_fix_args(
     prompt = FIX_ARGS_PROMPT.format(
         method=method,
         path=path,
-        query_params=json.dumps(original_args.get("query_params"), indent=2, default=str),
+        query_params=json.dumps(
+            original_args.get("query_params"), indent=2, default=str
+        ),
         body=json.dumps(original_args.get("body"), indent=2, default=str)[:2000],
         error_response=error_response[:2000],
         endpoint_schema=str(endpoint_schema)[:3000],
@@ -1974,7 +2135,9 @@ def _ask_llm_to_fix_args(
         parsed = _parse_json_object(raw)
         if parsed and isinstance(parsed, dict) and "method" in parsed:
             # Sanitize /v2 prefix from path
-            if isinstance(parsed.get("path"), str) and parsed["path"].startswith("/v2/"):
+            if isinstance(parsed.get("path"), str) and parsed["path"].startswith(
+                "/v2/"
+            ):
                 parsed["path"] = parsed["path"][3:]
             log.info("FIX_ARGS returned fixed args", fix=parsed)
             return parsed
@@ -2052,9 +2215,13 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
         false_ref = ternary.group(3)
         # Evaluate the condition: does step_A have non-empty values?
         check_result = results.get(check_step, {})
-        values = check_result.get("values", []) if isinstance(check_result, dict) else []
+        values = (
+            check_result.get("values", []) if isinstance(check_result, dict) else []
+        )
         chosen = true_ref if values else false_ref
-        log.info(f"Resolved ternary placeholder: chose {'true' if values else 'false'} branch → {chosen}")
+        log.info(
+            f"Resolved ternary placeholder: chose {'true' if values else 'false'} branch → {chosen}"
+        )
         return _resolve_placeholder(chosen, results, llm)
 
     # Handle OR fallback: "123 || $step_N.path" or "$step_N.path || 123"
@@ -2123,7 +2290,9 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
             if isinstance(obj, list) and idx < len(obj):
                 obj = obj[idx]
             else:
-                log.debug(f"Index [{idx}] out of bounds (list length {len(obj) if isinstance(obj, list) else 'N/A'})")
+                log.debug(
+                    f"Index [{idx}] out of bounds (list length {len(obj) if isinstance(obj, list) else 'N/A'})"
+                )
                 return _UNRESOLVED
 
     if obj is not None:

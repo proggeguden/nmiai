@@ -1,0 +1,29 @@
+[
+  {
+    "id": 1,
+    "prompt": "Gjer månavslutninga for mars 2026. Periodiser forskotsbetalt kostnad (11700 kr per månad frå konto 1720 til kostnadskonto). Bokfør månadleg avskriving for eit driftsmiddel med innkjøpskost 191700 kr og levetid 7 år (lineær avskriving til konto 6030). Kontroller at saldobalansen går i null. Bokfør også ei lønnsavsetjing (debet lønnskostnad konto 5000, kredit påløpt lønn konto 2900).",
+    "language": "nn",
+    "category": "voucher",
+    "source": "submission",
+    "description": "Month-end closing: prepaid expense, depreciation, salary accrual (Nynorsk)",
+    "task_number": 26,
+    "old": false
+  },
+  {
+    "id": 2,
+    "prompt": "Enviámos uma fatura de 4885 EUR ao Luz do Sol Lda (org. nº 947361074) quando a taxa de câmbio era 11.81 NOK/EUR. O cliente pagou agora, mas a taxa é 10.83 NOK/EUR. Registe o pagamento e lance a diferença cambial (disagio) na conta correta.",
+    "task_number": 27,
+    "old": false
+  },
+  {
+    "id": 3,
+    "prompt": "Registe uma despesa de viagem para André Martins (andre.martins@example.org) referente a 'Visita cliente Trondheim'. A viagem durou 5 dias com ajudas de custo (taxa diária 800 NOK). Despesas: bilhete de avião 7600 NOK e táxi 350 NOK.",
+    "task_number": 13,
+    "old": true
+  },
+  {
+    "id": 4,
+    "prompt": "Execute the complete project lifecycle for 'System Upgrade Windmill' (Windmill Ltd, org no. 978714609): 1) The project has a budget of 336750 NOK. 2) Log time: Grace Walker (project manager, grace.walker@example.org) 46 hours and Edward Smith (consultant, edward.smith@example.org) 90 hours. 3) Register supplier cost of 60750 NOK from Greenfield Ltd (org no. 975733173). 4) Create a customer invoice for the project.",
+    "task_number": 29
+  }
+]

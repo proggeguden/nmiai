@@ -34,6 +34,7 @@ BASE_URL = os.environ.get("TEST_SERVER_URL", "http://localhost:8080")
 SANDBOX_API_URL = os.environ.get("SANDBOX_BASE_URL", "https://kkpqfuj-amager.tripletex.dev/v2")
 SANDBOX_TOKEN = os.environ.get("SANDBOX_SESSION_TOKEN", "")
 PROMPTS_FILE = os.path.join(os.path.dirname(__file__), "md", "test_prompts.json")
+NEW_PROMPTS_FILE = os.path.join(os.path.dirname(__file__), "md", "new_submission_prompts.json")
 
 SANDBOX_AUTH = ("0", SANDBOX_TOKEN) if SANDBOX_TOKEN else None
 
@@ -178,12 +179,45 @@ def print_summary(results: list[dict]):
     print(f"\n{ok_count}/{len(results)} passed")
 
 
+def load_new_prompts() -> list[dict]:
+    with open(NEW_PROMPTS_FILE) as f:
+        return json.load(f)
+
+
 def main():
     prompts = load_prompts()
     categories = sorted(set(p["category"] for p in prompts))
 
     arg = sys.argv[1] if len(sys.argv) > 1 else None
     arg2 = sys.argv[2] if len(sys.argv) > 2 else None
+
+    # Run from new_submission_prompts.json: python3 test_local.py --new <id>
+    if arg == "--new":
+        new_prompts = load_new_prompts()
+        if arg2 and arg2.isdigit():
+            test = next((p for p in new_prompts if p["id"] == int(arg2)), None)
+            if not test:
+                print(f"New prompt ID {arg2} not found")
+                sys.exit(1)
+            tests_to_run = [test]
+        else:
+            tests_to_run = new_prompts
+        check_health()
+        results = []
+        for t in tests_to_run:
+            # Don't randomize production prompts — test exactly as submitted
+            label = f"[new-{t['id']}] {t.get('description', '')} (task {t.get('task_number', '?')})"
+            result = call_solve(t["prompt"], label)
+            result["test_id"] = t["id"]
+            result["category"] = t.get("category", "")
+            result["description"] = t.get("description", "")
+            results.append(result)
+        # Print summary inline (don't use print_summary which reads old file)
+        print(f"\n{'='*70}")
+        for r in results:
+            s = "OK" if r["status"] == 200 else f"ERR {r['status']}"
+            print(f"[new-{r['test_id']}] {s} {r['elapsed']:.1f}s — {r.get('description','')}")
+        sys.exit(0)
 
     # List tests
     if arg == "list":
