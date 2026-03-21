@@ -281,6 +281,35 @@ All 4 priority items implemented and submitted:
 | R11 | 79.7 | 61/171 | 0.074 | 0.029 |
 | R12 | 59.4 | 38/146 | 0.165 | 0.112 |
 | R13 | 73.2 | 126/186 | 0.104 | 0.024 |
+| R14 | 74.1 | 71/244 | 0.082 | 0.047 |
+| R15 | pending | — | — | — |
+
+### R14 analysis and expansion modulation fix (2026-03-21 afternoon)
+
+**R14 scored 74.06 (rank 71/244)** — degraded by accidental resubmission with only 5 observations (rate-limited). Estimated ~79 with proper data. Still our best weighted at 146.6 (R14 weight=1.98).
+
+**R14 error analysis revealed root cause of Settlement over-prediction:**
+- Settlement over-predicted by +11% on Plains (pred 39% vs GT 28%)
+- This was 63% of total KL loss — the dominant error across ALL rounds
+- Root cause: **Step 1.75 expansion modulation was double-counting** the expansion signal already captured by the spatial bucket model
+- The spatial model learns P(Settlement | Plains, features) from observations
+- Step 1.75 then separately estimates expansion_rate from the SAME observations and scales Settlement predictions multiplicatively → applying the signal twice
+- On a typical round: spatial model predicts 25% Settlement, expansion modulation scales by 1.4x → 35%, but GT is 28%
+
+**Fix: dampened expansion modulation**
+- Changed from full override (`scale = expansion_rate / model_avg`) to 30% dampened correction (`scale = 1.0 + 0.3 * (raw_scale - 1.0)`)
+- Tightened clamp from [0.3, 3.5] to [0.7, 1.5]
+- Result: **SimProd KL 0.1027 → 0.0612 (-40.4%)**, every round improved
+
+**Port fixes:**
+- Increased per-cell blending K from 8→15 (ports have too few observations for aggressive blending)
+- Reduced port calibration multipliers (1.5→1.0, 0.8→0.5) and caps (0.40→0.25, 0.25→0.15)
+
+**MC simulator disabled:** Hurts +1.1% in simulated production (+3.7% on R12). Uncalibrated per-year rates add noise.
+
+**Query bug fixed:** observe_seed now uses ALL allocated queries (coverage + repeats of top tiles) with rate-limit retry on 429 errors. Never waste queries.
+
+**R15 submitted** with all fixes. Survival=34.6%, 60 spatial buckets, 50/50 queries used.
 
 ---
 

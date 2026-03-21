@@ -83,7 +83,6 @@ position, population, food, wealth, defense, tech level, port status, longship o
 **Current approach**: Allocate queries proportional to settlement density across all 5 seeds →
 learn spatial transition model P(final_class | bucket_key) with Bayesian smoothing → apply to all seeds.
 Per-cell observations blended with adaptive k (terrain-dependent).
-On high-survival rounds (>50%), Monte Carlo simulation blended at 5% weight.
 
 **Why this works**: Hidden parameters are shared across all seeds. More seeds give
 more diverse terrain layouts → better spatial bucket coverage → better model.
@@ -100,29 +99,24 @@ more diverse terrain layouts → better spatial bucket coverage → better model
 - Bayesian smoothing towards global prior (K=3-10 per terrain)
 
 **Post-model adjustments (applied after spatial model, before floor)**:
-- Rate-adaptive port calibration (Step 1.5): uses observed port_formation_rate to scale port minimums for coastal cells d≤5. On high-port rounds boosts to 15-30%.
+- Rate-adaptive port calibration (Step 1.5): uses observed port_formation_rate to scale port minimums for coastal cells d≤5. Conservative multipliers (1.0x near, 0.5x mid, cap 25%/15%).
 - Winter severity calibration (Step 1.6): estimate survival rate from observations, scale settlement/port predictions. Harsh winter → boost Ruin+Forest.
 - Continuous distance interpolation: blend between adjacent distance brackets based on raw distance
-- Expansion modulation (Step 1.75): scale Settlement+Port predictions for d≤8 cells, clamp [0.3, 3.5]
+- Expansion modulation (Step 1.75): 30% dampened correction (not full override) of Settlement+Port predictions for d≤8 cells, clamp [0.7, 1.5]. The spatial model already encodes expansion from observations — full override was double-counting.
 - Forest entropy injection (Step 1.85): shrink over-confident Forest predictions when observed retention < 0.85
 - Distance-based temperature scaling (Step 1.8): T=1.10 near settlements (spread), T=0.92 far (sharpen)
-- Monte Carlo blending (Step 2.5): on high-survival rounds (>50%), blend 5% MC simulation predictions. Captures spatial correlations missing from bucket model.
+- Monte Carlo blending (Step 2.5): DISABLED — hurts +1.1% in simulated production due to uncalibrated mechanics.
 
-**Query strategy**: Full coverage — all queries go to unique tile positions sorted by dynamic cell count (settlement-heavy first). Maximizes spatial bucket coverage which matters more than per-cell observation count.
+**Query strategy**: Full coverage first, then repeats. All unique tile positions queried (sorted by settlement density), remaining queries repeat top tiles. Every query MUST be used. Rate-limit retry with backoff on 429 errors.
 
 **Adaptive smoothing**: Per-cell blending uses terrain-dependent k values:
-- Settlements/ports k=8 (high variance → trust model more)
+- Settlements k=8 (high variance → trust model more)
+- Ports k=15 (very few observations per cell → trust model much more)
 - Plains/forest/empty k=3 (predictable → trust observations more)
 
-**Monte Carlo simulator** (`monte_carlo_predict`):
-- Simplified Norse world simulation: growth → expansion → port formation → winter → environment
-- 80 runs × 50 years per seed. Runs in ~1-3s.
-- Only activated when survival_rate > 0.50 (high-survival rounds with complex dynamics)
-- Blended at 5% weight with bucket model. R12 improved -7.4%.
-
 **Backtest performance** (simulated-production KL, lower is better):
-- Rounds 1–13 avg: **0.1027** (simulated production, 5 runs)
-- Best: 0.058 (R3), 0.062 (R8), Worst: 0.165 (R12), 0.154 (R7)
+- Rounds 1–14 avg: **0.0612** (simulated production, 3 runs)
+- Best: 0.033 (R8), 0.041 (R4), Worst: 0.119 (R12), 0.102 (R7)
 - Oracle backtest avg: 0.044 (but misleading — see below)
 - Probability floor: 0.0005
 
@@ -133,11 +127,9 @@ with actual production scores; oracle only has rho=0.750.
 Oracle improvements can be production regressions (confirmed empirically).
 
 **Known issues**:
-- Plains cells are largest error source (~60% of KL loss)
-- R7 and R12 are 2-3x worse than other rounds — high-survival, moderate expansion
-- Port under-prediction is the single biggest cell-level error (GT 20-45%, pred 1-2%)
-- MC simulator helps only on highest-survival rounds due to uncalibrated mechanics
-- Gap to top teams: ~15+ raw points (we score ~73-82, top teams ~90-94)
+- Plains cells are largest error source (~60% of KL loss) — within-bucket variance
+- R7 and R12 are 2-3x worse than other rounds — high-survival, high expansion
+- Gap to top teams: ~10-15 raw points (we score ~74-82, top teams ~89-94)
 
 See `PLAN.md` for error analysis, improvement roadmap, and round-by-round changelog.
 
