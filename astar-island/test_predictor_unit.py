@@ -221,11 +221,13 @@ class TestComputeBucketKey:
         cluster = _precompute_cluster_density(GRID_5x5_MIXED)
         key = compute_bucket_key(GRID_5x5_MIXED, 2, 1, dist, cluster)
         assert key[0] == 4
-        assert len(key) == 5  # (4, dist_bucket, adj_sett_level, is_coastal, is_interior)
+        assert len(key) == 6  # (4, dist_bucket, adj_sett_level, is_coastal, is_interior, is_clustered)
         # adj_sett_level is 0/1/2 (int, not bool)
         assert key[2] in (0, 1, 2)
         # is_interior is bool
         assert isinstance(key[4], bool)
+        # is_clustered is bool
+        assert isinstance(key[5], bool)
 
     def test_ruin_cell_key(self):
         dist = _precompute_settlement_distances(GRID_5x5_MIXED)
