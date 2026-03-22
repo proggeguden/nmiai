@@ -1620,7 +1620,7 @@ def build_agent():
                             return 0
                     sorted_items = sorted(items, key=lambda x: get_val(x, field), reverse=True)
                     result_data = sorted_items[:count]
-                elif operation == "find":
+                elif operation in ("find", "equals", "filter"):
                     result_data = [i for i in items if str(i.get(field, "")) == str(value)]
                 elif operation == "sum":
                     total = sum(float(i.get(field, 0)) for i in items if i.get(field) is not None)
@@ -1727,6 +1727,71 @@ def build_agent():
 
         # API error — try deterministic fixes first, then LLM replan
         error_lower = result_str.lower() if result_str else ""
+
+        # ── 403 on /incomingInvoice: try fallback BEFORE generic 403 abort ──
+        if status_code == 403 and "/incomingInvoice" in resolved_args.get("path", ""):
+            log.info("403 on /incomingInvoice — trying /ledger/voucher fallback before aborting")
+            call_api_tool = tool_map.get("call_api")
+            if call_api_tool:
+                try:
+                    orig_body = resolved_args.get("body", {})
+                    header = orig_body.get("invoiceHeader", {})
+                    order_lines = orig_body.get("orderLines", [])
+
+                    postings = []
+                    total_gross = 0
+                    for ol in order_lines:
+                        amount = ol.get("amountInclVat") or ol.get("amount") or 0
+                        total_gross += amount
+                        posting = {
+                            "account": {"id": ol.get("accountId")},
+                            "amountGross": amount,
+                            "amountGrossCurrency": amount,
+                        }
+                        if ol.get("vatTypeId"):
+                            posting["vatType"] = {"id": ol["vatTypeId"]}
+                        postings.append(posting)
+
+                    if total_gross:
+                        ap_result = call_api_tool.invoke({
+                            "method": "GET", "path": "/ledger/account",
+                            "query_params": {"number": "2400", "count": 1},
+                        })
+                        ap_parsed = json.loads(ap_result)
+                        ap_values = ap_parsed.get("values", [])
+                        if ap_values:
+                            postings.append({
+                                "account": {"id": ap_values[0]["id"]},
+                                "amountGross": -total_gross,
+                                "amountGrossCurrency": -total_gross,
+                            })
+
+                    voucher_body = {
+                        "date": header.get("invoiceDate", date.today().isoformat()),
+                        "description": header.get("description", "Supplier invoice (fallback)"),
+                        "postings": postings,
+                    }
+                    voucher_result = call_api_tool.invoke({
+                        "method": "POST", "path": "/ledger/voucher",
+                        "body": voucher_body,
+                    })
+                    v_is_error, _ = _is_api_error(voucher_result)
+                    if not v_is_error:
+                        parsed = json.loads(voucher_result)
+                        results[f"step_{step['step_number']}"] = _normalize_result(parsed)
+                        completed.append(step["step_number"])
+                        error_count += 1  # Original 403 still counts
+                        log.info(f"Step {step['step_number']} done (incomingInvoice→voucher fallback)")
+                        return {
+                            "current_step": step_idx + 1,
+                            "results": results,
+                            "completed_steps": completed,
+                            "error_count": error_count,
+                            "messages": [AIMessage(content=f"Step {step['step_number']} done (voucher fallback)")],
+                        }
+                except Exception as e:
+                    log.warning(f"incomingInvoice→voucher fallback failed: {e}")
+            # If fallback failed, fall through to generic 403 abort
 
         # ── 403: abort all remaining steps (wrong approach, not just expired token) ──
         if status_code == 403:
@@ -1961,77 +2026,6 @@ def build_agent():
                             }
                 except Exception as e:
                     log.warning(f"projectManager fix failed: {e}")
-
-        # ── Deterministic fix: 403 on /incomingInvoice → fallback to /ledger/voucher ──
-        if (
-            status_code == 403
-            and "/incomingInvoice" in resolved_args.get("path", "")
-        ):
-            log.info("Deterministic fix: /incomingInvoice 403 → falling back to /ledger/voucher")
-            call_api_tool = tool_map.get("call_api")
-            if call_api_tool:
-                try:
-                    # Extract invoice data from the original body
-                    orig_body = resolved_args.get("body", {})
-                    header = orig_body.get("invoiceHeader", {})
-                    order_lines = orig_body.get("orderLines", [])
-
-                    # Build voucher postings from incomingInvoice data
-                    postings = []
-                    total_gross = 0
-                    for ol in order_lines:
-                        amount = ol.get("amountInclVat") or ol.get("amount") or 0
-                        total_gross += amount
-                        posting = {
-                            "account": {"id": ol.get("accountId")},
-                            "amountGross": amount,
-                            "amountGrossCurrency": amount,
-                        }
-                        if ol.get("vatTypeId"):
-                            posting["vatType"] = {"id": ol["vatTypeId"]}
-                        postings.append(posting)
-
-                    # Credit posting to AP account (2400)
-                    if total_gross:
-                        # Find AP account
-                        ap_result = call_api_tool.invoke({
-                            "method": "GET", "path": "/ledger/account",
-                            "query_params": {"number": "2400", "count": 1},
-                        })
-                        ap_parsed = json.loads(ap_result)
-                        ap_values = ap_parsed.get("values", [])
-                        if ap_values:
-                            postings.append({
-                                "account": {"id": ap_values[0]["id"]},
-                                "amountGross": -total_gross,
-                                "amountGrossCurrency": -total_gross,
-                            })
-
-                    voucher_body = {
-                        "date": header.get("invoiceDate", date.today().isoformat()),
-                        "description": header.get("description", "Supplier invoice (fallback)"),
-                        "postings": postings,
-                    }
-                    voucher_result = call_api_tool.invoke({
-                        "method": "POST", "path": "/ledger/voucher",
-                        "body": voucher_body,
-                    })
-                    v_is_error, _ = _is_api_error(voucher_result)
-                    if not v_is_error:
-                        parsed = json.loads(voucher_result)
-                        results[f"step_{step['step_number']}"] = _normalize_result(parsed)
-                        completed.append(step["step_number"])
-                        error_count += 1  # The original 403 still counts
-                        log.info(f"Step {step['step_number']} done (incomingInvoice→voucher fallback)")
-                        return {
-                            "current_step": step_idx + 1,
-                            "results": results,
-                            "completed_steps": completed,
-                            "error_count": error_count,
-                            "messages": [AIMessage(content=f"Step {step['step_number']} done (voucher fallback)")],
-                        }
-                except Exception as e:
-                    log.warning(f"incomingInvoice→voucher fallback failed: {e}")
 
         # ── All other errors: fail fast, mark with _error ──
         # NO replan — it was burning 150-300s per attempt and causing timeouts.

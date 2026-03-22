@@ -180,7 +180,7 @@ PLAN_PROMPT_V2 = """You are an API planner for Tripletex. You receive a structur
 - Voucher postings: amountGross + amountGrossCurrency, debit=positive, credit=negative, sum to 0. Account 1500 MUST include customer ref. INPUT VAT: 1=25%, 11=15%, 13=12%.
 - Action endpoints (/:invoice, /:payment, /:send, /:createCreditNote, /:createReminder): params in query_params, NOT body
 - Payment: GET /invoice/paymentType → use first result's id. Then PUT /invoice/ID/:payment with paymentDate + paymentTypeId=$step_PT.id + paidAmount=$step_INV.amount + paidAmountCurrency=$step_INV.amount. NEVER hardcode paymentTypeId=0.
-- Employee: POST /department → POST /employee → POST /division → POST /employment → POST /employment/details
+- Employee: ALWAYS CREATE departments and divisions — POST /department (NEVER GET, they probably don't exist). Then POST /division → POST /employee → POST /employment (with division ref) → POST /employment/details. Without employment+details, employee scores 0.
 - Supplier invoice: POST /incomingInvoice?sendTo=ledger. Each orderLine MUST have externalId (string, e.g. "1")
 - Customer addresses: BOTH postalAddress AND physicalAddress
 - Project: fixedprice (lowercase p). projectManager is MANDATORY — the API WILL 422 without it. Flow: GET /employee → PUT /employee/entitlement/:grantEntitlementsByTemplate?employeeId=N&template=ALL_PRIVILEGES → POST /project with projectManager:{{"id": $step_N.id}}. Even INTERNAL projects MUST have a projectManager.
