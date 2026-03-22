@@ -396,6 +396,17 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                     ab["activityType"] = "PROJECT_GENERAL_ACTIVITY"
                     log.info("Validation: injected activityType=PROJECT_GENERAL_ACTIVITY on POST /activity")
 
+        # Strip read-only fields from POST /supplier (cause 422)
+        if method == "POST" and path in ("/supplier", "/supplier/list") and isinstance(body, (dict, list)):
+            sup_bodies = body if isinstance(body, list) else [body]
+            readonly_fields = ["isSupplier", "isWholesaler", "displayName", "locale", "isCustomer"]
+            for sb in sup_bodies:
+                if isinstance(sb, dict):
+                    for rf in readonly_fields:
+                        if rf in sb:
+                            del sb[rf]
+                            log.info(f"Validation: stripped read-only field '{rf}' from POST /supplier")
+
         # Auto-copy postalAddress ↔ physicalAddress on customer creation (scoring may check either)
         if method == "POST" and path in ("/customer", "/customer/list") and isinstance(body, (dict, list)):
             cust_bodies = body if isinstance(body, list) else [body]
@@ -435,8 +446,12 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 body["dimensionName"] = body.pop("name")
                 log.info("Validation: fixed name → dimensionName on accountingDimensionName")
 
-        # Fix employmentPercentage → percentageOfFullTimeEquivalent on employment/details
+        # Fix employment/details: inject date, fix field names, strip bad occupationCode
         if method == "POST" and "/employment/details" in path and isinstance(body, dict):
+            # Inject date if missing (required field)
+            if "date" not in body:
+                body["date"] = date.today().isoformat()
+                log.info("Validation: injected missing date on employment/details")
             if "employmentPercentage" in body and "percentageOfFullTimeEquivalent" not in body:
                 body["percentageOfFullTimeEquivalent"] = body.pop("employmentPercentage")
                 log.info("Validation: fixed employmentPercentage → percentageOfFullTimeEquivalent")
@@ -461,6 +476,12 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 # Can't create with name — need to create activity separately first
                 # Remove name so it doesn't cause 422, keep activity ref if it has id
                 log.info("Validation: /project/projectActivity needs activity:{id}, not {name}")
+
+        # Fix hallucinated /timesheetEntry → /timesheet/entry (common LLM mistake)
+        if isinstance(path, str) and "/timesheetEntry" in path:
+            args["path"] = path.replace("/timesheetEntry", "/timesheet/entry")
+            path = args["path"]
+            log.info(f"Validation: fixed /timesheetEntry → /timesheet/entry")
 
         # Fix hallucinated /report/ paths → correct endpoints
         if isinstance(path, str) and path.startswith("/report/"):
@@ -1800,58 +1821,10 @@ def build_agent():
                     except (json.JSONDecodeError, TypeError):
                         pass
 
-        # ── Single-attempt LLM replan for write failures (flash model, fast) ──
-        is_get = resolved_args.get("method", "").upper() == "GET"
-        is_write = not is_get
-        can_replan = (
-            is_write
-            and status_code in RETRYABLE_STATUS_CODES
-            and step["step_number"] not in healed_steps
-        )
-
-        if can_replan:
-            try:
-                from prompts import FIX_ARGS_PROMPT
-                fix_prompt = FIX_ARGS_PROMPT.format(
-                    method=resolved_args.get("method", ""),
-                    path=resolved_args.get("path", ""),
-                    query_params=json.dumps(resolved_args.get("query_params", {}), default=str),
-                    body=json.dumps(resolved_args.get("body", {}), default=str)[:3000],
-                    error_response=result_str[:1000],
-                    endpoint_schema="(see API reference)",
-                    common_errors="(none)",
-                )
-                fix_response = heal_llm.invoke([HumanMessage(content=fix_prompt)])
-                fix_raw = _extract_text(fix_response.content)
-                # Extract JSON from possible markdown
-                fix_json = _parse_plan_json(f"[{fix_raw}]")
-                if fix_json and isinstance(fix_json, list) and fix_json[0].get("method"):
-                    fixed_args = fix_json[0]
-                else:
-                    fixed_args = json.loads(fix_raw)
-
-                retry_result = tool.invoke(fixed_args)
-                retry_error, retry_status = _is_api_error(retry_result)
-                if not retry_error:
-                    retry_parsed = json.loads(retry_result)
-                    results[f"step_{step['step_number']}"] = _normalize_result(retry_parsed)
-                    healed_steps.append(step["step_number"])
-                    completed.append(step["step_number"])
-                    log.info(f"Step {step['step_number']} HEALED via replan (was {status_code})")
-                    return {
-                        "current_step": step_idx + 1,
-                        "results": results,
-                        "completed_steps": completed,
-                        "error_count": error_count,
-                        "healed_steps": healed_steps,
-                        "messages": [AIMessage(content=f"Step {step['step_number']} healed via replan")],
-                    }
-                else:
-                    log.warning(f"Replan retry also failed ({retry_status})")
-            except Exception as e:
-                log.warning(f"Replan attempt failed: {str(e)[:200]}")
-
         # ── All other errors: fail fast, mark with _error ──
+        # NO replan — it was burning 150-300s per attempt and causing timeouts.
+        # Get it right on the first try via better planning.
+        is_get = resolved_args.get("method", "").upper() == "GET"
         log.warning(f"Step {step['step_number']} failed with status {status_code}" + (" (GET — free, not counted)" if is_get else ""))
         try:
             parsed = json.loads(result_str)

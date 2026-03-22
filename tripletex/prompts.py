@@ -46,8 +46,10 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - **GET /invoice** REQUIRES invoiceDateFrom + invoiceDateTo params
 - **GET /balanceSheet** and **GET /ledger/posting** REQUIRE dateFrom + dateTo params
 - **Reminders**: PUT /invoice/ID/:createReminder with query_params type=REMINDER, date={today}, includeCharge=true, includeInterest=true, includeRemittance=true
-- **Cancel/reverse payment**: PUT /invoice/ID/:payment with NEGATIVE paidAmount
+- **Cancel/reverse payment**: PUT /invoice/ID/:payment with NEGATIVE paidAmount and NEGATIVE paidAmountCurrency
 - **Credit note**: PUT /invoice/ID/:createCreditNote with query_params date={today}
+- **Foreign currency invoices (agio/disagio)**: PUT /invoice/ID/:payment needs BOTH paidAmount (NOK amount at current rate) AND paidAmountCurrency (amount in invoice currency). Tripletex auto-calculates the exchange rate difference. Use GET /currency?code=EUR to find currency, then compute: paidAmount = invoiceAmount × currentRate, paidAmountCurrency = invoiceAmount.
+- **Timesheet entries**: POST /timesheet/entry (NOT /timesheetEntry!). Required: employee:{{"id"}}, activity:{{"id"}}, date, hours. Use PROJECT_GENERAL_ACTIVITY for project timesheets. For bulk: POST /timesheet/entry/list.
 - **Paths** must NOT include /v2 prefix
 
 ## ID Resolution — SIMPLE

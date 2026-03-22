@@ -17,6 +17,19 @@ _session_token: str = ""
 _call_count: int = 0
 _error_count: int = 0
 
+# Persistent HTTP session for connection pooling (saves TLS handshake per call)
+_http_session: requests.Session | None = None
+
+
+def _get_http_session() -> requests.Session:
+    global _http_session
+    if _http_session is None:
+        _http_session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
+        _http_session.mount("https://", adapter)
+        _http_session.mount("http://", adapter)
+    return _http_session
+
 
 def set_credentials(base_url: str, session_token: str) -> None:
     global _base_url, _session_token, _call_count, _error_count
@@ -50,15 +63,16 @@ def _make_request(method: str, endpoint: str, params: dict = None, body: dict = 
     )
 
     t0 = time.monotonic()
+    session = _get_http_session()
     try:
         if method == "GET":
-            resp = requests.get(url, auth=_auth(), params=params or {})
+            resp = session.get(url, auth=_auth(), params=params or {}, timeout=30)
         elif method == "POST":
-            resp = requests.post(url, auth=_auth(), json=body, params=params or {})
+            resp = session.post(url, auth=_auth(), json=body, params=params or {}, timeout=30)
         elif method == "PUT":
-            resp = requests.put(url, auth=_auth(), json=body, params=params or {})
+            resp = session.put(url, auth=_auth(), json=body, params=params or {}, timeout=30)
         elif method == "DELETE":
-            resp = requests.delete(url, auth=_auth())
+            resp = session.delete(url, auth=_auth(), timeout=30)
         else:
             raise ValueError(f"Unknown method: {method}")
     except Exception as e:
