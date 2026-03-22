@@ -532,6 +532,16 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             if "employmentPercentage" in body and "percentageOfFullTimeEquivalent" not in body:
                 body["percentageOfFullTimeEquivalent"] = body.pop("employmentPercentage")
                 log.info("Validation: fixed employmentPercentage → percentageOfFullTimeEquivalent")
+            # Rename professionCode/styrk → occupationCode (planner uses wrong field name)
+            for wrong_name in ("professionCode", "styrk", "styrkCode"):
+                if wrong_name in body and "occupationCode" not in body:
+                    val = body.pop(wrong_name)
+                    try:
+                        body["occupationCode"] = {"id": int(val)}
+                    except (ValueError, TypeError):
+                        if isinstance(val, dict):
+                            body["occupationCode"] = val
+                    log.info(f"Validation: renamed {wrong_name} → occupationCode")
             # Strip occupationCode if it references a $step_N (lookup that will likely fail)
             # Occupation code is optional and lookup endpoints return empty — better to skip
             oc = body.get("occupationCode")
