@@ -386,6 +386,48 @@ def validate_plan(plan: list[dict]) -> list[dict]:
 
         # NOTE: product "number" field is KEPT — the scoring system checks for it.
 
+        # Fix POST /incomingInvoice body structure
+        # The planner often puts header fields at root level instead of in invoiceHeader
+        # Also uses {"id": N} refs instead of flat integers (vendorId, accountId, vatTypeId)
+        if method == "POST" and "/incomingInvoice" in path and isinstance(body, dict):
+            if "invoiceHeader" not in body:
+                # Restructure: move header fields into invoiceHeader wrapper
+                header_fields = {}
+                # Map planner field names to API field names
+                field_map = {
+                    "supplier": "vendorId",  # {"id": N} → N
+                    "vendorId": "vendorId",
+                    "invoiceNumber": "invoiceNumber",
+                    "invoiceDate": "invoiceDate",
+                    "dueDate": "dueDate",
+                    "amount": "invoiceAmount",
+                    "invoiceAmount": "invoiceAmount",
+                    "description": "description",
+                    "currencyId": "currencyId",
+                }
+                for src, dst in field_map.items():
+                    if src in body:
+                        val = body.pop(src)
+                        # Flatten {"id": N} to just N for vendorId
+                        if dst == "vendorId" and isinstance(val, dict) and "id" in val:
+                            val = val["id"]
+                        header_fields[dst] = val
+                body["invoiceHeader"] = header_fields
+                log.info("Validation: restructured incomingInvoice body into invoiceHeader + orderLines")
+
+            # Fix orderLines: accountId and vatTypeId should be flat integers, not {"id": N}
+            for ol in body.get("orderLines", []):
+                if isinstance(ol, dict):
+                    for field in ("account", "vatType"):
+                        flat_field = f"{field}Id"
+                        if field in ol and flat_field not in ol:
+                            val = ol.pop(field)
+                            if isinstance(val, dict) and "id" in val:
+                                ol[flat_field] = val["id"]
+                            elif isinstance(val, (int, str)):
+                                ol[flat_field] = val
+                            log.info(f"Validation: flattened {field} → {flat_field} on incomingInvoice orderLine")
+
         # Auto-inject activityType on POST /activity if missing (required field)
         if method == "POST" and path in ("/activity", "/activity/list") and isinstance(body, (dict, list)):
             act_bodies = body if isinstance(body, list) else [body]
