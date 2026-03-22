@@ -229,7 +229,7 @@ def _compute_cell_features(initial_grid, r, c, code, H, W,
 # ---------------------------------------------------------------------------
 
 def numpy_forward(features, weights):
-    """Numpy-only MLP forward pass: Input(18) → 128 → 64 → 32 → Softmax(6).
+    """Numpy-only MLP forward pass: Input(20) → 128 → 64 → 32 → Softmax(6).
 
     Args:
         features: H×W×18 float32 array
