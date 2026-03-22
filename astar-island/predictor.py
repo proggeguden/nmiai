@@ -1468,6 +1468,13 @@ def build_prediction_ml(height, width, initial_grid, observations,
     temperature = 0.85 if survival < 0.10 else None
 
     features = extract_features(initial_grid, rates=rates)
+
+    # Auto-detect model's expected feature count from weights and slice if needed
+    # (backward compat: old 28-feature models work with new 32-feature extraction)
+    expected_feats = ml_snapshots[0]["fc1_w"].shape[1]
+    if features.shape[2] > expected_feats:
+        features = features[:, :, :expected_feats]
+
     predictions = numpy_forward_ensemble(features, ml_snapshots, temperature=temperature)
 
     # Override static cells with deterministic predictions
