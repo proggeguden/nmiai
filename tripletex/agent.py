@@ -1921,7 +1921,7 @@ def build_agent():
     return graph.compile()
 
 
-def run_agent(agent, prompt: str, file_attachments: list = None) -> None:
+def run_agent(agent, prompt: str, file_attachments: list = None, request_id: str = "") -> None:
     """Run the agent with the given prompt and optional file attachments.
 
     file_attachments: list of dicts, each with:
@@ -1960,6 +1960,7 @@ def run_agent(agent, prompt: str, file_attachments: list = None) -> None:
         "deadline": time.monotonic() + 250,
         "verification_attempts": 0,
         "phase1_output": {},
+        "request_id": request_id,
     }
 
     result = agent.invoke(initial_state)

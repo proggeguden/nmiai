@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-from logger import get_logger, setup_logging
+from logger import get_logger, setup_logging, set_request_id
 from agent import build_agent, run_agent
 from tools import set_credentials, get_stats
 
@@ -62,6 +62,7 @@ async def health():
 @app.post("/solve")
 async def solve(request: Request, body: SolveRequest):
     request_id = str(uuid.uuid4())[:8]
+    set_request_id(request_id)  # All log lines from this request will include request_id
     t_start = time.monotonic()
 
     # Truncate log file at start of each request (fresh log per test)
@@ -156,7 +157,7 @@ async def solve(request: Request, body: SolveRequest):
 
     # Run the agent
     try:
-        run_agent(_agent, body.prompt, file_attachments)
+        run_agent(_agent, body.prompt, file_attachments, request_id=request_id)
     except Exception as e:
         elapsed_ms = round((time.monotonic() - t_start) * 1000)
         log.error(

@@ -115,30 +115,47 @@ def setup_logging() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
+import contextvars
+
+# Per-request context — automatically included in ALL log lines
+_request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
+
+
+def set_request_id(rid: str) -> None:
+    """Set the request_id for the current context. All subsequent log calls include it."""
+    _request_id_var.set(rid)
+
+
 class _Logger:
     """Thin wrapper so callers can pass extra fields as kwargs instead of extra={}."""
 
     def __init__(self, name: str):
         self._log = logging.getLogger(name)
 
+    def _inject_request_id(self, kwargs: dict) -> dict:
+        rid = _request_id_var.get("")
+        if rid and "request_id" not in kwargs:
+            kwargs["request_id"] = rid
+        return kwargs
+
     def debug(self, msg: str, **kwargs):
-        self._log.debug(msg, extra=kwargs, stacklevel=2)
+        self._log.debug(msg, extra=self._inject_request_id(kwargs), stacklevel=2)
         sys.stdout.flush()
 
     def info(self, msg: str, **kwargs):
-        self._log.info(msg, extra=kwargs, stacklevel=2)
+        self._log.info(msg, extra=self._inject_request_id(kwargs), stacklevel=2)
         sys.stdout.flush()
 
     def warning(self, msg: str, **kwargs):
-        self._log.warning(msg, extra=kwargs, stacklevel=2)
+        self._log.warning(msg, extra=self._inject_request_id(kwargs), stacklevel=2)
         sys.stdout.flush()
 
     def error(self, msg: str, **kwargs):
-        self._log.error(msg, extra=kwargs, stacklevel=2)
+        self._log.error(msg, extra=self._inject_request_id(kwargs), stacklevel=2)
         sys.stdout.flush()
 
     def exception(self, msg: str, **kwargs):
-        self._log.exception(msg, extra=kwargs, stacklevel=2)
+        self._log.exception(msg, extra=self._inject_request_id(kwargs), stacklevel=2)
         sys.stdout.flush()
 
 

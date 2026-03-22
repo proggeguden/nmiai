@@ -26,3 +26,4 @@ class AgentState(TypedDict):
     deadline: float  # time.monotonic() deadline — abort executor if past this
     verification_attempts: int
     phase1_output: dict  # structured understanding from Phase 1 (understand node)
+    request_id: str  # unique ID for this /solve request — used in ALL log lines
