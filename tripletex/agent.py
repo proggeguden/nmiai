@@ -1720,19 +1720,20 @@ def build_agent():
                 value = resolved_args.get("value", "")
                 count = resolved_args.get("count", 0)
 
-                if operation == "sort_desc" and count > 0:
-                    def get_val(item, f):
-                        parts = f.split(".")
-                        obj = item
-                        for p in parts:
-                            if isinstance(obj, dict):
-                                obj = obj.get(p, 0)
-                            else:
-                                return 0
-                        try:
-                            return float(obj)
-                        except (TypeError, ValueError):
+                def get_val(item, f):
+                    parts = f.split(".")
+                    obj = item
+                    for p in parts:
+                        if isinstance(obj, dict):
+                            obj = obj.get(p, 0)
+                        else:
                             return 0
+                    try:
+                        return float(obj)
+                    except (TypeError, ValueError):
+                        return 0
+
+                if operation == "sort_desc" and count > 0:
                     sorted_items = sorted(items, key=lambda x: get_val(x, field), reverse=True)
                     result_data = sorted_items[:count]
                 elif operation in ("find", "equals", "filter"):

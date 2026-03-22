@@ -11,12 +11,12 @@ Scored on field-by-field correctness + API call efficiency.
 - Cloud Run (GCP project `ai-nm26osl-1788`, service `tripletex`, region `europe-west1`)
 - Cloud Run config: cpu=4, memory=4Gi, gen2, cpu-boost, concurrency=1, min-instances=10, max-instances=10
 
-## Architecture: Accountant Planner → Executor → Fail Fast
-1. **Planner** — Single "expert accountant" persona (temp=0). Principles-based prompt. Understands accounting intent, uses correct Tripletex workflows. Computes math directly.
-2. **Result Normalization** — All API responses flattened: `$step_N.id` works for POST, GET, and /list.
-3. **validate_plan()** — Pre-flight: POST→/list merge, ensure_bank_account, field renames, path fixes (/timesheetEntry→/timesheet/entry), activityType injection, supplier field stripping, employment date injection, occupationCode stripping.
-4. **Executor** — Pure Python loop, resolves `$step_N.id` placeholders. 240s deadline enforcement. Error results marked `_error=True`. GET errors don't count toward abort.
-5. **Deterministic handlers** — Bank account ensure + employee email-exists recovery. All other errors fail fast.
+## Architecture: Phase 1 (Understand) → Phase 2 (Plan) → Executor → Fail Fast
+1. **Phase 1 (Flash)** — Fast analysis: classifies task type, extracts entities/values from prompt and files.
+2. **Phase 2 (Pro)** — Expert accountant planner (temp=0). Focused prompt on Tripletex API quirks. Produces JSON plan.
+3. **validate_plan()** — Pre-flight fixes: POST→/list merge, ensure_bank_account, /:send injection, foreign vatType 6, field renames, path fixes, activityType injection, occupationCode fix.
+4. **Executor** — Resolves `$step_N.id` placeholders. 250s deadline. GET-then-CREATE for departments and standard accounts. Deterministic handlers for common errors.
+5. **Deterministic handlers** — Bank account ensure, employee email-exists, product/account duplicate recovery, paymentTypeId retry, projectManager injection, division field fixes, incomingInvoice 403 fallback to voucher.
 
 ## Key Files
 | File | Purpose |
