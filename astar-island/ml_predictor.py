@@ -4,7 +4,7 @@ Extracts a fixed-length feature vector for each cell in the initial grid.
 These features are used to train an ML model that replaces the bucket-based
 spatial transition model in predictor.py.
 
-Feature layout (18 features total):
+Feature layout (28 features total):
   [0..5]   One-hot terrain class (Empty, Settlement, Port, Ruin, Forest, Mountain)
   [6]      Distance to nearest settlement (BFS, capped at 20)
   [7]      Is coastal (has adjacent ocean cell, 8-connected)
@@ -18,6 +18,16 @@ Feature layout (18 features total):
   [15]     port_formation_rate
   [16]     forest_reclamation_rate
   [17]     ruin_rate
+  [18]     dist_to_coast (BFS from ocean cells, capped at 20)
+  [19]     adj_mountain_count (8-connected, 0-8)
+  [20]     settlement_count_r3 (count of settlement cells within Manhattan distance 3)
+  [21]     forest_density_r2 (count of forest cells within Manhattan distance 2, max 13)
+  [22]     dist_to_forest (BFS distance to nearest forest cell, capped at 10)
+  [23]     settlement_count_r5 (count of settlement cells within Manhattan distance 5)
+  [24]     adj_ruin_count (count of adjacent ruin cells, 8-connected, 0-8)
+  [25]     survival_x_expansion (survival * expansion rate interaction)
+  [26]     survival_over_expansion (survival / (expansion + 0.01) ratio)
+  [27]     expansion_x_port (expansion * port_formation rate interaction)
 """
 
 import numpy as np
@@ -53,9 +63,19 @@ FEATURE_NAMES = [
     "port_formation_rate",
     "forest_reclamation_rate",
     "ruin_rate",
+    "dist_to_coast",
+    "adj_mountain_count",
+    "settlement_count_r3",
+    "forest_density_r2",
+    "dist_to_forest",
+    "settlement_count_r5",
+    "adj_ruin_count",
+    "survival_x_expansion",
+    "survival_over_expansion",
+    "expansion_x_port",
 ]
 
-NUM_FEATURES = 18
+NUM_FEATURES = 28
 
 RATE_KEYS = ["survival", "expansion", "port_formation", "forest_reclamation", "ruin"]
 
@@ -70,7 +90,7 @@ _DIST_CAP = 20
 # ---------------------------------------------------------------------------
 
 def extract_features(initial_grid, rates=None):
-    """Extract an 18-feature vector for every cell in initial_grid.
+    """Extract a 28-feature vector for every cell in initial_grid.
 
     Parameters
     ----------
@@ -82,14 +102,24 @@ def extract_features(initial_grid, rates=None):
 
     Returns
     -------
-    np.ndarray, shape (H, W, 18), dtype float32
+    np.ndarray, shape (H, W, 28), dtype float32
     """
     H = len(initial_grid)
     W = len(initial_grid[0])
 
-    # Pre-compute BFS settlement distances and cluster density
+    # Pre-compute BFS settlement distances, cluster density, and coast distances
     settlement_dists = _precompute_settlement_distances(initial_grid)
     cluster_density = _precompute_cluster_density(initial_grid)
+    coast_dists = _precompute_coast_distances(initial_grid)
+    forest_dists = _precompute_forest_distances(initial_grid)
+
+    # Collect all settlement positions for radius counts (features 20, 23)
+    settlement_positions = [
+        (r, c)
+        for r in range(H)
+        for c in range(W)
+        if initial_grid[r][c] in (1, 2)
+    ]
 
     # Resolve rate values (default 0.5 for missing/None)
     rate_values = _resolve_rates(rates)
@@ -102,7 +132,8 @@ def extract_features(initial_grid, rates=None):
             code = row[c]
             out[r, c] = _compute_cell_features(
                 initial_grid, r, c, code, H, W,
-                settlement_dists, cluster_density, rate_values,
+                settlement_dists, cluster_density, rate_values, coast_dists,
+                forest_dists, settlement_positions,
             )
 
     return out
@@ -111,6 +142,101 @@ def extract_features(initial_grid, rates=None):
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _precompute_coast_distances(initial_grid):
+    """Precompute BFS distance to nearest ocean cell for all cells.
+
+    Seeds BFS from all ocean cells (code=10), identical pattern to
+    _precompute_settlement_distances but for ocean cells.
+
+    Returns H×W list of lists with distances (999 if no ocean exists).
+    """
+    from collections import deque
+    H = len(initial_grid)
+    W = len(initial_grid[0])
+    dist = [[999] * W for _ in range(H)]
+    q = deque()
+    for r in range(H):
+        for c in range(W):
+            if initial_grid[r][c] == 10:
+                dist[r][c] = 0
+                q.append((r, c))
+
+    if not q:
+        return dist
+
+    while q:
+        r, c = q.popleft()
+        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < H and 0 <= nc < W and dist[nr][nc] > dist[r][c] + 1:
+                dist[nr][nc] = dist[r][c] + 1
+                q.append((nr, nc))
+
+    return dist
+
+
+def _precompute_forest_distances(initial_grid):
+    """Precompute BFS distance to nearest forest cell for all cells.
+
+    Seeds BFS from all forest cells (code=4), identical pattern to
+    _precompute_coast_distances but for forest cells.
+    Distances beyond _FOREST_DIST_CAP (10) are clamped at inference time.
+
+    Returns H×W list of lists with distances (999 if no forest exists).
+    """
+    from collections import deque
+    H = len(initial_grid)
+    W = len(initial_grid[0])
+    dist = [[999] * W for _ in range(H)]
+    q = deque()
+    for r in range(H):
+        for c in range(W):
+            if initial_grid[r][c] == 4:
+                dist[r][c] = 0
+                q.append((r, c))
+
+    if not q:
+        return dist
+
+    while q:
+        r, c = q.popleft()
+        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < H and 0 <= nc < W and dist[nr][nc] > dist[r][c] + 1:
+                dist[nr][nc] = dist[r][c] + 1
+                q.append((nr, nc))
+
+    return dist
+
+
+_FOREST_DIST_CAP = 10
+
+
+def _count_settlements_in_radius(r, c, settlement_positions, radius):
+    """Count settlement positions within Manhattan distance <= radius from (r, c)."""
+    count = 0
+    for sr, sc in settlement_positions:
+        if abs(sr - r) + abs(sc - c) <= radius:
+            count += 1
+    return count
+
+
+def _count_forest_density_r2(initial_grid, r, c, H, W):
+    """Count forest cells (code 4) within Manhattan distance <= 2 from (r, c).
+
+    The Manhattan diamond of radius 2 has at most 13 cells (including the center).
+    """
+    count = 0
+    for dr in range(-2, 3):
+        for dc in range(-2, 3):
+            if abs(dr) + abs(dc) > 2:
+                continue
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < H and 0 <= nc < W and initial_grid[nr][nc] == 4:
+                count += 1
+    return count
+
 
 def _resolve_rates(rates):
     """Return a list of 5 floats in RATE_KEYS order, defaulting to RATE_DEFAULT."""
@@ -123,8 +249,9 @@ def _resolve_rates(rates):
 
 
 def _compute_cell_features(initial_grid, r, c, code, H, W,
-                            settlement_dists, cluster_density, rate_values):
-    """Compute the 18-feature vector for a single cell."""
+                            settlement_dists, cluster_density, rate_values, coast_dists,
+                            forest_dists, settlement_positions):
+    """Compute the 28-feature vector for a single cell."""
     vec = np.zeros(NUM_FEATURES, dtype=np.float32)
 
     # --- Features 0-5: one-hot terrain class ---
@@ -139,6 +266,8 @@ def _compute_cell_features(initial_grid, r, c, code, H, W,
     adj_forest = 0
     adj_settlement = 0
     adj_ocean = 0
+    adj_mountain = 0
+    adj_ruin = 0
     for dr in (-1, 0, 1):
         for dc in (-1, 0, 1):
             if dr == 0 and dc == 0:
@@ -152,6 +281,10 @@ def _compute_cell_features(initial_grid, r, c, code, H, W,
                     adj_settlement += 1
                 elif n == 10:
                     adj_ocean += 1
+                elif n == 5:
+                    adj_mountain += 1
+                elif n == 3:
+                    adj_ruin += 1
 
     # --- Feature 7: is_coastal ---
     vec[7] = 1.0 if adj_ocean > 0 else 0.0
@@ -174,6 +307,35 @@ def _compute_cell_features(initial_grid, r, c, code, H, W,
     # --- Features 13-17: round-level rates ---
     vec[13:18] = rate_values
 
+    # --- Feature 18: dist_to_coast (BFS from ocean cells, capped at 20) ---
+    vec[18] = float(min(coast_dists[r][c], _DIST_CAP))
+
+    # --- Feature 19: adj_mountain_count ---
+    vec[19] = float(adj_mountain)
+
+    # --- Feature 20: settlement_count_r3 ---
+    vec[20] = float(_count_settlements_in_radius(r, c, settlement_positions, 3))
+
+    # --- Feature 21: forest_density_r2 ---
+    vec[21] = float(_count_forest_density_r2(initial_grid, r, c, H, W))
+
+    # --- Feature 22: dist_to_forest (BFS from forest cells, capped at 10) ---
+    vec[22] = float(min(forest_dists[r][c], _FOREST_DIST_CAP))
+
+    # --- Feature 23: settlement_count_r5 ---
+    vec[23] = float(_count_settlements_in_radius(r, c, settlement_positions, 5))
+
+    # --- Feature 24: adj_ruin_count ---
+    vec[24] = float(adj_ruin)
+
+    # --- Features 25-27: rate interaction features ---
+    surv = rate_values[0]  # survival
+    exp = rate_values[1]   # expansion
+    port = rate_values[2]  # port_formation
+    vec[25] = surv * exp                          # survival × expansion
+    vec[26] = surv / (exp + 0.01)                 # survival / expansion ratio
+    vec[27] = exp * port                          # expansion × port_formation
+
     return vec
 
 
@@ -182,10 +344,10 @@ def _compute_cell_features(initial_grid, r, c, code, H, W,
 # ---------------------------------------------------------------------------
 
 def numpy_forward(features, weights):
-    """Numpy-only MLP forward pass: Input(18) → 128 → 64 → 32 → Softmax(6).
+    """Numpy-only MLP forward pass: Input(28) → 128 → 64 → 32 → Softmax(6).
 
     Args:
-        features: H×W×18 float32 array
+        features: H×W×25 float32 array
         weights: dict with fc*_w, fc*_b, feat_mean, feat_std
     Returns:
         H×W×6 float64 probability array
@@ -204,8 +366,11 @@ def numpy_forward(features, weights):
     x = x @ weights["fc3_w"].astype(np.float64).T + weights["fc3_b"].astype(np.float64)
     x = np.maximum(x, 0)
 
-    # Layer 4: Linear + Softmax
+    # Layer 4: Linear + Temperature-scaled Softmax
     x = x @ weights["fc4_w"].astype(np.float64).T + weights["fc4_b"].astype(np.float64)
+    T = float(weights.get("temperature", np.array([1.0])).flat[0])
+    if T != 1.0:
+        x = x / T
     x_max = x.max(axis=1, keepdims=True)
     exp_x = np.exp(x - x_max)
     x = exp_x / exp_x.sum(axis=1, keepdims=True)

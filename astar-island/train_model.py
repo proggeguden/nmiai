@@ -300,7 +300,7 @@ def train_model(X, Y, round_ids=None, exclude_round=None,
     from torch.utils.data import TensorDataset, DataLoader
 
     class TerrainMLP(nn.Module):
-        def __init__(self, n_features=18, n_classes=6):
+        def __init__(self, n_features=28, n_classes=6):
             super().__init__()
             self.fc1 = nn.Linear(n_features, 128)
             self.fc2 = nn.Linear(128, 64)

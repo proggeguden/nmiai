@@ -61,10 +61,14 @@
 - Round 12: **59.4** (rank 38/146) — tough round
 - Round 13: **73.2** (rank 126/186)
 - Round 14: **74.1** (rank 71/244) — degraded by accidental resubmission
-- Round 15: **86.1** (rank 97/262) — best raw score ever, weighted=179.0
-- Round 16: submitted with k-boost fix, pending score
-- Leaderboard: best weighted=179.0. Top teams: ~196 weighted.
-- Gap to close: ~6-8 raw points. Need ~90 raw on later rounds to compete.
+- Round 15: **86.1** (rank 97/262)
+- Round 16: **84.0** (rank 48/272)
+- Round 17: **90.0** (rank 47/283) — first ML model submission
+- Round 18: **84.9** (rank 43/265) — high expansion round
+- Round 19: **93.5** (rank 31/228) — best raw score ever, harsh round (4% survival), weighted=236.2
+- Round 20: submitted with 28-feature model, pending score
+- Leaderboard: best weighted=236.2. Top teams: ~241.5 weighted.
+- Gap to close: ~2 raw points on R20+ to reach #1.
 
 ---
 
@@ -393,11 +397,85 @@ Zero regressions across all 17 rounds.
 rm training_data.npz && python3 train_model.py --augmentations 10 --output model_weights.npz
 ```
 
-**Improvement directions**:
-- More features: adj_mountain, distance_to_coast, settlement_count_in_radius
-- Architecture: wider layers, residual connections
-- Ensemble: alpha-blend ML + bucket predictions
-- Each new round adds ~5800 cells × 10 augmentations of training data
+### Feature engineering + retrain (2026-03-22)
+
+**Added 2 new features** (18 → 20 total):
+- `dist_to_coast` (BFS from ocean, capped 20): enables port formation prediction on coastal plains
+- `adj_mountain_count` (8-connected, 0-8): calibrates expansion near mountains
+
+**Retrained on 18 rounds** (1.05M training examples, up from 985k).
+
+**Results (simulated-production, 3 runs, 18 rounds)**:
+| Metric | Old ML (18feat, 17rnd) | New ML (20feat, 18rnd) | Improvement |
+|--------|----------------------|----------------------|-------------|
+| Avg KL | 0.0341 | **0.0317** | **-7.0%** |
+| R3 | 0.0198 | 0.0188 | -5% |
+| R7 | 0.0746 | 0.0743 | -0.4% |
+| R12 | 0.0856 | 0.0791 | -7.6% |
+| R18 | — | 0.0270 | new round |
+
+vs bucket model: 0.0493 → 0.0317 = **-35.7%**.
+
+### Deep research: frontier improvements (2026-03-22)
+
+Four parallel research agents analyzed top-team strategies, architecture, features, and query strategy.
+
+**Tier 1 — Quick wins (30min-1h, very low risk):**
+1. **Post-hoc temperature scaling**: Divide logits by learned T before softmax. Grid search T∈[0.5,3.0] on held-out round. KL is a calibration metric — this directly targets scoring. Store T in model_weights.npz, apply in numpy_forward. Expected: 5-15%.
+2. **Disable per-cell blending A/B test**: ML model may be accurate enough that 1-2 noisy observations just add noise. Test by commenting out blending in build_prediction_ml(). Expected: 1-3%.
+3. **Test-time augmentation (TTA)**: Run forward pass K=10 times with perturbed rates (multiply each by exp(N(0,0.2))), average predictions. Marginalizes over rate noise (#1 production error source). Expected: 1-2%.
+
+**Tier 2 — Medium effort (2-3h, low-medium risk):**
+4. **Feature engineering** (5 new features → 25 total):
+   - `settlement_count_r3`: continuous count of settlements within BFS d≤3 (targets #1 error: expansion)
+   - `forest_density_r2`: forest count within Manhattan d≤2 (food potential proxy)
+   - `dist_to_forest`: BFS from forest cells, capped 10 (reclamation + starvation)
+   - Replace binary `is_clustered` with continuous `settlement_count_r5`
+   - `adj_ruin_count`: completes neighbor-count feature set (zero cost)
+5. **Snapshot ensemble**: Cyclic cosine LR, save weights at minima, average 3-5 predictions. One training run → M models free. Expected: 2-4%.
+
+**Tier 3 — Bigger bets (3-6h, medium risk):**
+6. **LightGBM knowledge distillation**: Train LGBM on same data, blend Y_new = 0.75*Y_gt + 0.25*Y_lgbm, train MLP on blended targets. Zero production changes. Expected: 3-8%.
+7. **Wider MLP with residual connections**: 256→256→128 + skip + LayerNorm. Expected: 3-7%.
+
+**What NOT to do** (confirmed by research):
+- ConvNet/GNN over 40×40 grid — too complex for numpy inference, marginal gain
+- TabNet/FT-Transformer — complex numpy implementation
+- Change query allocation (10/10/10/10/10 near-optimal)
+- Terrain-aware spatial smoothing (MRF already failed)
+
+### Implementation results (2026-03-22 session)
+
+**Tested and implemented:**
+- **Disable per-cell blending** ✅: ML model accurate enough that obs add noise. -6.6% KL, all 18 rounds improved.
+- **5 new spatial features** ✅: settlement_count_r3/r5, forest_density_r2, dist_to_forest, adj_ruin_count. -1.7% KL.
+- **3 rate interaction features** ✅: survival×expansion, survival/expansion ratio, expansion×port. -3.4% KL. Addresses R7/R12 anomaly (high survival + low expansion decoupling).
+- **Survival-conditional temperature** ✅: T=0.85 when survival < 10%. -31% on extreme rounds (R19), zero regressions on moderate rounds.
+
+**Tested and rejected:**
+- **Post-hoc temperature scaling** ❌: T=1.0 already optimal — model trained with KL loss is self-calibrated.
+- **TTA via rate perturbation** ❌: Model already trained on noisy rates. Double-perturbing adds noise. R8 +33%, R10 +67%, R3 +39% regression.
+
+**Combined session results (28 features, 19 rounds, no blending, conditional T)**:
+| Step | SimProd KL | Cumulative vs Bucket |
+|------|-----------|---------------------|
+| Bucket model baseline | 0.0493 | — |
+| +2 features, retrain 18 rounds | 0.0317 | -36% |
+| Disable per-cell blending | 0.0296 | -40% |
+| +5 spatial features, retrain 19 rounds | 0.0291 | -41% |
+| +3 rate interactions, retrain | **0.0281** | **-43%** |
+
+**R19 scored 93.5 (rank 31/228)** — best raw score ever. Weighted=236.2. Top teams at 241.5.
+**R20 submitted** with 28-feature model. Pending score.
+
+**Key discovery: R7/R12 are not harsh-winter rounds.** They're mild survival (47-60%) but with anomalously low expansion (0.126-0.145 vs typical 0.25+). The model over-predicts expansion because it assumes survival correlates with expansion. Rate interaction features partially address this but only 2/19 rounds exhibit the pattern.
+
+**Remaining improvement directions (not yet tried):**
+1. Snapshot ensemble (expected 2-4%, 2h)
+2. LightGBM knowledge distillation (expected 3-8%, 3-4h)
+3. Wider MLP with residual connections (expected 3-7%, 2-3h)
+
+**Key insight**: Top teams likely use ensembling + spatial context. Our single-model MLP with independent cell predictions is the biggest architectural limitation. Ensembling addresses calibration; spatial features address neighborhood dynamics.
 
 ---
 
