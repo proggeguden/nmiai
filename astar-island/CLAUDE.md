@@ -81,16 +81,17 @@ position, population, food, wealth, defense, tech level, port status, longship o
 
 ## Prediction Strategy
 
-**Current approach (ML model)**: PyTorch MLP trained on GT data from all completed rounds.
-Predicts P(class | 28 spatial+round features) per cell. Trained offline with noisy rate
-augmentation to handle production estimation noise. Numpy-only inference (58KB weights).
-Per-cell observation blending DISABLED (ML model accurate enough that obs add noise).
+**Current approach (ML ensemble)**: 5-snapshot MLP ensemble trained on GT data from all
+completed rounds. Each snapshot is the same architecture trained with a different torch seed.
+Predictions are the average of all 5 softmax outputs — reduces variance from random init.
+28 features per cell, noisy rate augmentation for production robustness.
+Numpy-only inference (292KB weights). Per-cell observation blending DISABLED.
 Survival-conditional temperature: T=0.85 when estimated survival < 10%.
 
 **Pipeline**:
 1. Observe all 5 seeds (50 queries total, 10 per seed, full coverage)
 2. Estimate round-level rates from observations (survival, expansion, port, forest, ruin)
-3. ML model: extract 28 features per cell → conditional temperature → numpy forward pass
+3. ML ensemble: extract 28 features per cell → numpy_forward_ensemble (avg 5 snapshots)
 4. Probability floor (0.0005)
 5. NO per-cell blending (disabled — ML model is accurate enough)
 
@@ -99,16 +100,15 @@ Survival-conditional temperature: T=0.85 when estimated survival < 10%.
   - Spatial: dist_settlement, coastal, adj_forest/settlement/ocean/mountain/ruin, cluster, interior, settlement_count_r3/r5, forest_density_r2, dist_to_forest, dist_to_coast
   - Rate interactions: survival×expansion, survival/expansion, expansion×port
 - Architecture: Input(28) → 128 → 64 → 32 → Softmax(6), KL divergence loss
-- Training: 1.11M cells from 19 rounds × 5 seeds × 10 noisy rate augmentations
-- Weights: `model_weights.npz` (58KB, committed to git)
+- Ensemble: 5 snapshots with different torch seeds, averaged softmax at inference
+- Training: 1.1M cells from 20 rounds × 5 seeds × 10 noisy rate augmentations
+- Weights: `model_weights.npz` (292KB, committed to git)
 - Production inference: numpy matmuls only, zero PyTorch dependency
+- Retrain after each round: `rm training_data.npz && python3 train_model.py --rebuild-data --augmentations 10 --n-snapshots 5 --output model_weights.npz`
 
 **Backtest performance** (simulated-production KL, lower is better):
-- ML model avg: **0.0281** (19 rounds, 3 runs) — **43% better than bucket model (0.0493)**
+- ML ensemble avg: **0.0262** (19 rounds, 3 runs) — **5.1% better than single ML (0.0276), 44.6% better than bucket (0.0473)**
 - Probability floor: 0.0005
-
-**Proven improvement techniques not yet implemented**:
-1. Snapshot ensemble (cyclic LR, save weights at minima, average 3-5 predictions)
 2. LightGBM knowledge distillation (train LGBM, blend into MLP training targets)
 3. Wider MLP with residual connections (256→256→128 + skip + LayerNorm)
 

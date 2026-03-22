@@ -470,12 +470,27 @@ Four parallel research agents analyzed top-team strategies, architecture, featur
 
 **Key discovery: R7/R12 are not harsh-winter rounds.** They're mild survival (47-60%) but with anomalously low expansion (0.126-0.145 vs typical 0.25+). The model over-predicts expansion because it assumes survival correlates with expansion. Rate interaction features partially address this but only 2/19 rounds exhibit the pattern.
 
-**Remaining improvement directions (not yet tried):**
-1. Snapshot ensemble (expected 2-4%, 2h)
-2. LightGBM knowledge distillation (expected 3-8%, 3-4h)
-3. Wider MLP with residual connections (expected 3-7%, 2-3h)
+### Snapshot ensemble (2026-03-22 session)
 
-**Key insight**: Top teams likely use ensembling + spatial context. Our single-model MLP with independent cell predictions is the biggest architectural limitation. Ensembling addresses calibration; spatial features address neighborhood dynamics.
+**Implemented 5-snapshot ensemble.** Each snapshot is the same 28-feature MLP trained with a
+different torch seed. At inference, all 5 softmax outputs are averaged.
+
+**Training**: `python3 train_model.py --rebuild-data --augmentations 10 --n-snapshots 5`
+5 snapshots × 80 epochs on 1.1M cells (20 rounds). Weights: 292KB.
+
+**Results (simulated-production, 3 runs, 19 rounds)**:
+| Metric | Single ML | Ensemble (5) | Improvement |
+|--------|----------|-------------|-------------|
+| Avg KL | 0.0276 | **0.0262** | **-5.1%** |
+
+vs bucket model: 0.0473 → 0.0262 = **-44.6%** total improvement.
+
+**R20 scored 90.48 (rank 36/181)**. Best weighted = 240.1 (R20). Top teams at 247.7.
+R21 submitted with single-model (queries exhausted before ensemble ready). Ensemble ready for R22+.
+
+**Remaining improvement directions:**
+1. LightGBM knowledge distillation (expected 3-8%, 3-4h)
+2. Wider MLP with residual connections (expected 3-7%, 2-3h)
 
 ---
 
