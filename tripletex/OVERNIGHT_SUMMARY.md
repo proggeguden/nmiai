@@ -120,3 +120,22 @@ Key commits since last stable (Round 38, revision 00070):
 - Phase 2 planner still generates wrong body structure (prompt issue) — code fix compensates
 - VAT code mismatch on locked accounts
 - Payroll employment check for existing employees
+
+---
+
+## Self-Improve Cycle 3 (2026-03-22 ~07:30 UTC)
+
+### Failures Found
+- Municipality validation was accepting huge invalid IDs (123456789 from OR fallback)
+- This caused every POST /division to 422
+
+### Fixes Applied
+1. **agent.py validate_plan**: Municipality ID validation — reject IDs > 10000, always default to Oslo (301)
+
+### Commits
+- `6fc3f5f`: Self-improve cycle 3: Fix municipality validation
+
+### Remaining Issues
+- No new logs to analyze (user sleeping, no new submissions)
+- Phase 2 planner literal {id} paths (mitigated by validate_plan skip)
+- VAT code mismatch on locked accounts
