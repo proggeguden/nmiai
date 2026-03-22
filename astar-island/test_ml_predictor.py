@@ -32,7 +32,7 @@ class TestExtractFeaturesShape:
     def test_shape(self):
         grid = _make_grid(6, 8)
         result = extract_features(grid)
-        assert result.shape == (6, 8, 18), f"Expected (6,8,18), got {result.shape}"
+        assert result.shape == (6, 8, 20), f"Expected (6,8,20), got {result.shape}"
 
     def test_dtype(self):
         grid = _make_grid(4, 4)
@@ -40,10 +40,10 @@ class TestExtractFeaturesShape:
         assert result.dtype == np.float32, f"Expected float32, got {result.dtype}"
 
     def test_num_features_constant(self):
-        assert NUM_FEATURES == 18
+        assert NUM_FEATURES == 20
 
     def test_feature_names_length(self):
-        assert len(FEATURE_NAMES) == 18
+        assert len(FEATURE_NAMES) == 20
 
 
 class TestExtractFeaturesOnehot:
@@ -135,7 +135,7 @@ class TestExtractFeaturesRatesAppended:
         expected = np.array([0.7, 0.3, 0.1, 0.6, 0.2], dtype=np.float32)
         for r in range(4):
             for c in range(4):
-                actual_rates = result[r, c, 13:]
+                actual_rates = result[r, c, 13:18]
                 np.testing.assert_array_almost_equal(actual_rates, expected,
                     err_msg=f"Rate features wrong at ({r},{c}): {actual_rates}")
 
@@ -149,7 +149,7 @@ class TestExtractFeaturesRatesAppended:
         result = extract_features(grid, rates=rates)
         # survival=0.9, rest=0.5
         expected_last5 = np.array([0.9, 0.5, 0.5, 0.5, 0.5], dtype=np.float32)
-        np.testing.assert_array_almost_equal(result[1, 1, 13:], expected_last5)
+        np.testing.assert_array_almost_equal(result[1, 1, 13:18], expected_last5)
 
 
 class TestExtractFeaturesNoneRates:
@@ -161,8 +161,8 @@ class TestExtractFeaturesNoneRates:
         expected = np.array([0.5, 0.5, 0.5, 0.5, 0.5], dtype=np.float32)
         for r in range(4):
             for c in range(4):
-                np.testing.assert_array_equal(result[r, c, 13:], expected,
-                    err_msg=f"None rates should default to 0.5, got {result[r, c, 13:]}")
+                np.testing.assert_array_equal(result[r, c, 13:18], expected,
+                    err_msg=f"None rates should default to 0.5, got {result[r, c, 13:18]}")
 
     def test_none_value_in_dict_defaults_to_half(self):
         grid = _make_grid(4, 4, fill=11)
@@ -170,14 +170,44 @@ class TestExtractFeaturesNoneRates:
         result = extract_features(grid, rates=rates)
         # survival is None → 0.5, expansion → 0.4, rest → 0.5
         expected = np.array([0.5, 0.4, 0.5, 0.5, 0.5], dtype=np.float32)
-        np.testing.assert_array_almost_equal(result[0, 0, 13:], expected)
+        np.testing.assert_array_almost_equal(result[0, 0, 13:18], expected)
+
+
+class TestDistanceToCoast:
+    """Feature 18: BFS distance to nearest ocean cell, capped at 20."""
+
+    def test_ocean_cell_distance_zero(self):
+        grid = _make_grid(5, 5, fill=11)
+        _set(grid, 0, 0, 10)  # ocean
+        result = extract_features(grid)
+        assert result[0, 0, 18] == 0.0
+
+    def test_adjacent_to_ocean(self):
+        grid = _make_grid(5, 5, fill=11)
+        _set(grid, 0, 0, 10)
+        result = extract_features(grid)
+        assert result[0, 1, 18] == 1.0  # adjacent
+        assert result[1, 0, 18] == 1.0
+
+    def test_no_ocean_capped_at_20(self):
+        grid = _make_grid(5, 5, fill=11)  # all plains, no ocean
+        result = extract_features(grid)
+        assert result[2, 2, 18] == 20.0
+
+    def test_distance_gradient(self):
+        # Ocean on left edge
+        grid = _make_grid(1, 10, fill=11)
+        _set(grid, 0, 0, 10)
+        result = extract_features(grid)
+        for c in range(10):
+            assert result[0, c, 18] == float(min(c, 20))
 
 
 def test_numpy_forward_shape():
     """Forward pass produces H×W×6 with valid probabilities."""
     rng = np.random.default_rng(42)
     weights = {
-        "fc1_w": rng.standard_normal((128, 18)).astype(np.float32) * 0.1,
+        "fc1_w": rng.standard_normal((128, 20)).astype(np.float32) * 0.1,
         "fc1_b": np.zeros(128, dtype=np.float32),
         "fc2_w": rng.standard_normal((64, 128)).astype(np.float32) * 0.1,
         "fc2_b": np.zeros(64, dtype=np.float32),
@@ -185,10 +215,10 @@ def test_numpy_forward_shape():
         "fc3_b": np.zeros(32, dtype=np.float32),
         "fc4_w": rng.standard_normal((6, 32)).astype(np.float32) * 0.1,
         "fc4_b": np.zeros(6, dtype=np.float32),
-        "feat_mean": np.zeros(18, dtype=np.float32),
-        "feat_std": np.ones(18, dtype=np.float32),
+        "feat_mean": np.zeros(20, dtype=np.float32),
+        "feat_std": np.ones(20, dtype=np.float32),
     }
-    features = rng.standard_normal((5, 5, 18)).astype(np.float32)
+    features = rng.standard_normal((5, 5, 20)).astype(np.float32)
     preds = numpy_forward(features, weights)
     assert preds.shape == (5, 5, 6)
     sums = preds.sum(axis=2)
@@ -199,7 +229,7 @@ def test_numpy_forward_shape():
 def test_save_load_model_roundtrip(tmp_path):
     """Weights survive save/load roundtrip."""
     weights = {
-        "fc1_w": np.ones((128, 18), dtype=np.float32),
+        "fc1_w": np.ones((128, 20), dtype=np.float32),
         "fc1_b": np.zeros(128, dtype=np.float32),
         "fc2_w": np.ones((64, 128), dtype=np.float32),
         "fc2_b": np.zeros(64, dtype=np.float32),
@@ -207,8 +237,8 @@ def test_save_load_model_roundtrip(tmp_path):
         "fc3_b": np.zeros(32, dtype=np.float32),
         "fc4_w": np.ones((6, 32), dtype=np.float32),
         "fc4_b": np.zeros(6, dtype=np.float32),
-        "feat_mean": np.zeros(18, dtype=np.float32),
-        "feat_std": np.ones(18, dtype=np.float32),
+        "feat_mean": np.zeros(20, dtype=np.float32),
+        "feat_std": np.ones(20, dtype=np.float32),
     }
     path = str(tmp_path / "test_weights.npz")
     save_model(weights, path)

@@ -4,7 +4,7 @@ Extracts a fixed-length feature vector for each cell in the initial grid.
 These features are used to train an ML model that replaces the bucket-based
 spatial transition model in predictor.py.
 
-Feature layout (18 features total):
+Feature layout (20 features total):
   [0..5]   One-hot terrain class (Empty, Settlement, Port, Ruin, Forest, Mountain)
   [6]      Distance to nearest settlement (BFS, capped at 20)
   [7]      Is coastal (has adjacent ocean cell, 8-connected)
@@ -18,6 +18,8 @@ Feature layout (18 features total):
   [15]     port_formation_rate
   [16]     forest_reclamation_rate
   [17]     ruin_rate
+  [18]     dist_to_coast (BFS from ocean cells, capped at 20)
+  [19]     adj_mountain_count (placeholder, 0.0)
 """
 
 import numpy as np
@@ -53,9 +55,11 @@ FEATURE_NAMES = [
     "port_formation_rate",
     "forest_reclamation_rate",
     "ruin_rate",
+    "dist_to_coast",
+    "adj_mountain_count",
 ]
 
-NUM_FEATURES = 18
+NUM_FEATURES = 20
 
 RATE_KEYS = ["survival", "expansion", "port_formation", "forest_reclamation", "ruin"]
 
@@ -82,14 +86,15 @@ def extract_features(initial_grid, rates=None):
 
     Returns
     -------
-    np.ndarray, shape (H, W, 18), dtype float32
+    np.ndarray, shape (H, W, 20), dtype float32
     """
     H = len(initial_grid)
     W = len(initial_grid[0])
 
-    # Pre-compute BFS settlement distances and cluster density
+    # Pre-compute BFS settlement distances, cluster density, and coast distances
     settlement_dists = _precompute_settlement_distances(initial_grid)
     cluster_density = _precompute_cluster_density(initial_grid)
+    coast_dists = _precompute_coast_distances(initial_grid)
 
     # Resolve rate values (default 0.5 for missing/None)
     rate_values = _resolve_rates(rates)
@@ -102,7 +107,7 @@ def extract_features(initial_grid, rates=None):
             code = row[c]
             out[r, c] = _compute_cell_features(
                 initial_grid, r, c, code, H, W,
-                settlement_dists, cluster_density, rate_values,
+                settlement_dists, cluster_density, rate_values, coast_dists,
             )
 
     return out
@@ -111,6 +116,39 @@ def extract_features(initial_grid, rates=None):
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _precompute_coast_distances(initial_grid):
+    """Precompute BFS distance to nearest ocean cell for all cells.
+
+    Seeds BFS from all ocean cells (code=10), identical pattern to
+    _precompute_settlement_distances but for ocean cells.
+
+    Returns H×W list of lists with distances (999 if no ocean exists).
+    """
+    from collections import deque
+    H = len(initial_grid)
+    W = len(initial_grid[0])
+    dist = [[999] * W for _ in range(H)]
+    q = deque()
+    for r in range(H):
+        for c in range(W):
+            if initial_grid[r][c] == 10:
+                dist[r][c] = 0
+                q.append((r, c))
+
+    if not q:
+        return dist
+
+    while q:
+        r, c = q.popleft()
+        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < H and 0 <= nc < W and dist[nr][nc] > dist[r][c] + 1:
+                dist[nr][nc] = dist[r][c] + 1
+                q.append((nr, nc))
+
+    return dist
+
 
 def _resolve_rates(rates):
     """Return a list of 5 floats in RATE_KEYS order, defaulting to RATE_DEFAULT."""
@@ -123,8 +161,8 @@ def _resolve_rates(rates):
 
 
 def _compute_cell_features(initial_grid, r, c, code, H, W,
-                            settlement_dists, cluster_density, rate_values):
-    """Compute the 18-feature vector for a single cell."""
+                            settlement_dists, cluster_density, rate_values, coast_dists):
+    """Compute the 20-feature vector for a single cell."""
     vec = np.zeros(NUM_FEATURES, dtype=np.float32)
 
     # --- Features 0-5: one-hot terrain class ---
@@ -173,6 +211,12 @@ def _compute_cell_features(initial_grid, r, c, code, H, W,
 
     # --- Features 13-17: round-level rates ---
     vec[13:18] = rate_values
+
+    # --- Feature 18: dist_to_coast (BFS from ocean cells, capped at 20) ---
+    vec[18] = float(min(coast_dists[r][c], _DIST_CAP))
+
+    # --- Feature 19: adj_mountain_count (placeholder) ---
+    vec[19] = 0.0
 
     return vec
 
