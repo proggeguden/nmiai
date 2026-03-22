@@ -25,3 +25,4 @@ class AgentState(TypedDict):
     file_content_parts: list[dict]  # multimodal file parts for planner LLM calls
     deadline: float  # time.monotonic() deadline — abort executor if past this
     verification_attempts: int
+    phase1_output: dict  # structured understanding from Phase 1 (understand node)

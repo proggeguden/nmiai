@@ -15,6 +15,8 @@ from logger import get_logger
 from prompts import (
     PLANNER_PROMPT,
     PLANNER_PROFILE,
+    UNDERSTAND_PROMPT,
+    PLAN_PROMPT_V2,
 )
 from state import AgentState
 from tools import load_tools
@@ -229,6 +231,10 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 if "invoiceDateTo" not in query_params:
                     query_params["invoiceDateTo"] = "2099-12-31"
                     log.info("Validation: injected invoiceDateTo=2099-12-31 on GET /invoice")
+            # Auto-inject fields param on GET /balanceSheet so account names are available
+            if path == "/balanceSheet" and "fields" not in query_params:
+                query_params["fields"] = "account(id,number,name),balanceChange,balanceIn,balanceOut"
+                log.info("Validation: injected fields param on GET /balanceSheet")
             # Auto-inject required dateFrom on GET /balanceSheet and GET /ledger/posting
             if path in ("/balanceSheet", "/ledger/posting") and "dateFrom" not in query_params:
                 query_params["dateFrom"] = "2000-01-01"
@@ -296,6 +302,35 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                     if isinstance(posting, dict) and "row" not in posting:
                         posting["row"] = idx + 1
                         log.info(f"Validation: added row={idx + 1} to voucher posting")
+            # Auto-inject customer ref on postings to account 1500 (Kundefordringer)
+            # The API requires customer:{id} on account 1500 postings
+            if isinstance(postings, list):
+                # Find a customer ref from any other posting or from the plan context
+                customer_ref = None
+                for posting in postings:
+                    if isinstance(posting, dict) and "customer" in posting:
+                        customer_ref = posting["customer"]
+                        break
+                # Also scan the full plan for a customer $step ref (e.g. from a prior GET/POST /customer)
+                if customer_ref is None:
+                    for other_step in plan:
+                        if other_step.get("tool_name") != "call_api":
+                            continue
+                        other_args = other_step.get("args", {})
+                        other_path = other_args.get("path", "")
+                        other_method = other_args.get("method", "")
+                        if other_path in ("/customer", "/customer/list") and other_method in ("GET", "POST"):
+                            customer_ref = {"id": f"$step_{other_step['step_number']}.id"}
+                            break
+                if customer_ref is not None:
+                    for posting in postings:
+                        if not isinstance(posting, dict):
+                            continue
+                        acct = posting.get("account", {})
+                        acct_num = acct.get("number") if isinstance(acct, dict) else None
+                        if acct_num == 1500 and "customer" not in posting:
+                            posting["customer"] = customer_ref
+                            log.info(f"Validation: injected customer ref on account 1500 posting")
 
         # Fix POST /division — startDate is required
         if method == "POST" and path == "/division" and isinstance(body, dict):
@@ -1105,53 +1140,87 @@ def build_agent():
 
     llm = heal_llm
 
-    # --- Node: planner ---
-    def planner(state: AgentState) -> dict:
-        profile = PLANNER_PROFILE
-
-        prompt_text = PLANNER_PROMPT.format(
+    # --- Node: understand (Phase 1 — Flash, accounting analysis) ---
+    def understand(state: AgentState) -> dict:
+        prompt = UNDERSTAND_PROMPT.format(
             today=date.today().isoformat(),
-            tool_summaries=tool_summaries,
             task=state["original_prompt"],
         )
-
-        full_prompt = profile["prefix"] + "\n\n" + prompt_text
         file_parts = state.get("file_content_parts", [])
-        log.info(f"Planner invoked — persona: {profile['name']}", model=planner_model, temperature=profile["temperature"], prompt_length=len(full_prompt), file_parts=len(file_parts))
-
-        # Build multimodal message if files are attached
         if file_parts:
-            planner_content = [{"type": "text", "text": full_prompt}] + file_parts
+            content = [{"type": "text", "text": prompt}] + file_parts
         else:
-            planner_content = full_prompt
+            content = prompt
 
-        # Create planner LLM
-        persona_llm = ChatGoogleGenerativeAI(
-            model=planner_model,
-            google_api_key=api_key,
-            temperature=profile["temperature"],
-            thinking_level="low",
-        )
+        t0 = time.monotonic()
+        try:
+            response = heal_llm.invoke([HumanMessage(content=content)])
+            raw = _extract_text(response.content)
+            # Parse JSON from response
+            phase1 = _parse_json_object(raw)
+            if not phase1:
+                phase1 = {}
+            elapsed = time.monotonic() - t0
+            log.info(
+                f"Phase 1 UNDERSTAND completed in {elapsed:.1f}s",
+                transaction_type=phase1.get("transaction_type", "unknown"),
+            )
+        except Exception as e:
+            log.warning(f"Phase 1 UNDERSTAND failed: {e}")
+            phase1 = {}
+
+        return {
+            "phase1_output": phase1,
+            "messages": [AIMessage(content=f"Phase 1: {json.dumps(phase1, default=str)[:500]}")],
+        }
+
+    # --- Node: planner (Phase 2 — Pro, API planning) ---
+    def planner(state: AgentState) -> dict:
+        phase1 = state.get("phase1_output", {})
+        file_parts = state.get("file_content_parts", [])
+
+        if phase1:
+            # Two-phase: use Phase 1 output
+            prompt_text = PLAN_PROMPT_V2.format(
+                today=date.today().isoformat(),
+                phase1_output=json.dumps(phase1, indent=2, default=str),
+                tool_summaries=tool_summaries,
+                task=state["original_prompt"],
+            )
+            log.info(f"Phase 2 PLAN invoked", model=planner_model, phase1_type=phase1.get("transaction_type"), prompt_length=len(prompt_text))
+        else:
+            # Fallback: single-phase planning
+            profile = PLANNER_PROFILE
+            prompt_text = profile["prefix"] + "\n\n" + PLANNER_PROMPT.format(
+                today=date.today().isoformat(),
+                tool_summaries=tool_summaries,
+                task=state["original_prompt"],
+            )
+            log.info(f"Single-phase planner (Phase 1 failed)", model=planner_model, prompt_length=len(prompt_text))
+
+        if file_parts:
+            planner_content = [{"type": "text", "text": prompt_text}] + file_parts
+        else:
+            planner_content = prompt_text
 
         try:
-            response = persona_llm.invoke([HumanMessage(content=planner_content)])
+            response = planner_llm.invoke([HumanMessage(content=planner_content)])
             raw = _extract_text(response.content)
             best = _parse_plan_json(raw)
-            log.info(f"Planner ({profile['name']}) returned {len(best)} steps")
+            log.info(f"Planner returned {len(best)} steps")
         except Exception as e:
-            log.warning(f"Planner ({profile['name']}) failed: {e}")
+            log.warning(f"Planner failed: {e}")
             best = []
 
-        # Retry with fallback model (precise, temp=0) if planner returned empty plan
         if not best:
-            log.warning("Empty plan — retrying with fallback model (precise)")
+            log.warning("Empty plan — retrying with fallback model")
             try:
-                response = planner_llm.invoke([HumanMessage(content=planner_content)])
+                response = heal_llm.invoke([HumanMessage(content=planner_content)])
                 raw = _extract_text(response.content)
                 best = _parse_plan_json(raw)
                 log.info(f"Fallback planner returned {len(best)} steps")
             except Exception as e:
-                log.warning(f"Fallback planner also failed: {e}")
+                log.warning(f"Fallback also failed: {e}")
                 best = []
 
         best = validate_plan(best)
@@ -1669,13 +1738,15 @@ def build_agent():
     def after_verify(state: AgentState) -> str:
         return "end"
 
-    # Build graph
+    # Build graph: understand → planner → executor → check_done
     graph = StateGraph(AgentState)
+    graph.add_node("understand", understand)
     graph.add_node("planner", planner)
     graph.add_node("executor", executor)
     graph.add_node("verifier", verifier)
 
-    graph.set_entry_point("planner")
+    graph.set_entry_point("understand")
+    graph.add_edge("understand", "planner")
     graph.add_edge("planner", "executor")
     graph.add_conditional_edges(
         "executor",
@@ -1727,8 +1798,9 @@ def run_agent(agent, prompt: str, file_attachments: list = None) -> None:
         "error_count": 0,
         "original_prompt": original_prompt,
         "file_content_parts": file_content_parts,
-        "deadline": time.monotonic() + 250,  # 250s budget, 50s safety margin for 300s Cloud Run timeout
+        "deadline": time.monotonic() + 250,
         "verification_attempts": 0,
+        "phase1_output": {},
     }
 
     result = agent.invoke(initial_state)
@@ -1913,6 +1985,14 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
         log.warning(f"Placeholder {value} references an empty search result (step {step_num})")
         return _UNRESOLVED
 
+    # Common field name aliases: planner may use wrong name for a field
+    FIELD_ALIASES = {
+        "amountIncVat": "amount",
+        "amountExclVat": "amountExcludingVat",
+        "amountInclVat": "amount",
+        "amountExcludingVat": "amountExclVat",
+    }
+
     # Parse the path: supports .field and [N] indexing
     # e.g. ".value.id", ".values[0].id", ".value.orderLines[0].id"
     parts = re.findall(r"\.(\w+)|\[(\d+)\]", path_str)
@@ -1920,13 +2000,27 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
     for field_part, index_part in parts:
         if field_part:
             if isinstance(obj, dict):
+                prev_obj = obj
                 obj = obj.get(field_part)
+                # If field not found, try common aliases
+                if obj is None and field_part in FIELD_ALIASES:
+                    alt = FIELD_ALIASES[field_part]
+                    obj = prev_obj.get(alt)
+                    if obj is not None:
+                        log.info(f"Placeholder: resolved {field_part} -> {alt} (alias)")
             elif isinstance(obj, list) and obj:
                 # Legacy: if accessing .values on a list, treat as the list itself
                 if field_part == "values" and isinstance(obj, list):
                     pass  # obj stays as the list
                 else:
-                    obj = obj[0].get(field_part) if isinstance(obj[0], dict) else None
+                    prev_obj = obj[0] if isinstance(obj[0], dict) else None
+                    obj = obj[0].get(field_part) if prev_obj else None
+                    # If field not found, try common aliases
+                    if obj is None and prev_obj and field_part in FIELD_ALIASES:
+                        alt = FIELD_ALIASES[field_part]
+                        obj = prev_obj.get(alt)
+                        if obj is not None:
+                            log.info(f"Placeholder: resolved {field_part} -> {alt} (alias, from list)")
             else:
                 obj = None
                 break
