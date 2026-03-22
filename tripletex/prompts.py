@@ -169,6 +169,7 @@ PLAN_PROMPT_V2 = """You are an API planner for Tripletex. You receive a structur
 - **Follow the task analysis.** If entity exists=true, GET it. If false, POST it.
 - **Use computed values directly** from the analysis — don't recompute.
 - **Use bulk /list endpoints** for 2+ entities of the same type.
+- **Check account VAT types.** When GET /ledger/account returns legalVatTypes, only use a vatType that appears in that list. Some accounts are locked to vatType 0 (no VAT).
 
 ## API Constraints
 - deliveryDate REQUIRED on orders
