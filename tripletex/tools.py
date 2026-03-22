@@ -107,6 +107,33 @@ def _make_request(method: str, endpoint: str, params: dict = None, body: dict = 
     return resp.text
 
 
+def _upload_file(endpoint: str, params: dict, file_bytes: bytes, filename: str, content_type: str = "text/csv") -> str:
+    """Upload a file via multipart/form-data POST (for bank statement import etc.)."""
+    global _call_count, _error_count
+    url = f"{_base_url}{endpoint}"
+    _call_count += 1
+    log.info(f"→ POST {endpoint} (file upload: {filename}, {len(file_bytes)} bytes)", params=params)
+    t0 = time.monotonic()
+    session = _get_http_session()
+    try:
+        resp = session.post(
+            url, auth=_auth(), params=params,
+            files={"file": (filename, file_bytes, content_type)},
+            timeout=30,
+        )
+    except Exception as e:
+        log.error(f"✗ POST {endpoint} — upload error", error=str(e))
+        raise
+    elapsed_ms = round((time.monotonic() - t0) * 1000)
+    status = resp.status_code
+    if status >= 400:
+        _error_count += 1
+        log.warning(f"✗ POST {endpoint} → {status}", response=resp.text[:2000])
+    else:
+        log.info(f"✓ POST {endpoint} → {status}", elapsed_ms=elapsed_ms, response=resp.text[:2000])
+    return resp.text
+
+
 def load_tools(swagger_path: str = None):
     """Load tools — generic (default) or legacy typed tools.
 

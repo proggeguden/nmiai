@@ -23,6 +23,7 @@ class AgentState(TypedDict):
     error_count: int
     original_prompt: str
     file_content_parts: list[dict]  # multimodal file parts for planner LLM calls
+    raw_files: dict[str, bytes]  # filename → raw bytes for file upload endpoints
     deadline: float  # time.monotonic() deadline — abort executor if past this
     verification_attempts: int
     phase1_output: dict  # structured understanding from Phase 1 (understand node)

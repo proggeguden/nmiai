@@ -140,7 +140,11 @@ async def solve(request: Request, body: SolveRequest):
             elif f.mime_type.startswith("text/") or f.mime_type in ("application/json", "application/csv", "application/octet-stream"):
                 # Text/CSV files: decode and pass as text with filename label
                 decoded = content_bytes.decode("utf-8", errors="replace")
-                file_attachments.append({"type": "text", "filename": f.filename, "text": f"\n[Contents of {f.filename}]\n{decoded}"})
+                attachment = {"type": "text", "filename": f.filename, "text": f"\n[Contents of {f.filename}]\n{decoded}"}
+                # Preserve raw bytes for CSV files (needed for bank statement upload)
+                if f.filename.lower().endswith(".csv"):
+                    attachment["raw_bytes"] = content_bytes
+                file_attachments.append(attachment)
             else:
                 # Images, etc: pass as base64 for Gemini multimodal
                 file_attachments.append({

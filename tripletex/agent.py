@@ -1734,6 +1734,47 @@ def build_agent():
         if tool_name == "call_api":
             resolved_args = _validate_step_against_schema(resolved_args)
 
+        # Intercept: bank statement import needs multipart file upload
+        if (
+            tool_name == "call_api"
+            and resolved_args.get("method") == "POST"
+            and "/bank/statement/import" in resolved_args.get("path", "")
+        ):
+            from tools import _upload_file
+            raw_files = state.get("raw_files", {})
+            csv_bytes = None
+            csv_filename = None
+            for fname, fbytes in raw_files.items():
+                if fname.lower().endswith(".csv"):
+                    csv_bytes = fbytes
+                    csv_filename = fname
+                    break
+            if csv_bytes:
+                qp = resolved_args.get("query_params", {})
+                try:
+                    result_str = _upload_file(
+                        resolved_args["path"], qp, csv_bytes, csv_filename
+                    )
+                    is_error, status_code = _is_api_error(result_str)
+                    if not is_error:
+                        parsed = json.loads(result_str)
+                        results[f"step_{step['step_number']}"] = _normalize_result(parsed)
+                        completed.append(step["step_number"])
+                        log.info(f"Step {step['step_number']} done: bank statement uploaded")
+                        return {
+                            "current_step": step_idx + 1,
+                            "results": results,
+                            "completed_steps": completed,
+                            "error_count": error_count,
+                            "messages": [AIMessage(content=f"Step {step['step_number']} done: bank statement uploaded")],
+                        }
+                    else:
+                        log.warning(f"Bank statement upload failed: {result_str[:300]}")
+                except Exception as e:
+                    log.warning(f"Bank statement upload error: {e}")
+            else:
+                log.warning("Bank statement import step but no CSV file in raw_files")
+
         # First attempt
         try:
             result_str = tool.invoke(resolved_args)
@@ -2226,10 +2267,14 @@ def run_agent(agent, prompt: str, file_attachments: list = None, request_id: str
     """
     # Build multimodal file content parts (for planner LLM calls)
     file_content_parts = []
+    raw_files = {}  # filename → bytes (for file upload endpoints like bank statement import)
     if file_attachments:
         for f in file_attachments:
             if f["type"] == "text":
                 file_content_parts.append({"type": "text", "text": f"\n[File: {f['filename']}]\n{f['text']}"})
+                # Preserve raw bytes for CSV files
+                if "raw_bytes" in f:
+                    raw_files[f["filename"]] = f["raw_bytes"]
             else:
                 # Binary file (PDF, image) — pass as inline data for Gemini
                 data_url = f"data:{f['mime_type']};base64,{f['content_base64']}"
@@ -2250,6 +2295,7 @@ def run_agent(agent, prompt: str, file_attachments: list = None, request_id: str
         "error_count": 0,
         "original_prompt": original_prompt,
         "file_content_parts": file_content_parts,
+        "raw_files": raw_files,
         "deadline": time.monotonic() + 250,
         "verification_attempts": 0,
         "phase1_output": {},
