@@ -136,6 +136,12 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             path = args["path"]
             log.info("Validation: stripped /v2 prefix from path")
 
+        # ── B0x: Detect literal {id} in paths (planner bug) ──
+        if isinstance(path, str) and "/{id}" in path:
+            log.warning(f"Validation: literal '{{id}}' found in path {path} — this will 404. Removing step.")
+            # Mark this step for removal — literal {id} can't be resolved
+            step["_skip"] = True
+
         # ── B0a: Fix /ledger/accountingDimensionValue/list → individual POSTs ──
         # The /list bulk endpoint does NOT exist for dimension values (405 error)
         if method == "POST" and path == "/ledger/accountingDimensionValue/list" and isinstance(body, list):
@@ -391,7 +397,7 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         # Strip read-only fields from POST /supplier (cause 422)
         if method == "POST" and path in ("/supplier", "/supplier/list") and isinstance(body, (dict, list)):
             sup_bodies = body if isinstance(body, list) else [body]
-            readonly_fields = ["isSupplier", "isWholesaler", "displayName", "locale", "isCustomer"]
+            readonly_fields = ["isSupplier", "isWholesaler", "displayName", "locale", "isCustomer", "bankAccount"]
             for sb in sup_bodies:
                 if isinstance(sb, dict):
                     for rf in readonly_fields:
@@ -596,6 +602,11 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                     log.warning(
                         f"Validation: {field_name}={val} not in {field_info['enum']}"
                     )
+
+    # Strip steps marked with _skip (e.g. literal {id} in paths)
+    plan = [s for s in plan if not s.get("_skip")]
+    for i, s in enumerate(plan):
+        s["step_number"] = i + 1
 
     return plan
 
@@ -2097,9 +2108,22 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
         "amountExcludingVat": "amountExclVat",
     }
 
+    # COMPATIBILITY: After normalization, results are flat {id: N, ...}.
+    # But the planner may still use old patterns like .value.id or .values[0].id.
+    # Strip these prefixes so they resolve against the flat structure.
+    clean_path = path_str
+    if clean_path.startswith(".value."):
+        clean_path = "." + clean_path[7:]  # .value.id → .id
+        log.info(f"Resolver: stripped .value. prefix from {path_str}")
+    elif clean_path.startswith(".values[0]."):
+        clean_path = "." + clean_path[11:]  # .values[0].id → .id
+        log.info(f"Resolver: stripped .values[0]. prefix from {path_str}")
+    elif clean_path == ".value" or clean_path == ".values[0]":
+        # Bare .value or .values[0] — return the object itself (it's already flat)
+        return obj if isinstance(obj, dict) else _UNRESOLVED
+
     # Parse the path: supports .field and [N] indexing
-    # e.g. ".value.id", ".values[0].id", ".value.orderLines[0].id"
-    parts = re.findall(r"\.(\w+)|\[(\d+)\]", path_str)
+    parts = re.findall(r"\.(\w+)|\[(\d+)\]", clean_path)
 
     for field_part, index_part in parts:
         if field_part:
