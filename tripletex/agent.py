@@ -1825,6 +1825,30 @@ def build_agent():
                         except Exception as e:
                             log.warning(f"Auto-create account {acct_number} failed: {e}")
 
+            # Post-success: if GET /department returned empty, auto-create it.
+            # The name comes from the search query (task-derived, not dummy data).
+            if (
+                normalized.get("_empty")
+                and resolved_args.get("method") == "GET"
+                and resolved_args.get("path") == "/department"
+                and call_api_tool
+            ):
+                dept_name = resolved_args.get("query_params", {}).get("name")
+                if dept_name:
+                    log.info(f"GET /department?name={dept_name} returned empty — auto-creating")
+                    try:
+                        create_result = call_api_tool.invoke({
+                            "method": "POST", "path": "/department",
+                            "body": {"name": dept_name},
+                        })
+                        cr_error, _ = _is_api_error(create_result)
+                        if not cr_error:
+                            cr_parsed = json.loads(create_result)
+                            normalized = _normalize_result(cr_parsed)
+                            log.info(f"Auto-created department '{dept_name}' (id={normalized.get('id')})")
+                    except Exception as e:
+                        log.warning(f"Auto-create department '{dept_name}' failed: {e}")
+
             results[f"step_{step['step_number']}"] = normalized
             log.info(
                 f"Step {step['step_number']} completed",
