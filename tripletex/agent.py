@@ -128,73 +128,7 @@ def validate_plan(plan: list[dict], task_text: str = "", phase1: dict = None) ->
     # ── A2: GET /department is fine (free!) but if empty, executor will auto-create ──
     # See the executor post-success handler for GET /department → POST fallback
 
-    # ── A3: Ensure /:send step exists when plan has /:invoice and task says "send" ──
-    has_invoice = any(
-        "/:invoice" in s.get("args", {}).get("path", "") for s in plan
-    )
-    has_send = any(
-        "/:send" in s.get("args", {}).get("path", "") for s in plan
-    )
-    # Detect if task says "send" in any language
-    SEND_KEYWORDS = ["send", "enviar", "senden", "envoyer", "envie", "envía", "invia",
-                     "send faktura", "send regning", "sende", "envoyez", "envíe"]
-    task_lower = task_text.lower()
-    task_says_send = any(kw in task_lower for kw in SEND_KEYWORDS)
-
-    if has_invoice and not has_send:
-        # Strip sendToCustomer from /:invoice steps (unreliable)
-        for step in plan:
-            args = step.get("args", {})
-            if "/:invoice" in args.get("path", "") and args.get("method") == "PUT":
-                qp = args.get("query_params", {})
-                if isinstance(qp, dict):
-                    qp.pop("sendToCustomer", None)
-
-        # Add /:send step if task says send OR planner had sendToCustomer
-        if task_says_send:
-            for step in plan:
-                args = step.get("args", {})
-                if "/:invoice" in args.get("path", "") and args.get("method") == "PUT":
-                    inv_step_num = step["step_number"]
-                    plan.append({
-                        "step_number": inv_step_num + 0.5,
-                        "tool_name": "call_api",
-                        "args": {
-                            "method": "PUT",
-                            "path": f"/invoice/$step_{inv_step_num}.id/:send",
-                            "query_params": {"sendType": "EMAIL"},
-                        },
-                        "description": "Send the invoice via email",
-                    })
-                    log.info(f"Validation: added /:send step (task says 'send')")
-                    break  # Only one /:send needed
-            # Re-sort and renumber
-            plan.sort(key=lambda s: s["step_number"])
-            for i, s in enumerate(plan):
-                s["step_number"] = i + 1
-
-    # ── A4: Force vatType 6 for foreign customers (GmbH/Ltd/Inc = export) ──
-    # Only use suffixes that are unambiguous (3+ chars, unlikely in Norwegian names)
-    FOREIGN_SUFFIXES = ["GmbH", "Ltd", "Inc", "S.A.", "S.r.l.", "SARL", "Lda"]
-    is_foreign = any(f" {s}" in task_text or task_text.endswith(f" {s}") for s in FOREIGN_SUFFIXES)
-    if not is_foreign and phase1 and isinstance(phase1, dict):
-        for role in ("customer", "client"):
-            cust = phase1.get("entities", {}).get(role, {})
-            cname = (cust.get("data", {}) or {}).get("name", "") if isinstance(cust, dict) else ""
-            # Use word-boundary check to avoid false positives
-            if any(f" {s}" in cname or cname.endswith(f" {s}") for s in FOREIGN_SUFFIXES):
-                is_foreign = True
-                break
-    if is_foreign:
-        for step in plan:
-            a = step.get("args", {})
-            if a.get("method") == "POST" and a.get("path") in ("/order", "/order/list"):
-                for b in (a.get("body", []) if isinstance(a.get("body"), list) else [a.get("body", {})]):
-                    if isinstance(b, dict):
-                        for ol in b.get("orderLines", []):
-                            if isinstance(ol, dict):
-                                ol["vatType"] = {"id": 6}
-                                log.info("Validation: forced vatType 6 (export) for foreign customer")
+    # A3, A4 REMOVED — planner decides /:send and vatType from task context
 
     for step in plan:
         if step.get("tool_name") != "call_api":
@@ -240,62 +174,7 @@ def validate_plan(plan: list[dict], task_text: str = "", phase1: dict = None) ->
             # Restart full validation on expanded plan (break would skip remaining steps)
             return validate_plan(plan, task_text=task_text, phase1=phase1)
 
-        # ── B0b: Strip vatType from order lines ONLY if it's a hardcoded wrong ID ──
-        # Keep vatType if it references a $step_N lookup (planner looked it up correctly)
-        # or uses a known valid ID. Only strip bare integer IDs that may be wrong mappings.
-        if (
-            method == "POST"
-            and path in ("/order", "/order/list")
-            and isinstance(body, (dict, list))
-        ):
-            bodies = body if isinstance(body, list) else [body]
-            for b in bodies:
-                if isinstance(b, dict):
-                    for ol in b.get("orderLines", []):
-                        if isinstance(ol, dict) and "vatType" in ol:
-                            vat_ref = ol["vatType"]
-                            # Keep if it's a $step_N reference (planner did a lookup)
-                            if (
-                                isinstance(vat_ref, dict)
-                                and isinstance(vat_ref.get("id"), str)
-                                and "$step_" in str(vat_ref.get("id", ""))
-                            ):
-                                continue
-                            # Keep if it's a known valid OUTPUT vatType ID
-                            # 3=25%, 31=15%(food), 32=12%(transport), 5=0%(exempt), 6=0%(exempt)
-                            if isinstance(vat_ref, dict) and vat_ref.get("id") in (
-                                3,
-                                5,
-                                6,
-                                31,
-                                32,
-                            ):
-                                continue
-                            # Strip anything else (likely wrong hardcoded ID)
-                            del ol["vatType"]
-                            log.info(
-                                "Validation: stripped unknown vatType from order line"
-                            )
-
-        # ── B0b2: Inject vatType on order lines missing it ──
-        # Prefer the product's own vatType (via $step ref) over hardcoded default
-        if method == "POST" and path in ("/order", "/order/list") and isinstance(body, (dict, list)):
-            bodies = body if isinstance(body, list) else [body]
-            for b in bodies:
-                if isinstance(b, dict):
-                    for ol in b.get("orderLines", []):
-                        if isinstance(ol, dict) and "vatType" not in ol:
-                            # Check if this order line references a product step
-                            prod_ref = ol.get("product", {})
-                            prod_id = prod_ref.get("id", "") if isinstance(prod_ref, dict) else str(prod_ref)
-                            if isinstance(prod_id, str) and "$step_" in prod_id:
-                                # Use the product's vatType instead of hardcoding
-                                step_ref = prod_id.split(".")[0]  # "$step_3" from "$step_3.id"
-                                ol["vatType"] = {"id": f"{step_ref}.vatType.id"}
-                                log.info(f"Validation: set vatType to {step_ref}.vatType.id (from product)")
-                            else:
-                                ol["vatType"] = {"id": 3}
-                                log.info("Validation: injected default vatType 25% on order line (no product ref)")
+        # B0b, B0b2 REMOVED — planner decides vatType from task context
 
         # ── B0c: Auto-inject invoiceDueDate for POST /invoice ──
         if method == "POST" and path == "/invoice" and isinstance(body, dict):
@@ -566,18 +445,7 @@ def validate_plan(plan: list[dict], task_text: str = "", phase1: dict = None) ->
                             del sb[rf]
                             log.info(f"Validation: stripped read-only field '{rf}' from POST /supplier")
 
-        # Auto-copy postalAddress ↔ physicalAddress on customer creation (scoring may check either)
-        if method == "POST" and path in ("/customer", "/customer/list") and isinstance(body, (dict, list)):
-            cust_bodies = body if isinstance(body, list) else [body]
-            for cb in cust_bodies:
-                if not isinstance(cb, dict):
-                    continue
-                if "postalAddress" in cb and "physicalAddress" not in cb:
-                    cb["physicalAddress"] = dict(cb["postalAddress"])
-                    log.info("Validation: copied postalAddress → physicalAddress on customer")
-                elif "physicalAddress" in cb and "postalAddress" not in cb:
-                    cb["postalAddress"] = dict(cb["physicalAddress"])
-                    log.info("Validation: copied physicalAddress → postalAddress on customer")
+        # postalAddress/physicalAddress copy REMOVED — planner should set both if needed
 
         # Auto-inject externalId on POST /incomingInvoice orderLines (required field)
         if method == "POST" and "/incomingInvoice" in path and isinstance(body, dict):
@@ -1407,21 +1275,15 @@ def build_agent():
         file_parts = state.get("file_content_parts", [])
 
         if phase1:
-            # Two-phase: use Phase 1 output + workflow-specific hint
+            # Two-phase: use Phase 1 output (no workflow hints — planner is an accountant)
             tx_type = phase1.get("transaction_type", "unknown")
-            # Only add hints for complex workflows that need extra emphasis
-            WORKFLOW_HINTS = {
-                "year_end_closing": "\n## IMPORTANT: Each depreciation = SEPARATE voucher. LAST step: GET /balanceSheet → filter_data sum → compute 22% tax → POST voucher. Never use 0.",
-                "monthly_closing": "\n## IMPORTANT: Each entry = SEPARATE voucher. Depreciation = annual cost / years / 12.",
-            }
-            hint = WORKFLOW_HINTS.get(tx_type, "")
             prompt_text = PLAN_PROMPT_V2.format(
                 today=date.today().isoformat(),
                 phase1_output=json.dumps(phase1, indent=2, default=str),
                 tool_summaries=tool_summaries,
                 task=state["original_prompt"],
-            ) + hint
-            log.info(f"Phase 2 PLAN invoked", model=planner_model, phase1_type=tx_type, prompt_length=len(prompt_text), has_hint=bool(hint))
+            )
+            log.info(f"Phase 2 PLAN invoked", model=planner_model, phase1_type=tx_type, prompt_length=len(prompt_text))
         else:
             # Fallback: single-phase planning
             profile = PLANNER_PROFILE
@@ -1908,64 +1770,7 @@ def build_agent():
                 "messages": [AIMessage(content=f"Step {step['step_number']} failed: bank statement upload")],
             }
 
-        # Pre-flight: enrich POST /division with missing required fields BEFORE the call
-        # This avoids a wasted 422 (4xx on writes costs DOUBLE efficiency)
-        if (
-            tool_name == "call_api"
-            and resolved_args.get("method") == "POST"
-            and resolved_args.get("path") in ("/division", "/division/list")
-            and call_api_tool
-        ):
-            body = resolved_args.get("body", {})
-            bodies = [body] if isinstance(body, dict) else (body if isinstance(body, list) else [])
-            for b in bodies:
-                if not isinstance(b, dict):
-                    continue
-                if "municipality" not in b or not isinstance(b.get("municipality"), dict):
-                    try:
-                        mun_r = call_api_tool.invoke({"method": "GET", "path": "/municipality", "query_params": {"count": 1}})
-                        mun_vals = json.loads(mun_r).get("values", [])
-                        if mun_vals:
-                            b["municipality"] = {"id": mun_vals[0]["id"]}
-                    except Exception:
-                        pass
-                b.setdefault("municipalityDate", date.today().isoformat())
-                if "organizationNumber" not in b or not b["organizationNumber"]:
-                    try:
-                        co_r = call_api_tool.invoke({"method": "GET", "path": "/company", "query_params": {"fields": "id,organizationNumber"}})
-                        co_val = json.loads(co_r).get("value", json.loads(co_r))
-                        org = co_val.get("organizationNumber", "")
-                        if org:
-                            b["organizationNumber"] = org
-                    except Exception:
-                        pass
-                b.setdefault("startDate", date.today().isoformat())
-
-        # Pre-flight: enrich POST /project with missing projectManager BEFORE the call
-        if (
-            tool_name == "call_api"
-            and resolved_args.get("method") == "POST"
-            and resolved_args.get("path") in ("/project", "/project/list")
-            and call_api_tool
-        ):
-            body = resolved_args.get("body", {})
-            bodies = [body] if isinstance(body, dict) else (body if isinstance(body, list) else [])
-            needs_pm = False
-            for b in bodies:
-                if isinstance(b, dict) and "projectManager" not in b:
-                    needs_pm = True
-            if needs_pm:
-                try:
-                    emp_r = call_api_tool.invoke({"method": "GET", "path": "/employee", "query_params": {"count": 1}})
-                    emp_vals = json.loads(emp_r).get("values", [])
-                    if emp_vals:
-                        pm_id = emp_vals[0].get("id")
-                        for b in bodies:
-                            if isinstance(b, dict) and "projectManager" not in b:
-                                b["projectManager"] = {"id": pm_id}
-                                log.info(f"Pre-flight: injected projectManager={pm_id} on POST /project")
-                except Exception:
-                    pass
+        # Division/project pre-flights REMOVED — planner should plan these correctly
 
         # Pre-flight: probe /incomingInvoice availability before wasting a write call
         # GET is FREE — if it 403s, rewrite to /ledger/voucher to avoid double penalty
@@ -2110,29 +1915,7 @@ def build_agent():
                         except Exception as e:
                             log.warning(f"Create account {acct_number} failed: {e}")
 
-            # GET-then-CREATE fallback for departments: GET is free and correct
-            # to check if it exists. If empty, create it — the name comes from the
-            # planner's search query (task-derived data, not fabricated).
-            if (
-                normalized.get("_empty")
-                and resolved_args.get("method") == "GET"
-                and resolved_args.get("path") == "/department"
-                and call_api_tool
-            ):
-                dept_name = resolved_args.get("query_params", {}).get("name")
-                if dept_name:
-                    log.info(f"GET /department?name={dept_name} returned empty — creating it (task data)")
-                    try:
-                        cr = call_api_tool.invoke({
-                            "method": "POST", "path": "/department",
-                            "body": {"name": dept_name},
-                        })
-                        cr_err, _ = _is_api_error(cr)
-                        if not cr_err:
-                            normalized = _normalize_result(json.loads(cr))
-                            log.info(f"Created department '{dept_name}' (id={normalized.get('id')})")
-                    except Exception as e:
-                        log.warning(f"Create department '{dept_name}' failed: {e}")
+            # Department auto-create REMOVED — planner should POST /department if needed
 
             results[f"step_{step['step_number']}"] = normalized
             log.info(
