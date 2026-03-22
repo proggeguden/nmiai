@@ -1449,13 +1449,10 @@ def build_agent():
         if phase1:
             # Two-phase: use Phase 1 output + workflow-specific hint
             tx_type = phase1.get("transaction_type", "unknown")
+            # Only add hints for complex workflows that need extra emphasis
             WORKFLOW_HINTS = {
-                "year_end_closing": "\n## WORKFLOW: Year-End\n- POST missing accounts (1209, 6030, 8700, 2920) FIRST\n- Each depreciation = SEPARATE voucher\n- LAST: GET /balanceSheet → filter_data sum → compute 22% → POST tax voucher. NEVER use 0 or placeholder.",
-                "monthly_closing": "\n## WORKFLOW: Monthly\n- Each entry = SEPARATE voucher\n- For prepaid: debit expense, credit prepaid account\n- For depreciation: annual/12",
-                "ledger_error_correction": "\n## WORKFLOW: Error Correction\n- FIRST: GET /ledger/posting to find erroneous vouchers\n- For each: PUT /ledger/voucher/ID/:reverse\n- Then POST correct voucher with BOTH sides\n- NEVER use suspense accounts",
-                "ledger_analysis": "\n## WORKFLOW: Analysis\n- For period comparison: GET /balanceSheet for EACH period separately\n- COMPUTE differences manually (Feb-Jan)\n- Pick top N by DIFFERENCE, not by absolute value\n- POST /project needs projectManager (GET /employee first)\n- POST /activity then POST /project/projectActivity (separate steps)",
-                "payroll": "\n## WORKFLOW: Payroll\n- Check employee has active employment (if not, create division+employment+details)\n- GET /salary/type?number=2000 for Fastlønn\n- POST /salary/transaction?generateTaxDeduction=true",
-                "supplier_invoice": "\n## WORKFLOW: Supplier Invoice\n- Use POST /ledger/voucher (NOT /incomingInvoice — it's 403)\n- Debit expense + VAT, Credit AP (2400) with supplier ref\n- Include vendorInvoiceNumber on voucher",
+                "year_end_closing": "\n## IMPORTANT: Each depreciation = SEPARATE voucher. LAST step: GET /balanceSheet → filter_data sum → compute 22% tax → POST voucher. Never use 0.",
+                "monthly_closing": "\n## IMPORTANT: Each entry = SEPARATE voucher. Depreciation = annual cost / years / 12.",
             }
             hint = WORKFLOW_HINTS.get(tx_type, "")
             prompt_text = PLAN_PROMPT_V2.format(
@@ -1665,6 +1662,7 @@ def build_agent():
         tool_name = step["tool_name"]
         args = step.get("args", {})
         description = step.get("description", f"Step {step['step_number']}")
+        call_api_tool = tool_map.get("call_api")  # Available for all deterministic handlers
 
         log.info(
             f"Executing step {step['step_number']}: {description}",
@@ -1674,7 +1672,6 @@ def build_agent():
 
         # Handle ensure_bank_account meta-step
         if tool_name == "ensure_bank_account":
-            call_api_tool = tool_map.get("call_api")
             if call_api_tool:
                 result_str, parsed, error_count = _ensure_bank_account(
                     call_api_tool, error_count
