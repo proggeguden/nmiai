@@ -277,16 +277,18 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 if not isinstance(db, dict):
                     continue
                 mun = db.get("municipality")
-                if mun is not None and not isinstance(mun, dict):
-                    # Convert bare int/string to {"id": int} format
-                    try:
-                        db["municipality"] = {"id": int(mun)}
-                    except (TypeError, ValueError):
-                        db["municipality"] = {"id": 301}  # Oslo default
-                    log.info(f"Validation: fixed municipality format on POST /division")
-                elif mun is None:
-                    db["municipality"] = {"id": 301}  # Oslo default
-                    log.info("Validation: injected default municipality on POST /division")
+                if isinstance(mun, dict) and "id" in mun:
+                    # Already correct format — validate the ID is reasonable
+                    mun_id = mun["id"]
+                    if isinstance(mun_id, str) and "$step_" in mun_id:
+                        pass  # Step ref — let resolver handle it
+                    elif not isinstance(mun_id, int) or mun_id > 10000:
+                        mun["id"] = 301  # Invalid ID — use Oslo default
+                        log.info("Validation: replaced invalid municipality ID with Oslo default")
+                else:
+                    # Missing or wrong type — always use Oslo (ID 301)
+                    db["municipality"] = {"id": 301}
+                    log.info("Validation: set municipality to Oslo default on POST /division")
                 if "startDate" not in db:
                     db["startDate"] = date.today().isoformat()
                 if "organizationNumber" not in db:
