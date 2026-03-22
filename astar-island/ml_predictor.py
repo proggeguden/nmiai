@@ -28,6 +28,10 @@ Feature layout (28 features total):
   [25]     survival_x_expansion (survival * expansion rate interaction)
   [26]     survival_over_expansion (survival / (expansion + 0.01) ratio)
   [27]     expansion_x_port (expansion * port_formation rate interaction)
+  [28]     expansion_x_invdist (expansion_rate / (dist_to_settlement + 1))
+  [29]     survival_x_invdist (survival_rate / (dist_to_settlement + 1))
+  [30]     exp_x_sett_r3 (expansion_rate * settlement_count_r3)
+  [31]     forest_clearing_rate (P(non-forest | initially forest) from observations)
 """
 
 import numpy as np
@@ -73,11 +77,15 @@ FEATURE_NAMES = [
     "survival_x_expansion",
     "survival_over_expansion",
     "expansion_x_port",
+    "expansion_x_invdist",
+    "survival_x_invdist",
+    "exp_x_sett_r3",
+    "forest_clearing_rate",
 ]
 
-NUM_FEATURES = 28
+NUM_FEATURES = 32
 
-RATE_KEYS = ["survival", "expansion", "port_formation", "forest_reclamation", "ruin"]
+RATE_KEYS = ["survival", "expansion", "port_formation", "forest_reclamation", "ruin", "forest_clearing"]
 
 RATE_DEFAULT = 0.5
 
@@ -251,7 +259,7 @@ def _resolve_rates(rates):
 def _compute_cell_features(initial_grid, r, c, code, H, W,
                             settlement_dists, cluster_density, rate_values, coast_dists,
                             forest_dists, settlement_positions):
-    """Compute the 28-feature vector for a single cell."""
+    """Compute the 32-feature vector for a single cell."""
     vec = np.zeros(NUM_FEATURES, dtype=np.float32)
 
     # --- Features 0-5: one-hot terrain class ---
@@ -304,8 +312,8 @@ def _compute_cell_features(initial_grid, r, c, code, H, W,
     # --- Feature 12: is_interior_forest (forest with ≥4 adjacent forest cells) ---
     vec[12] = 1.0 if (code == 4 and adj_forest >= 4) else 0.0
 
-    # --- Features 13-17: round-level rates ---
-    vec[13:18] = rate_values
+    # --- Features 13-17: round-level rates (first 5) ---
+    vec[13:18] = rate_values[:5]
 
     # --- Feature 18: dist_to_coast (BFS from ocean cells, capped at 20) ---
     vec[18] = float(min(coast_dists[r][c], _DIST_CAP))
@@ -336,6 +344,15 @@ def _compute_cell_features(initial_grid, r, c, code, H, W,
     vec[26] = surv / (exp + 0.01)                 # survival / expansion ratio
     vec[27] = exp * port                          # expansion × port_formation
 
+    # --- Features 28-31: new interaction + forest clearing features ---
+    dist_sett = vec[6]  # dist_to_settlement (already capped)
+    sett_r3 = vec[20]   # settlement_count_r3
+    forest_clear = rate_values[5] if len(rate_values) > 5 else RATE_DEFAULT
+    vec[28] = exp / (dist_sett + 1.0)             # expansion × inverse distance
+    vec[29] = surv / (dist_sett + 1.0)            # survival × inverse distance
+    vec[30] = exp * sett_r3                        # expansion × nearby settlement count
+    vec[31] = forest_clear                         # forest clearing rate
+
     return vec
 
 
@@ -344,10 +361,10 @@ def _compute_cell_features(initial_grid, r, c, code, H, W,
 # ---------------------------------------------------------------------------
 
 def numpy_forward(features, weights):
-    """Numpy-only MLP forward pass: Input(28) → 128 → 64 → 32 → Softmax(6).
+    """Numpy-only MLP forward pass: Input(F) → hidden layers → Softmax(6).
 
     Args:
-        features: H×W×25 float32 array
+        features: H×W×F float32 array
         weights: dict with fc*_w, fc*_b, feat_mean, feat_std
     Returns:
         H×W×6 float64 probability array
@@ -378,6 +395,27 @@ def numpy_forward(features, weights):
     return x.reshape(H, W, 6)
 
 
+def numpy_forward_ensemble(features, snapshot_weights_list, temperature=None):
+    """Average predictions from multiple MLP snapshots.
+
+    Args:
+        features: H×W×F float32 array
+        snapshot_weights_list: list of weight dicts (one per snapshot)
+        temperature: optional override temperature (applied to each snapshot)
+    Returns:
+        H×W×6 float64 probability array (mean of snapshot softmax outputs)
+    """
+    preds = []
+    for weights in snapshot_weights_list:
+        if temperature is not None:
+            w = dict(weights)
+            w["temperature"] = np.array([temperature], dtype=np.float64)
+        else:
+            w = weights
+        preds.append(numpy_forward(features, w))
+    return np.mean(preds, axis=0)
+
+
 def save_model(weights, path):
     np.savez(path, **weights)
 
@@ -385,3 +423,37 @@ def save_model(weights, path):
 def load_model(path):
     data = np.load(path)
     return {key: data[key] for key in data.files}
+
+
+def save_ensemble(snapshot_weights_list, path):
+    """Save N snapshot weight sets into a single .npz file.
+
+    Format: snap{i}_{key} for each snapshot, plus n_snapshots metadata.
+    """
+    combined = {"n_snapshots": np.array([len(snapshot_weights_list)])}
+    for i, weights in enumerate(snapshot_weights_list):
+        for key, val in weights.items():
+            combined[f"snap{i}_{key}"] = val
+    np.savez(path, **combined)
+
+
+def load_ensemble(path):
+    """Load ensemble weights from .npz file.
+
+    Returns list of weight dicts. Backward-compatible with single-model files
+    (returns a list of 1 weight dict).
+    """
+    data = np.load(path)
+    keys = list(data.files)
+
+    if "n_snapshots" not in keys:
+        # Backward compat: single-model file
+        return [{key: data[key] for key in keys}]
+
+    n = int(data["n_snapshots"].item())
+    snapshots = []
+    for i in range(n):
+        prefix = f"snap{i}_"
+        w = {k[len(prefix):]: data[k] for k in keys if k.startswith(prefix)}
+        snapshots.append(w)
+    return snapshots

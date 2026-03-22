@@ -5,7 +5,7 @@ Run with: pytest test_ml_predictor.py -v
 import numpy as np
 import pytest
 
-from ml_predictor import extract_features, NUM_FEATURES, FEATURE_NAMES, RATE_KEYS, numpy_forward, save_model, load_model
+from ml_predictor import extract_features, NUM_FEATURES, FEATURE_NAMES, RATE_KEYS, numpy_forward, numpy_forward_ensemble, save_model, load_model
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +32,7 @@ class TestExtractFeaturesShape:
     def test_shape(self):
         grid = _make_grid(6, 8)
         result = extract_features(grid)
-        assert result.shape == (6, 8, 28), f"Expected (6,8,25), got {result.shape}"
+        assert result.shape == (6, 8, NUM_FEATURES), f"Expected (6,8,{NUM_FEATURES}), got {result.shape}"
 
     def test_dtype(self):
         grid = _make_grid(4, 4)
@@ -40,10 +40,10 @@ class TestExtractFeaturesShape:
         assert result.dtype == np.float32, f"Expected float32, got {result.dtype}"
 
     def test_num_features_constant(self):
-        assert NUM_FEATURES == 28
+        assert NUM_FEATURES == 32
 
     def test_feature_names_length(self):
-        assert len(FEATURE_NAMES) == 28
+        assert len(FEATURE_NAMES) == 32
 
 
 class TestExtractFeaturesOnehot:
@@ -140,7 +140,7 @@ class TestExtractFeaturesRatesAppended:
                     err_msg=f"Rate features wrong at ({r},{c}): {actual_rates}")
 
     def test_rate_keys(self):
-        assert RATE_KEYS == ["survival", "expansion", "port_formation", "forest_reclamation", "ruin"]
+        assert RATE_KEYS == ["survival", "expansion", "port_formation", "forest_reclamation", "ruin", "forest_clearing"]
 
     def test_partial_rates_order(self):
         """Order of rates must match RATE_KEYS exactly."""
@@ -430,22 +430,79 @@ class TestAdjRuinCount:
         assert result[2, 2, 24] == 1.0
 
 
+def _make_weights(rng=None):
+    """Return a minimal set of valid MLP weights for testing."""
+    if rng is None:
+        rng = np.random.default_rng(42)
+    return {
+        "fc1_w": rng.standard_normal((256, 32)).astype(np.float32) * 0.1,
+        "fc1_b": np.zeros(256, dtype=np.float32),
+        "fc2_w": rng.standard_normal((128, 256)).astype(np.float32) * 0.1,
+        "fc2_b": np.zeros(128, dtype=np.float32),
+        "fc3_w": rng.standard_normal((64, 128)).astype(np.float32) * 0.1,
+        "fc3_b": np.zeros(64, dtype=np.float32),
+        "fc4_w": rng.standard_normal((6, 64)).astype(np.float32) * 0.1,
+        "fc4_b": np.zeros(6, dtype=np.float32),
+        "feat_mean": np.zeros(32, dtype=np.float32),
+        "feat_std": np.ones(32, dtype=np.float32),
+    }
+
+
+class TestEnsembleForward:
+    """Tests for numpy_forward_ensemble."""
+
+    def test_ensemble_averages_snapshots(self):
+        """Ensemble output equals mean of individual forwards."""
+        rng = np.random.default_rng(0)
+        features = rng.standard_normal((5, 5, 32)).astype(np.float32)
+        w1 = _make_weights(np.random.default_rng(1))
+        w2 = _make_weights(np.random.default_rng(2))
+        w3 = _make_weights(np.random.default_rng(3))
+        snapshot_list = [w1, w2, w3]
+
+        result = numpy_forward_ensemble(features, snapshot_list)
+        expected = np.mean([numpy_forward(features, w) for w in snapshot_list], axis=0)
+        np.testing.assert_allclose(result, expected, atol=1e-10,
+            err_msg="Ensemble must equal mean of individual numpy_forward outputs")
+
+    def test_ensemble_sums_to_one(self):
+        """Ensemble output sums to 1 per cell."""
+        rng = np.random.default_rng(7)
+        features = rng.standard_normal((4, 6, 32)).astype(np.float32)
+        w1 = _make_weights(np.random.default_rng(10))
+        w2 = _make_weights(np.random.default_rng(11))
+        result = numpy_forward_ensemble(features, [w1, w2])
+        sums = result.sum(axis=2)
+        np.testing.assert_allclose(sums, 1.0, atol=1e-5,
+            err_msg="Ensemble probabilities must sum to 1 per cell")
+
+    def test_ensemble_single_snapshot_matches_forward(self):
+        """1-snapshot ensemble equals plain numpy_forward."""
+        rng = np.random.default_rng(99)
+        features = rng.standard_normal((3, 3, 32)).astype(np.float32)
+        w = _make_weights(np.random.default_rng(5))
+        result_ensemble = numpy_forward_ensemble(features, [w])
+        result_forward = numpy_forward(features, w)
+        np.testing.assert_allclose(result_ensemble, result_forward, atol=1e-10,
+            err_msg="Single-snapshot ensemble must match numpy_forward exactly")
+
+
 def test_numpy_forward_shape():
     """Forward pass produces H×W×6 with valid probabilities."""
     rng = np.random.default_rng(42)
     weights = {
-        "fc1_w": rng.standard_normal((128, 28)).astype(np.float32) * 0.1,
-        "fc1_b": np.zeros(128, dtype=np.float32),
-        "fc2_w": rng.standard_normal((64, 128)).astype(np.float32) * 0.1,
-        "fc2_b": np.zeros(64, dtype=np.float32),
-        "fc3_w": rng.standard_normal((32, 64)).astype(np.float32) * 0.1,
-        "fc3_b": np.zeros(32, dtype=np.float32),
-        "fc4_w": rng.standard_normal((6, 32)).astype(np.float32) * 0.1,
+        "fc1_w": rng.standard_normal((256, 32)).astype(np.float32) * 0.1,
+        "fc1_b": np.zeros(256, dtype=np.float32),
+        "fc2_w": rng.standard_normal((128, 256)).astype(np.float32) * 0.1,
+        "fc2_b": np.zeros(128, dtype=np.float32),
+        "fc3_w": rng.standard_normal((64, 128)).astype(np.float32) * 0.1,
+        "fc3_b": np.zeros(64, dtype=np.float32),
+        "fc4_w": rng.standard_normal((6, 64)).astype(np.float32) * 0.1,
         "fc4_b": np.zeros(6, dtype=np.float32),
-        "feat_mean": np.zeros(28, dtype=np.float32),
-        "feat_std": np.ones(28, dtype=np.float32),
+        "feat_mean": np.zeros(32, dtype=np.float32),
+        "feat_std": np.ones(32, dtype=np.float32),
     }
-    features = rng.standard_normal((5, 5, 28)).astype(np.float32)
+    features = rng.standard_normal((5, 5, 32)).astype(np.float32)
     preds = numpy_forward(features, weights)
     assert preds.shape == (5, 5, 6)
     sums = preds.sum(axis=2)
@@ -456,19 +513,61 @@ def test_numpy_forward_shape():
 def test_save_load_model_roundtrip(tmp_path):
     """Weights survive save/load roundtrip."""
     weights = {
-        "fc1_w": np.ones((128, 28), dtype=np.float32),
-        "fc1_b": np.zeros(128, dtype=np.float32),
-        "fc2_w": np.ones((64, 128), dtype=np.float32),
-        "fc2_b": np.zeros(64, dtype=np.float32),
-        "fc3_w": np.ones((32, 64), dtype=np.float32),
-        "fc3_b": np.zeros(32, dtype=np.float32),
-        "fc4_w": np.ones((6, 32), dtype=np.float32),
+        "fc1_w": np.ones((256, 32), dtype=np.float32),
+        "fc1_b": np.zeros(256, dtype=np.float32),
+        "fc2_w": np.ones((128, 256), dtype=np.float32),
+        "fc2_b": np.zeros(128, dtype=np.float32),
+        "fc3_w": np.ones((64, 128), dtype=np.float32),
+        "fc3_b": np.zeros(64, dtype=np.float32),
+        "fc4_w": np.ones((6, 64), dtype=np.float32),
         "fc4_b": np.zeros(6, dtype=np.float32),
-        "feat_mean": np.zeros(28, dtype=np.float32),
-        "feat_std": np.ones(28, dtype=np.float32),
+        "feat_mean": np.zeros(32, dtype=np.float32),
+        "feat_std": np.ones(32, dtype=np.float32),
     }
     path = str(tmp_path / "test_weights.npz")
     save_model(weights, path)
     loaded = load_model(path)
     for key in weights:
         np.testing.assert_array_equal(weights[key], loaded[key])
+
+
+class TestEnsembleSaveLoad:
+    """Tests for saving/loading ensemble weight files."""
+
+    def _make_random_weights(self, seed=0):
+        rng = np.random.default_rng(seed)
+        return {
+            "fc1_w": rng.standard_normal((256, 32)).astype(np.float32),
+            "fc1_b": rng.standard_normal(256).astype(np.float32),
+            "fc2_w": rng.standard_normal((128, 256)).astype(np.float32),
+            "fc2_b": rng.standard_normal(128).astype(np.float32),
+            "fc3_w": rng.standard_normal((64, 128)).astype(np.float32),
+            "fc3_b": rng.standard_normal(64).astype(np.float32),
+            "fc4_w": rng.standard_normal((6, 64)).astype(np.float32),
+            "fc4_b": rng.standard_normal(6).astype(np.float32),
+            "feat_mean": rng.standard_normal(32).astype(np.float32),
+            "feat_std": np.abs(rng.standard_normal(32)).astype(np.float32) + 0.1,
+        }
+
+    def test_save_load_ensemble(self, tmp_path):
+        from ml_predictor import save_ensemble, load_ensemble
+        snapshots = [self._make_random_weights(seed=i) for i in range(3)]
+        path = str(tmp_path / "ensemble.npz")
+        save_ensemble(snapshots, path)
+        loaded = load_ensemble(path)
+        assert len(loaded) == 3
+        for i, (orig, loaded_w) in enumerate(zip(snapshots, loaded)):
+            for key in orig:
+                np.testing.assert_array_equal(loaded_w[key], orig[key],
+                    err_msg=f"Snapshot {i} key {key} mismatch")
+
+    def test_load_model_backward_compat(self, tmp_path):
+        """load_ensemble on a single-model file returns list of 1."""
+        from ml_predictor import save_model, load_ensemble
+        w = self._make_random_weights(seed=42)
+        path = str(tmp_path / "single.npz")
+        save_model(w, path)
+        loaded = load_ensemble(path)
+        assert len(loaded) == 1
+        for key in w:
+            np.testing.assert_array_equal(loaded[0][key], w[key])

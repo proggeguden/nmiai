@@ -85,12 +85,21 @@ def compute_gt_rates(gt, initial_grid):
                 non_forest_near += 1.0
                 forest_reclaimed += gt_dist[4]
 
+    # Forest clearing rate: P(non-forest | initially forest)
+    forest_total, forest_cleared = 0.0, 0.0
+    for r in range(H):
+        for c in range(W):
+            if initial_grid[r][c] == 4:
+                forest_total += 1.0
+                forest_cleared += (1.0 - gt[r, c, 4])  # 1 - P(stays forest)
+
     return {
         "survival": sett_alive / max(sett_total, 1),
-        "expansion": min(new_sett / max(non_sett, 1), 0.30),
+        "expansion": min(new_sett / max(non_sett, 1), 0.50),
         "port_formation": min(port_formed / max(coastal_non_port, 1), 0.15),
         "forest_reclamation": min(forest_reclaimed / max(non_forest_near, 1), 0.40),
         "ruin": min(ruin_count / max(sett_total, 1), 0.95),
+        "forest_clearing": min(forest_cleared / max(forest_total, 1), 0.60),
     }
 
 
@@ -300,12 +309,12 @@ def train_model(X, Y, round_ids=None, exclude_round=None,
     from torch.utils.data import TensorDataset, DataLoader
 
     class TerrainMLP(nn.Module):
-        def __init__(self, n_features=28, n_classes=6):
+        def __init__(self, n_features=NUM_FEATURES, n_classes=6):
             super().__init__()
-            self.fc1 = nn.Linear(n_features, 128)
-            self.fc2 = nn.Linear(128, 64)
-            self.fc3 = nn.Linear(64, 32)
-            self.fc4 = nn.Linear(32, n_classes)
+            self.fc1 = nn.Linear(n_features, 256)
+            self.fc2 = nn.Linear(256, 128)
+            self.fc3 = nn.Linear(128, 64)
+            self.fc4 = nn.Linear(64, n_classes)
             self.dropout = nn.Dropout(0.1)
 
         def forward(self, x):
@@ -481,6 +490,8 @@ def main():
                         help="Training epochs")
     parser.add_argument("--lr", type=float, default=1e-3,
                         help="Learning rate")
+    parser.add_argument("--n-snapshots", type=int, default=1,
+                        help="Number of ensemble snapshots to train (different seeds)")
     args = parser.parse_args()
 
     cache = "training_data.npz"
@@ -495,10 +506,24 @@ def main():
     if args.cv:
         cross_validate(X, Y, round_ids)
     else:
-        print(f"\nTraining final model on all {len(X)} samples...")
-        weights = train_model(X, Y, epochs=args.epochs, lr=args.lr, verbose=True)
-        save_model(weights, args.output)
-        print(f"\nModel saved to {args.output}")
+        n_snap = args.n_snapshots
+        if n_snap > 1:
+            print(f"\nTraining {n_snap}-snapshot ensemble on {len(X)} samples...")
+            from ml_predictor import save_ensemble
+            snapshots = []
+            for snap_idx in range(n_snap):
+                print(f"\n--- Snapshot {snap_idx + 1}/{n_snap} (seed offset={snap_idx * 7}) ---")
+                import torch
+                torch.manual_seed(42 + snap_idx * 7)
+                weights = train_model(X, Y, epochs=args.epochs, lr=args.lr, verbose=True)
+                snapshots.append(weights)
+            save_ensemble(snapshots, args.output)
+            print(f"\nEnsemble ({n_snap} snapshots) saved to {args.output}")
+        else:
+            print(f"\nTraining final model on all {len(X)} samples...")
+            weights = train_model(X, Y, epochs=args.epochs, lr=args.lr, verbose=True)
+            save_model(weights, args.output)
+            print(f"\nModel saved to {args.output}")
         print(f"Weights file size: {os.path.getsize(args.output) / 1024:.1f} KB")
 
 

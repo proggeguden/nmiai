@@ -470,12 +470,76 @@ Four parallel research agents analyzed top-team strategies, architecture, featur
 
 **Key discovery: R7/R12 are not harsh-winter rounds.** They're mild survival (47-60%) but with anomalously low expansion (0.126-0.145 vs typical 0.25+). The model over-predicts expansion because it assumes survival correlates with expansion. Rate interaction features partially address this but only 2/19 rounds exhibit the pattern.
 
-**Remaining improvement directions (not yet tried):**
-1. Snapshot ensemble (expected 2-4%, 2h)
-2. LightGBM knowledge distillation (expected 3-8%, 3-4h)
-3. Wider MLP with residual connections (expected 3-7%, 2-3h)
+### Snapshot ensemble (2026-03-22 session)
 
-**Key insight**: Top teams likely use ensembling + spatial context. Our single-model MLP with independent cell predictions is the biggest architectural limitation. Ensembling addresses calibration; spatial features address neighborhood dynamics.
+**Implemented 5-snapshot ensemble.** Each snapshot is the same 28-feature MLP trained with a
+different torch seed. At inference, all 5 softmax outputs are averaged.
+
+**Training**: `python3 train_model.py --rebuild-data --augmentations 10 --n-snapshots 5`
+5 snapshots × 80 epochs on 1.1M cells (20 rounds). Weights: 292KB.
+
+**Results (simulated-production, 3 runs, 19 rounds)**:
+| Metric | Single ML | Ensemble (5) | Improvement |
+|--------|----------|-------------|-------------|
+| Avg KL | 0.0276 | **0.0262** | **-5.1%** |
+
+vs bucket model: 0.0473 → 0.0262 = **-44.6%** total improvement.
+
+**R20 scored 90.48 (rank 36/181)**. Best weighted = 240.1 (R20). Top teams at 247.7.
+R21 scored 86.26 (rank 90/225) — single model, queries exhausted before ensemble ready.
+
+### Wide MLP + new features (2026-03-22 afternoon)
+
+**R21 analysis** revealed forest stability overestimation as #1 error (62% of KL loss).
+Forest cells at d=3-4 from settlements: model predicted ~89% stays forest, GT was ~74%.
+Root cause: expansion rate estimation underestimates forest clearing by 42%.
+
+**Deep research (5 parallel agents):**
+- **Bucket model**: strictly worse than ML on ALL rounds tested. Never use.
+- **LightGBM distillation**: MLP is 2x better than LightGBM. Dead end.
+- **Residual MLP**: worse than plain Wide due to overfitting. Dead end.
+- **Wide MLP (256→128→64)**: **-17% KL** in leave-2-out evaluation. Clear winner.
+- **New features**: expansion_x_invdist (r=-0.81), survival_x_invdist (r=-0.72), exp_x_sett_r3 (r=-0.60), forest_clearing_rate (r=-0.94 with forest outcome).
+
+**Implemented:**
+1. Widened MLP from 128→64→32 to **256→128→64** (3.4x more params)
+2. Added 4 new features (#28-31): expansion_x_invdist, survival_x_invdist, exp_x_sett_r3, forest_clearing_rate
+3. Added `estimate_forest_clearing_rate()` to predictor.py
+4. Raised expansion rate cap from 0.30 to 0.50
+5. Added auto-detect feature count for backward compat with old weights
+
+**Results (R21 simulated-production)**:
+| Model | R21 SimProd KL | vs Single (submitted) |
+|-------|---------------|----------------------|
+| Single ML (submitted) | 0.0341 | — |
+| Old ensemble (28-feat) | 0.0260 | -24% |
+| **Wide ensemble (32-feat)** | **0.0177** | **-48%** |
+
+Training loss: 0.0211 (was 0.0237, -11%). Weights: 990KB.
+
+**R22 submitted** with wide ensemble. Survival=16.5% (harsh round).
+
+### Production scores (updated 2026-03-22)
+| Round | Score | Rank | Model |
+|-------|-------|------|-------|
+| R5 | 13.1 | 130/144 | naive |
+| R6 | 78.5 | 28/186 | bucket spatial |
+| R7 | 60.4 | 83/199 | bucket spatial |
+| R8 | 82.4 | 55/214 | bucket spatial |
+| R9 | 8.5 | 205/221 | broken |
+| R10 | 82.0 | 60/238 | bucket spatial |
+| R11 | 79.7 | 61/171 | bucket spatial |
+| R12 | 59.4 | 38/146 | bucket spatial |
+| R13 | 73.2 | 126/186 | bucket spatial |
+| R14 | 74.1 | 71/244 | bucket spatial |
+| R15 | 86.1 | 97/262 | bucket + k-boost |
+| R16 | 84.0 | 48/272 | bucket + k-boost |
+| R17 | 90.0 | 47/283 | ML 28-feat single |
+| R18 | 84.9 | 43/265 | ML 28-feat single |
+| R19 | 93.5 | 31/228 | ML 28-feat single |
+| R20 | 90.5 | 36/181 | ML 28-feat single |
+| R21 | 86.3 | 90/225 | ML 28-feat single |
+| R22 | pending | — | ML 32-feat wide ensemble |
 
 ---
 

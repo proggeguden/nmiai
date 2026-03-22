@@ -613,6 +613,43 @@ def estimate_ruin_rate(initial_grids, observations):
     return max(0.0, min(ruined / observed, 0.95))
 
 
+def estimate_forest_clearing_rate(initial_grids, observations):
+    """Estimate P(non-forest | initially forest) from observations.
+
+    Counts how many initial forest cells became non-forest in viewport observations.
+    """
+    forest_total = 0
+    forest_cleared = 0
+
+    for obs in observations:
+        vp = obs["viewport"]
+        grid = obs["grid"]
+        seed_idx = obs.get("seed_index", 0)
+        if seed_idx >= len(initial_grids):
+            continue
+        init_grid = initial_grids[seed_idx]
+        vp_x, vp_y = vp["x"], vp["y"]
+        vp_h = len(grid)
+        vp_w = len(grid[0]) if vp_h > 0 else 0
+
+        for dr in range(vp_h):
+            for dc in range(vp_w):
+                r = vp_y + dr
+                c = vp_x + dc
+                H = len(init_grid)
+                W = len(init_grid[0])
+                if 0 <= r < H and 0 <= c < W:
+                    if init_grid[r][c] == 4:  # Initially forest
+                        forest_total += 1
+                        obs_code = grid[dr][dc]
+                        if obs_code != 4:  # Not forest anymore
+                            forest_cleared += 1
+
+    if forest_total < 10:
+        return 0.1  # default
+    return min(forest_cleared / forest_total, 0.60)
+
+
 def estimate_all_rates(initial_grids, observations):
     """Estimate all forward model rates from observations.
 
@@ -624,6 +661,7 @@ def estimate_all_rates(initial_grids, observations):
         "port_formation": estimate_port_formation_rate(initial_grids, observations),
         "forest_reclamation": estimate_forest_reclamation_rate(initial_grids, observations),
         "ruin": estimate_ruin_rate(initial_grids, observations),
+        "forest_clearing": estimate_forest_clearing_rate(initial_grids, observations),
     }
 
 
@@ -1395,12 +1433,12 @@ def build_prediction(height, width, initial_grid, observations,
 
 
 def build_prediction_ml(height, width, initial_grid, observations,
-                        ml_weights, rates=None,
+                        ml_snapshots, rates=None,
                         spatial_obs=None, skip_blending=False):
     """Build a H×W×6 probability tensor using an ML model for base predictions.
 
-    Uses extract_features() + numpy_forward() from ml_predictor for base
-    predictions instead of the bucket spatial model, then applies the same
+    Uses extract_features() + numpy_forward_ensemble() from ml_predictor for
+    base predictions instead of the bucket spatial model, then applies the same
     per-cell observation blending and probability floor as build_prediction().
 
     Parameters
@@ -1411,8 +1449,9 @@ def build_prediction_ml(height, width, initial_grid, observations,
         H×W initial terrain codes.
     observations : list[dict]
         Viewport observations from simulate queries.
-    ml_weights : dict
-        Loaded ML model weights (from ml_predictor.load_model).
+    ml_snapshots : list[dict]
+        List of ML model weight dicts (from ml_predictor.load_ensemble).
+        Single-model files are backward compatible (list of 1 weight dict).
     rates : dict | None
         Round-level rate estimates with keys: survival, expansion,
         port_formation, forest_reclamation, ruin.  None → default 0.5.
@@ -1420,20 +1459,23 @@ def build_prediction_ml(height, width, initial_grid, observations,
         Bucket → observation count mapping from learn_spatial_transition_model.
         Used only for k-confidence scaling in per-cell blending.
     """
-    from ml_predictor import extract_features, numpy_forward
+    from ml_predictor import extract_features, numpy_forward_ensemble
 
-    # Step 1: Base predictions from ML model
+    # Step 1: Base predictions from ML ensemble
     survival = rates.get("survival", 0.5) if rates else 0.5
 
     # Survival-conditional temperature: sharpen on harsh rounds (surv < 10%)
-    if survival < 0.10:
-        eff_weights = dict(ml_weights)
-        eff_weights["temperature"] = np.array([0.85], dtype=np.float64)
-    else:
-        eff_weights = ml_weights
+    temperature = 0.85 if survival < 0.10 else None
 
     features = extract_features(initial_grid, rates=rates)
-    predictions = numpy_forward(features, eff_weights)  # H×W×6 float64
+
+    # Auto-detect model's expected feature count from weights and slice if needed
+    # (backward compat: old 28-feature models work with new 32-feature extraction)
+    expected_feats = ml_snapshots[0]["fc1_w"].shape[1]
+    if features.shape[2] > expected_feats:
+        features = features[:, :, :expected_feats]
+
+    predictions = numpy_forward_ensemble(features, ml_snapshots, temperature=temperature)
 
     # Override static cells with deterministic predictions
     # Ocean (code 10) → Empty class (0), Mountain (code 5) → Mountain class (5)

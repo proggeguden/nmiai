@@ -544,7 +544,7 @@ def backtest_round_simulated(round_id, n_runs=5, verbose=True,
             if model == "ml" and ml_weights is not None:
                 pred = build_prediction_ml(
                     height, width, init_grid, seed_obs,
-                    ml_weights=ml_weights,
+                    ml_snapshots=ml_weights,
                     rates=forward_rates,
                     spatial_obs=spatial_obs,
                     skip_blending=True,
@@ -669,9 +669,9 @@ def main():
             # Load ML weights if needed
             ml_weights = None
             if args.model == "ml":
-                from ml_predictor import load_model
-                ml_weights = load_model(args.ml_weights)
-                print(f"Using ML model from {args.ml_weights}")
+                from ml_predictor import load_ensemble
+                ml_weights = load_ensemble(args.ml_weights)
+                print(f"Using ML ensemble from {args.ml_weights} ({len(ml_weights)} snapshot(s))")
             else:
                 print(f"Using bucket model")
 
