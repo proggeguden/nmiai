@@ -481,6 +481,8 @@ def main():
                         help="Training epochs")
     parser.add_argument("--lr", type=float, default=1e-3,
                         help="Learning rate")
+    parser.add_argument("--n-snapshots", type=int, default=1,
+                        help="Number of ensemble snapshots to train (different seeds)")
     args = parser.parse_args()
 
     cache = "training_data.npz"
@@ -495,10 +497,24 @@ def main():
     if args.cv:
         cross_validate(X, Y, round_ids)
     else:
-        print(f"\nTraining final model on all {len(X)} samples...")
-        weights = train_model(X, Y, epochs=args.epochs, lr=args.lr, verbose=True)
-        save_model(weights, args.output)
-        print(f"\nModel saved to {args.output}")
+        n_snap = args.n_snapshots
+        if n_snap > 1:
+            print(f"\nTraining {n_snap}-snapshot ensemble on {len(X)} samples...")
+            from ml_predictor import save_ensemble
+            snapshots = []
+            for snap_idx in range(n_snap):
+                print(f"\n--- Snapshot {snap_idx + 1}/{n_snap} (seed offset={snap_idx * 7}) ---")
+                import torch
+                torch.manual_seed(42 + snap_idx * 7)
+                weights = train_model(X, Y, epochs=args.epochs, lr=args.lr, verbose=True)
+                snapshots.append(weights)
+            save_ensemble(snapshots, args.output)
+            print(f"\nEnsemble ({n_snap} snapshots) saved to {args.output}")
+        else:
+            print(f"\nTraining final model on all {len(X)} samples...")
+            weights = train_model(X, Y, epochs=args.epochs, lr=args.lr, verbose=True)
+            save_model(weights, args.output)
+            print(f"\nModel saved to {args.output}")
         print(f"Weights file size: {os.path.getsize(args.output) / 1024:.1f} KB")
 
 
