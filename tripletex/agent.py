@@ -120,7 +120,63 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         )
         log.info("Validation: prepended ensure_bank_account step for invoicing plan")
 
-    # (A2/B4 removed — planner handles departments and divisions directly)
+    # ── A2: Convert GET /department → POST /department for employee plans ──
+    # The planner keeps doing GET despite being told to POST. Fix it in code.
+    has_employee_post = any(
+        s.get("tool_name") == "call_api"
+        and s.get("args", {}).get("method") == "POST"
+        and s.get("args", {}).get("path") in ("/employee", "/employee/list")
+        for s in plan
+    )
+    if has_employee_post:
+        for step in plan:
+            if step.get("tool_name") != "call_api":
+                continue
+            args = step.get("args", {})
+            if args.get("method") == "GET" and args.get("path") == "/department":
+                dept_name = args.get("query_params", {}).get("name", "")
+                if dept_name:
+                    # Convert GET to POST — the department won't exist
+                    args["method"] = "POST"
+                    args["body"] = {"name": dept_name}
+                    args.pop("query_params", None)
+                    log.info(f"Validation: converted GET /department → POST /department (name='{dept_name}') for employee plan")
+
+    # ── A3: Ensure /:send step exists when plan has /:invoice and task says "send" ──
+    has_invoice = any(
+        "/:invoice" in s.get("args", {}).get("path", "") for s in plan
+    )
+    has_send = any(
+        "/:send" in s.get("args", {}).get("path", "") for s in plan
+    )
+    if has_invoice and not has_send:
+        # Check if any /:invoice step uses sendToCustomer — that's unreliable
+        for step in plan:
+            args = step.get("args", {})
+            if "/:invoice" in args.get("path", "") and args.get("method") == "PUT":
+                qp = args.get("query_params", {})
+                if isinstance(qp, dict) and qp.pop("sendToCustomer", None):
+                    # Add a /:send step after this one
+                    send_step = {
+                        "step_number": step["step_number"] + 0.5,  # will be renumbered
+                        "tool_name": "call_api",
+                        "args": {
+                            "method": "PUT",
+                            "path": f"$step_{step['step_number']}.id".replace(".id", "") + "/:send" if "$step_" not in args["path"] else args["path"].replace("/:invoice", "/:send"),
+                            "query_params": {"sendType": "EMAIL"},
+                        },
+                        "description": "Send the invoice via email",
+                    }
+                    # Use the invoice step's result ID for the send path
+                    inv_step_num = step["step_number"]
+                    send_step["args"]["path"] = f"/invoice/$step_{inv_step_num}.id/:send"
+                    plan.append(send_step)
+                    log.info(f"Validation: added /:send step after /:invoice step {inv_step_num}")
+        # Re-sort and renumber if we added steps
+        plan.sort(key=lambda s: s["step_number"])
+        for i, s in enumerate(plan):
+            s["step_number"] = i + 1
+
     for step in plan:
         if step.get("tool_name") != "call_api":
             continue
