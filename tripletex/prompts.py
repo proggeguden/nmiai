@@ -34,7 +34,8 @@ If you don't know an account number, GET /ledger/account to search. If you don't
    - "Create customer X" → POST /customer (it's new)
    - "Customer X has an invoice" → GET /customer (it already exists, find it)
    - "Register employee X (email)" → GET /employee?email=X (they likely exist as a user)
-   - Never both GET AND POST for the same entity. Choose one based on the task intent.
+   - "Order with products A and B" → each product may or may not exist. If a product has a number, it likely exists — just GET it. Only POST products that don't exist yet.
+   - Never both GET AND POST for the SAME entity. If GET found it, use the GET result — do NOT also POST it.
 3. **UNDERSTAND FILES DEEPLY.** If the task includes PDF/file attachments (receipts, contracts, invoices), understand the STRUCTURE: what is the vendor/store, what are the line items, what are the amounts, dates, references. Extract ONLY what the task asks about — if the task says "we need the Whiteboard from this receipt", post only the Whiteboard line item, not everything on the receipt. Use file data as the source of truth for amounts, dates, and descriptions.
 4. **Handle departments and divisions yourself.** Create departments with the correct name from the task/file (POST /department). For divisions needed for employment, create one with POST /division (fields: name, startDate, organizationNumber, municipality, municipalityDate).
 4. **Use bulk /list endpoints** for 2+ entities: POST /department/list, /product/list, /customer/list, etc.
@@ -42,13 +43,14 @@ If you don't know an account number, GET /ledger/account to search. If you don't
 6. **Use lookup_endpoint** for unfamiliar endpoints.
 7. **Compute ALL math directly in the plan.** Depreciation = cost / lifetime_years. Monthly = annual / 12. Tax = 22% of taxable income. Write literal computed values in the body. NEVER delegate arithmetic to an LLM tool.
 8. **Ledger accounts**: Standard accounts (1920, 2400, 6010, etc.) usually exist — just GET them. Non-standard accounts (1209, 6030, 8700, 2920) may not exist — GET first, if empty then POST to create.
-9. **Use filter_data for data analysis.** For ledger analysis: GET /balanceSheet?accountNumberFrom=4000&accountNumberTo=9999&count=1000, then filter_data(previous_step="1", operation="sort_desc", field="balanceChange", count=3) to get top 3. For finding invoices: GET /invoice?customerId=X, then use the result directly (planner knows the target amount).
+9. **Use filter_data for data analysis.** For ledger analysis: GET /balanceSheet?accountNumberFrom=4000&accountNumberTo=9999&count=1000&fields=account(id,number,name),balanceChange, then filter_data(previous_step="1", operation="sort_desc", field="balanceChange", count=3). IMPORTANT: include fields=account(id,number,name) so account names are available in results.
+10. **Only reference fields that exist in API responses.** After PUT /order/:invoice, the invoice has $step_N.id and $step_N.amount (NOT amountIncVat). Check the API response structure before referencing fields. When unsure, use $step_N.id for the entity ID and look up other fields with a separate GET.
 
 ## API Constraints (prevent 422 errors)
 - **deliveryDate** REQUIRED on orders — use orderDate if not specified
 - **Voucher postings**: use amountGross AND amountGrossCurrency (both same value). debit=positive, credit=negative, must sum to 0. Do NOT send voucherType or dueDate. INPUT VAT IDs: 1=25%, 11=15%, 13=12%. **Postings to account 1500 (Kundefordringer) MUST include customer:{{"id": N}}.**
 - **Action endpoints** (/:invoice, /:payment, /:send, /:createCreditNote, /:createReminder): ALL params in query_params, NOT body
-- **Payment must be separate from /:invoice**: first PUT /order/ID/:invoice (only invoiceDate), then GET /invoice/paymentType, then PUT /invoice/ID/:payment with paymentDate + paymentTypeId + paidAmount. NEVER hardcode paymentTypeId=0.
+- **Payment must be separate from /:invoice**: first PUT /order/ID/:invoice (only invoiceDate), then GET /invoice/paymentType, then PUT /invoice/ID/:payment with paymentDate + paymentTypeId + paidAmount=$step_INVOICE.amount + paidAmountCurrency=$step_INVOICE.amount. NEVER hardcode paymentTypeId=0. The invoice response field is `amount` (NOT amountIncVat).
 - **Employee 3-step chain — EVERY employee needs this, even side-effects**: POST /department → POST /division (ALWAYS create one — fresh accounts have none) → POST /employee (dateOfBirth from task, department ref, NEVER use 1990-01-01) → POST /employee/employment (employee ref, division ref, startDate) → POST /employee/employment/details (employment ref, all fields from task). Without employment+details, the employee scores 0.
 - **Department name**: Extract from task if specified. NEVER use "General".
 - **occupationCode** is optional — SKIP IT unless the task gives an explicit code number. Do NOT look it up via any API endpoint (they return empty). If needed, just use {{"id": <number_from_task>}}

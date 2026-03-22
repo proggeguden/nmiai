@@ -154,8 +154,8 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             # Renumber all steps after
             for i, s in enumerate(plan):
                 s["step_number"] = i + 1
-            # Restart validation with the expanded plan
-            break
+            # Restart full validation on expanded plan (break would skip remaining steps)
+            return validate_plan(plan)
 
         # ── B0b: Strip vatType from order lines ONLY if it's a hardcoded wrong ID ──
         # Keep vatType if it references a $step_N lookup (planner looked it up correctly)
@@ -354,7 +354,7 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                     log.info("Validation: copied physicalAddress → postalAddress on customer")
 
         # Fix fixedPrice → fixedprice on POST /project (API uses lowercase 'p')
-        if method == "POST" and path in ("/project", "/project/list") and isinstance(body, dict):
+        if method == "POST" and path in ("/project", "/project/list") and isinstance(body, (dict, list)):
             project_bodies = body if isinstance(body, list) else [body]
             for pb in project_bodies:
                 if not isinstance(pb, dict):
@@ -1847,12 +1847,15 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
         false_ref = ternary.group(3)
         # Evaluate the condition: does step_A have non-empty values?
         check_result = results.get(check_step, {})
-        values = (
-            check_result.get("values", []) if isinstance(check_result, dict) else []
+        # After normalization, non-empty results have _all (not values) and id at top level
+        has_values = (
+            isinstance(check_result, dict)
+            and not check_result.get("_empty")
+            and ("id" in check_result or check_result.get("_all"))
         )
-        chosen = true_ref if values else false_ref
+        chosen = true_ref if has_values else false_ref
         log.info(
-            f"Resolved ternary placeholder: chose {'true' if values else 'false'} branch → {chosen}"
+            f"Resolved ternary placeholder: chose {'true' if has_values else 'false'} branch → {chosen}"
         )
         return _resolve_placeholder(chosen, results, llm)
 
@@ -1896,7 +1899,7 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
 
     if result_key not in results:
         log.warning(f"Placeholder references missing result: {value}")
-        return value
+        return _UNRESOLVED
 
     obj = results[result_key]
 
