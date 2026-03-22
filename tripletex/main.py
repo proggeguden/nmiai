@@ -111,12 +111,37 @@ async def solve(request: Request, body: SolveRequest):
             content_bytes = base64.b64decode(f.content_base64)
             log.info(f"File attached: {f.filename}", mime_type=f.mime_type, size_bytes=len(content_bytes), request_id=request_id)
 
-            if f.mime_type.startswith("text/") or f.mime_type == "application/json":
+            if f.mime_type == "application/pdf":
+                # PDFs: extract text server-side for reliable data extraction
+                # Gemini with thinking_level=low struggles to parse PDF images
+                try:
+                    import fitz  # pymupdf
+                    doc = fitz.open(stream=content_bytes, filetype="pdf")
+                    text = "\n".join(page.get_text() for page in doc)
+                    doc.close()
+                    log.info(f"PDF text extracted: {len(text)} chars from {f.filename}", request_id=request_id)
+                    file_attachments.append({"type": "text", "filename": f.filename, "text": f"\n[Contents of {f.filename}]\n{text}"})
+                    # Also send binary so Gemini can see layout if needed
+                    file_attachments.append({
+                        "type": "binary",
+                        "filename": f.filename,
+                        "content_base64": f.content_base64,
+                        "mime_type": f.mime_type,
+                    })
+                except Exception as pdf_err:
+                    log.warning(f"PDF text extraction failed: {pdf_err}, falling back to binary", request_id=request_id)
+                    file_attachments.append({
+                        "type": "binary",
+                        "filename": f.filename,
+                        "content_base64": f.content_base64,
+                        "mime_type": f.mime_type,
+                    })
+            elif f.mime_type.startswith("text/") or f.mime_type == "application/json" or f.mime_type == "text/csv":
                 # Text files: decode and pass as text
                 decoded = content_bytes.decode("utf-8", errors="replace")
                 file_attachments.append({"type": "text", "filename": f.filename, "text": decoded})
             else:
-                # PDFs, images, etc: pass as base64 for Gemini multimodal
+                # Images, etc: pass as base64 for Gemini multimodal
                 file_attachments.append({
                     "type": "binary",
                     "filename": f.filename,

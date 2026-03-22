@@ -24,11 +24,10 @@ Scored on field-by-field correctness + API call efficiency.
 | `main.py` | FastAPI app, request parsing, credential injection, file attachment handling |
 | `agent.py` | StateGraph (planner/executor/check_done), placeholder resolution, validate_plan |
 | `tools.py` | Credentials, `_make_request` with Session pooling, `load_tools()` |
-| `generic_tools.py` | `call_api` + `lookup_endpoint` StructuredTools |
+| `generic_tools.py` | `call_api` + `lookup_endpoint` + `filter_data` StructuredTools |
 | `endpoint_catalog.py` | **GENERATED** — Tier 1/2 endpoint catalog + per-endpoint schemas |
 | `prompts.py` | `PLANNER_PROMPT` (principles-based), `PLANNER_PROFILE` (single accountant) |
 | `state.py` | `AgentState` TypedDict |
-| `docs/task-playbooks.md` | Task type reference with verified API sequences |
 
 ## Key API Endpoints
 - **Supplier invoices**: POST /incomingInvoice?sendTo=ledger (NOT /ledger/voucher)
