@@ -119,7 +119,7 @@ def load_tools(swagger_path: str = None):
         from generic_tools import build_generic_tools, get_tier1_catalog
         tools = build_generic_tools(_make_request)
         summaries = get_tier1_catalog()
-        log.info(f"Loaded {len(tools)} generic tools (call_api + lookup_endpoint)")
+        log.info(f"Loaded {len(tools)} generic tools (call_api + lookup_endpoint + filter_data)")
         return tools, summaries
     else:
         # Legacy: typed tools from swagger

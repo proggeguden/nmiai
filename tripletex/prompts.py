@@ -17,6 +17,7 @@ If you don't know an account number, GET /ledger/account to search. If you don't
 ## Available tools
 - **call_api**(method, path, query_params, body): Call any Tripletex REST API endpoint.
 - **lookup_endpoint**(query): Search API docs for endpoints not listed below.
+- **filter_data**(previous_step, operation, field, value, count): Instant data filter/sort on previous step results. Use sort_desc to get top N by field, find to match field=value, sum to total a field. No latency — runs instantly.
 
 ## API Reference (common endpoints)
 {tool_summaries}
@@ -41,11 +42,11 @@ If you don't know an account number, GET /ledger/account to search. If you don't
 6. **Use lookup_endpoint** for unfamiliar endpoints.
 7. **Compute ALL math directly in the plan.** Depreciation = cost / lifetime_years. Monthly = annual / 12. Tax = 22% of taxable income. Write literal computed values in the body. NEVER delegate arithmetic to an LLM tool.
 8. **Ledger accounts**: Standard accounts (1920, 2400, 6010, etc.) usually exist — just GET them. Non-standard accounts (1209, 6030, 8700, 2920) may not exist — GET first, if empty then POST to create.
-9. **Use API sorting/filtering instead of data analysis.** GET /balanceSheet supports sorting=-balanceChange&count=3&accountNumberFrom=4000&accountNumberTo=9999 to get top expense accounts directly. GET /invoice supports customerId filter. Do NOT use extra tools to analyze API data — use query params.
+9. **Use filter_data for data analysis.** For ledger analysis: GET /balanceSheet?accountNumberFrom=4000&accountNumberTo=9999&count=1000, then filter_data(previous_step="1", operation="sort_desc", field="balanceChange", count=3) to get top 3. For finding invoices: GET /invoice?customerId=X, then use the result directly (planner knows the target amount).
 
 ## API Constraints (prevent 422 errors)
 - **deliveryDate** REQUIRED on orders — use orderDate if not specified
-- **Voucher postings**: use amountGross AND amountGrossCurrency (both same value). debit=positive, credit=negative, must sum to 0. Do NOT send voucherType or dueDate. INPUT VAT IDs: 1=25%, 11=15%, 13=12%.
+- **Voucher postings**: use amountGross AND amountGrossCurrency (both same value). debit=positive, credit=negative, must sum to 0. Do NOT send voucherType or dueDate. INPUT VAT IDs: 1=25%, 11=15%, 13=12%. **Postings to account 1500 (Kundefordringer) MUST include customer:{{"id": N}}.**
 - **Action endpoints** (/:invoice, /:payment, /:send, /:createCreditNote, /:createReminder): ALL params in query_params, NOT body
 - **Payment must be separate from /:invoice**: first PUT /order/ID/:invoice (only invoiceDate), then GET /invoice/paymentType, then PUT /invoice/ID/:payment with paymentDate + paymentTypeId + paidAmount. NEVER hardcode paymentTypeId=0.
 - **Employee 3-step chain — EVERY employee needs this, even side-effects**: POST /department → POST /division (ALWAYS create one — fresh accounts have none) → POST /employee (dateOfBirth from task, department ref, NEVER use 1990-01-01) → POST /employee/employment (employee ref, division ref, startDate) → POST /employee/employment/details (employment ref, all fields from task). Without employment+details, the employee scores 0.
@@ -68,9 +69,11 @@ If you don't know an account number, GET /ledger/account to search. If you don't
 - **Voucher reversal**: PUT /ledger/voucher/ID/:reverse with query_params date=YYYY-MM-DD. Auto-creates reverse voucher.
 - **Year-end/monthly closing**: Use POST /ledger/voucher for depreciation, accruals, tax provisions. Compute amounts directly (depreciation = cost / years, tax = 22% of taxable result). Each depreciation should be a separate voucher. GET /balanceSheet for trial balance verification.
 - **Ledger accounts that may not exist** (1209, 6030, 8700, 2920, etc.): GET first, POST /ledger/account if empty. Standard names: 1209="Akkumulerte avskrivninger", 6010="Avskrivning transportmidler", 6030="Avskrivning inventar/kontormaskiner", 8700="Skattekostnad", 2920="Skyldig skatt".
-- **Ledger analysis** ("find top 3 expense accounts"): Use GET /balanceSheet?dateFrom=X&dateTo=Y&accountNumberFrom=4000&accountNumberTo=9999&sorting=-balanceChange&count=3 — returns top accounts by change directly. Then reference $step_N._all[0], $step_N._all[1], $step_N._all[2] for the 3 accounts.
+- **Ledger analysis** ("find top 3 expense accounts"): GET /balanceSheet?dateFrom=X&dateTo=Y&accountNumberFrom=4000&accountNumberTo=9999&count=1000, then filter_data(previous_step="N", operation="sort_desc", field="balanceChange", count=3). Use $step_FILTER._all[0].account.name, $step_FILTER._all[1].account.name, etc.
+- **Custom dimensions**: POST /ledger/accountingDimensionValue individually for EACH value (NO /list bulk endpoint). Fields: displayName, dimensionIndex (from parent dimension response).
 - **Bank reconciliation**: Use POST /bank/statement/import to upload CSV, then PUT /bank/reconciliation/match/:suggest to auto-match payments to invoices.
 - **Paths** must NOT include /v2 prefix
+- **Language**: The task may be in any language. Use field values EXACTLY as written in the task (names, descriptions, department names) — do NOT translate them. Write step descriptions in English.
 
 ## ID Resolution — SIMPLE
 All step results are normalized. Use these simple patterns:

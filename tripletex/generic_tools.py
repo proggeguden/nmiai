@@ -186,12 +186,28 @@ def build_generic_tools(make_request_fn):
                 results.append(_format_index_entry(op_key, idx))
         return "\n\n".join(results) if results else "No matching endpoints found."
 
-    # analyze_response REMOVED — was timing out (150-300s per LLM call).
-    # All use cases now handled by API query params:
-    # - Ledger analysis: GET /balanceSheet?sorting=-balanceChange&count=3
-    # - Find invoice: GET /invoice?customerId=X (planner knows amounts)
-    # - Bank reconciliation: POST /bank/statement/import + PUT /:suggest
-    # - Math: planner computes directly
+    def filter_data(previous_step: str, operation: str, field: str, value: str = "", count: int = 0) -> str:
+        """Deterministic data filter/sort on previous step results. INSTANT (no LLM call).
+        Operations: sort_desc (sort by field descending, return top count items),
+        find (return items where field matches value), sum (sum a field).
+        previous_step: step number like '1' (will look up results from step_1).
+        """
+        # This runs instantly — no LLM call, no timeout
+        return json.dumps({"error": "filter_data is handled by the executor, not called directly"})
+
+    class FilterDataArgs(BaseModel):
+        previous_step: str = Field(description="Step number to get data from, e.g. '1' for step_1")
+        operation: str = Field(description="Operation: sort_desc, find, sum")
+        field: str = Field(description="Field to operate on, e.g. 'balanceChange', 'amount'")
+        value: str = Field(default="", description="Value to match for 'find' operation")
+        count: int = Field(default=0, description="Number of items to return for 'sort_desc'")
+
+    filter_tool = StructuredTool.from_function(
+        func=filter_data,
+        name="filter_data",
+        description="Instant data filter/sort on previous API results. Use for: sort_desc (top N by field), find (match field=value), sum (total a field). No LLM call — runs in <1ms.",
+        args_schema=FilterDataArgs,
+    )
 
     call_api_tool = StructuredTool.from_function(
         func=call_api,
@@ -207,7 +223,7 @@ def build_generic_tools(make_request_fn):
         args_schema=LookupEndpointArgs,
     )
 
-    return [call_api_tool, lookup_tool]
+    return [call_api_tool, lookup_tool, filter_tool]
 
 
 def get_tier1_catalog() -> str:

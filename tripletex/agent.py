@@ -134,6 +134,29 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             path = args["path"]
             log.info("Validation: stripped /v2 prefix from path")
 
+        # ── B0a: Fix /ledger/accountingDimensionValue/list → individual POSTs ──
+        # The /list bulk endpoint does NOT exist for dimension values (405 error)
+        if method == "POST" and path == "/ledger/accountingDimensionValue/list" and isinstance(body, list):
+            # Split into individual POST steps
+            log.info(f"Validation: splitting /accountingDimensionValue/list into {len(body)} individual POSTs")
+            base_step_num = step["step_number"]
+            new_steps = []
+            for idx, item in enumerate(body):
+                new_steps.append({
+                    "step_number": base_step_num + idx,
+                    "tool_name": "call_api",
+                    "args": {"method": "POST", "path": "/ledger/accountingDimensionValue", "body": item},
+                    "description": f"Create dimension value {item.get('displayName', item.get('name', idx))}",
+                })
+            # Replace this step with the individual ones
+            step_idx_in_plan = plan.index(step)
+            plan[step_idx_in_plan:step_idx_in_plan + 1] = new_steps
+            # Renumber all steps after
+            for i, s in enumerate(plan):
+                s["step_number"] = i + 1
+            # Restart validation with the expanded plan
+            break
+
         # ── B0b: Strip vatType from order lines ONLY if it's a hardcoded wrong ID ──
         # Keep vatType if it references a $step_N lookup (planner looked it up correctly)
         # or uses a known valid ID. Only strip bare integer IDs that may be wrong mappings.
@@ -1070,12 +1093,14 @@ def build_agent():
         model=planner_model,
         google_api_key=api_key,
         temperature=0,
+        thinking_level="low",  # Plans are JSON arrays, not essays — don't waste 60-180s on deep reasoning
     )
 
     heal_llm = ChatGoogleGenerativeAI(
         model=heal_model,
         google_api_key=api_key,
         temperature=0,
+        thinking_level="low",
     )
 
     llm = heal_llm
@@ -1100,11 +1125,12 @@ def build_agent():
         else:
             planner_content = full_prompt
 
-        # Create planner LLM with persona-specific temperature
+        # Create planner LLM
         persona_llm = ChatGoogleGenerativeAI(
             model=planner_model,
             google_api_key=api_key,
             temperature=profile["temperature"],
+            thinking_level="low",
         )
 
         try:
@@ -1379,6 +1405,72 @@ def build_agent():
                                         )
                                     ],
                                 }
+
+        # Handle filter_data tool — instant Python computation, no API call
+        if tool_name == "filter_data" and isinstance(resolved_args, dict):
+            try:
+                step_key = f"step_{resolved_args.get('previous_step', '')}"
+                src_data = results.get(step_key, {})
+                items = src_data.get("_all", [src_data] if isinstance(src_data, dict) and "id" in src_data else [])
+                operation = resolved_args.get("operation", "")
+                field = resolved_args.get("field", "")
+                value = resolved_args.get("value", "")
+                count = resolved_args.get("count", 0)
+
+                if operation == "sort_desc" and count > 0:
+                    def get_val(item, f):
+                        parts = f.split(".")
+                        obj = item
+                        for p in parts:
+                            if isinstance(obj, dict):
+                                obj = obj.get(p, 0)
+                            else:
+                                return 0
+                        try:
+                            return float(obj)
+                        except (TypeError, ValueError):
+                            return 0
+                    sorted_items = sorted(items, key=lambda x: get_val(x, field), reverse=True)
+                    result_data = sorted_items[:count]
+                elif operation == "find":
+                    result_data = [i for i in items if str(i.get(field, "")) == str(value)]
+                elif operation == "sum":
+                    total = sum(float(i.get(field, 0)) for i in items if i.get(field) is not None)
+                    result_data = {"total": total}
+                else:
+                    result_data = items
+
+                # Normalize: first item promoted, rest in _all
+                if isinstance(result_data, list) and result_data:
+                    normalized = dict(result_data[0])
+                    normalized["_all"] = result_data
+                elif isinstance(result_data, dict):
+                    normalized = result_data
+                else:
+                    normalized = {"_empty": True, "_all": []}
+
+                results[f"step_{step['step_number']}"] = normalized
+                log.info(f"Step {step['step_number']} completed: filter_data {operation} ({len(items)} items → {len(result_data) if isinstance(result_data, list) else 1})")
+                completed.append(step["step_number"])
+                return {
+                    "current_step": step_idx + 1,
+                    "results": results,
+                    "completed_steps": completed,
+                    "error_count": error_count,
+                    "messages": [AIMessage(content=f"Step {step['step_number']} done: filter_data {operation}")],
+                }
+            except Exception as e:
+                log.warning(f"filter_data failed: {e}")
+                results[f"step_{step['step_number']}"] = {"_error": True, "error": str(e)}
+                error_count += 1
+                completed.append(step["step_number"])
+                return {
+                    "current_step": step_idx + 1,
+                    "results": results,
+                    "completed_steps": completed,
+                    "error_count": error_count,
+                    "messages": [AIMessage(content=f"Step {step['step_number']} filter_data error: {e}")],
+                }
 
         # Call the tool
         if tool_name not in tool_map:
