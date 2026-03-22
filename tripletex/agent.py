@@ -408,7 +408,7 @@ def validate_plan(plan: list[dict], task_text: str = "", phase1: dict = None) ->
                     "Validation: converted null postings to empty array in POST /ledger/voucher"
                 )
             # Auto-inject amountGross/amountGrossCurrency from amount when missing
-            # The API says "Only the gross amounts will be used" — amount field is ignored
+            # The API says "Only the gross amounts will be used" and "rounded to 2 decimals"
             postings = body.get("postings", [])
             if isinstance(postings, list):
                 for posting in postings:
@@ -418,11 +418,14 @@ def validate_plan(plan: list[dict], task_text: str = "", phase1: dict = None) ->
                     if amt is not None and "amountGross" not in posting:
                         posting["amountGross"] = amt
                         posting["amountGrossCurrency"] = amt
-                        log.info(f"Validation: auto-set amountGross={amt} from amount on voucher posting")
-                    # Also ensure amountGrossCurrency matches amountGross
+                    # Ensure amountGrossCurrency matches amountGross
                     if "amountGross" in posting and "amountGrossCurrency" not in posting:
                         posting["amountGrossCurrency"] = posting["amountGross"]
-                        log.info("Validation: auto-set amountGrossCurrency=amountGross on voucher posting")
+                    # Round ALL gross amounts to 2 decimals (API requirement)
+                    for amt_field in ("amountGross", "amountGrossCurrency"):
+                        val = posting.get(amt_field)
+                        if isinstance(val, (int, float)):
+                            posting[amt_field] = round(val, 2)
             # Add explicit row numbers starting from 1 (row 0 is reserved for system-generated VAT lines)
             if isinstance(postings, list):
                 for idx, posting in enumerate(postings):
