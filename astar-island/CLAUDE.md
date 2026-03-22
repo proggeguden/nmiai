@@ -100,10 +100,23 @@ augmentation to handle production estimation noise. Numpy-only inference (54KB w
 - Production inference: numpy matmuls only, zero PyTorch dependency
 
 **Backtest performance** (simulated-production KL, lower is better):
-- ML model avg: **0.0341** (17 rounds, 3 runs) — **31% better than bucket model (0.0494)**
-- ML wins on ALL 17 rounds, zero regressions
-- Best improvements: R3 -62%, R10 -59%, R15 -41%, R7 -27%, R12 -34%
+- ML model avg: **0.0317** (18 rounds, 3 runs) — **35.7% better than bucket model (0.0493)**
+- ML wins on ALL 18 rounds, zero regressions
 - Probability floor: 0.0005
+
+**Proven improvement techniques (from deep research 2026-03-22)**:
+1. Post-hoc temperature scaling on logits (divide by T before softmax, find T by grid search)
+2. Snapshot ensemble (cyclic LR, save weights at minima, average predictions)
+3. Test-time augmentation: run forward pass K times with perturbed rates, average
+4. More features: settlement_count_r3, forest_density_r2, dist_to_forest, continuous cluster count
+5. LightGBM knowledge distillation (train LGBM, blend into MLP training targets)
+
+**Known dead ends** (do NOT retry):
+- MRF-style spatial smoothing (blurs across terrain boundaries, +10% regression)
+- Focused/repeat query strategy (less coverage = worse buckets, -5 to -23%)
+- Extra bucket features with 50 queries (more buckets = less data per bucket)
+- Terrain-aware A* distance (mountains never create barriers on competition maps)
+- Forward model / Monte Carlo sim (uncalibrated mechanics add noise, +1.1%)
 
 **Bucket model (fallback)**: Still in predictor.py as `build_prediction()`. ML model in
 `build_prediction_ml()`. main.py auto-selects ML if `model_weights.npz` exists.

@@ -412,10 +412,35 @@ rm training_data.npz && python3 train_model.py --augmentations 10 --output model
 
 vs bucket model: 0.0493 → 0.0317 = **-35.7%**.
 
-**Improvement directions**:
-- Architecture: wider layers, residual connections
-- Ensemble: alpha-blend ML + bucket predictions
-- Each new round adds ~5800 cells × 10 augmentations of training data
+### Deep research: frontier improvements (2026-03-22)
+
+Four parallel research agents analyzed top-team strategies, architecture, features, and query strategy.
+
+**Tier 1 — Quick wins (30min-1h, very low risk):**
+1. **Post-hoc temperature scaling**: Divide logits by learned T before softmax. Grid search T∈[0.5,3.0] on held-out round. KL is a calibration metric — this directly targets scoring. Store T in model_weights.npz, apply in numpy_forward. Expected: 5-15%.
+2. **Disable per-cell blending A/B test**: ML model may be accurate enough that 1-2 noisy observations just add noise. Test by commenting out blending in build_prediction_ml(). Expected: 1-3%.
+3. **Test-time augmentation (TTA)**: Run forward pass K=10 times with perturbed rates (multiply each by exp(N(0,0.2))), average predictions. Marginalizes over rate noise (#1 production error source). Expected: 1-2%.
+
+**Tier 2 — Medium effort (2-3h, low-medium risk):**
+4. **Feature engineering** (5 new features → 25 total):
+   - `settlement_count_r3`: continuous count of settlements within BFS d≤3 (targets #1 error: expansion)
+   - `forest_density_r2`: forest count within Manhattan d≤2 (food potential proxy)
+   - `dist_to_forest`: BFS from forest cells, capped 10 (reclamation + starvation)
+   - Replace binary `is_clustered` with continuous `settlement_count_r5`
+   - `adj_ruin_count`: completes neighbor-count feature set (zero cost)
+5. **Snapshot ensemble**: Cyclic cosine LR, save weights at minima, average 3-5 predictions. One training run → M models free. Expected: 2-4%.
+
+**Tier 3 — Bigger bets (3-6h, medium risk):**
+6. **LightGBM knowledge distillation**: Train LGBM on same data, blend Y_new = 0.75*Y_gt + 0.25*Y_lgbm, train MLP on blended targets. Zero production changes. Expected: 3-8%.
+7. **Wider MLP with residual connections**: 256→256→128 + skip + LayerNorm. Expected: 3-7%.
+
+**What NOT to do** (confirmed by research):
+- ConvNet/GNN over 40×40 grid — too complex for numpy inference, marginal gain
+- TabNet/FT-Transformer — complex numpy implementation
+- Change query allocation (10/10/10/10/10 near-optimal)
+- Terrain-aware spatial smoothing (MRF already failed)
+
+**Key insight**: Top teams likely use ensembling + spatial context. Our single-model MLP with independent cell predictions is the biggest architectural limitation. Ensembling addresses calibration; spatial features address neighborhood dynamics.
 
 ---
 
