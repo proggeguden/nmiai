@@ -120,27 +120,8 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         )
         log.info("Validation: prepended ensure_bank_account step for invoicing plan")
 
-    # ── A2: Convert GET /department → POST /department for employee plans ──
-    # The planner keeps doing GET despite being told to POST. Fix it in code.
-    has_employee_post = any(
-        s.get("tool_name") == "call_api"
-        and s.get("args", {}).get("method") == "POST"
-        and s.get("args", {}).get("path") in ("/employee", "/employee/list")
-        for s in plan
-    )
-    if has_employee_post:
-        for step in plan:
-            if step.get("tool_name") != "call_api":
-                continue
-            args = step.get("args", {})
-            if args.get("method") == "GET" and args.get("path") == "/department":
-                dept_name = args.get("query_params", {}).get("name", "")
-                if dept_name:
-                    # Convert GET to POST — the department won't exist
-                    args["method"] = "POST"
-                    args["body"] = {"name": dept_name}
-                    args.pop("query_params", None)
-                    log.info(f"Validation: converted GET /department → POST /department (name='{dept_name}') for employee plan")
+    # ── A2: GET /department is fine (free!) but if empty, executor will auto-create ──
+    # See the executor post-success handler for GET /department → POST fallback
 
     # ── A3: Ensure /:send step exists when plan has /:invoice and task says "send" ──
     has_invoice = any(
@@ -1911,9 +1892,29 @@ def build_agent():
                         log.info(f"Promoted bank paymentType (id={pt.get('id')}) over cash")
                         break
 
-            # NOTE: No auto-create logic here. If GET returns empty, the planner
-            # should have planned a POST step. Auto-creating papers over planner bugs
-            # and can create wrong data. Fix the planner prompt instead.
+            # GET-then-CREATE fallback for departments: GET is free and correct
+            # to check if it exists. If empty, create it — the name comes from the
+            # planner's search query (task-derived data, not fabricated).
+            if (
+                normalized.get("_empty")
+                and resolved_args.get("method") == "GET"
+                and resolved_args.get("path") == "/department"
+                and call_api_tool
+            ):
+                dept_name = resolved_args.get("query_params", {}).get("name")
+                if dept_name:
+                    log.info(f"GET /department?name={dept_name} returned empty — creating it (task data)")
+                    try:
+                        cr = call_api_tool.invoke({
+                            "method": "POST", "path": "/department",
+                            "body": {"name": dept_name},
+                        })
+                        cr_err, _ = _is_api_error(cr)
+                        if not cr_err:
+                            normalized = _normalize_result(json.loads(cr))
+                            log.info(f"Created department '{dept_name}' (id={normalized.get('id')})")
+                    except Exception as e:
+                        log.warning(f"Create department '{dept_name}' failed: {e}")
 
             results[f"step_{step['step_number']}"] = normalized
             log.info(

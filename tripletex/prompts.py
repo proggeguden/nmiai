@@ -55,7 +55,7 @@ If you don't know an account number, GET /ledger/account to search. If you don't
 - **Action endpoints** (/:invoice, /:payment, /:send, /:createCreditNote, /:createReminder): ALL params in query_params, NOT body
 - **Payment must be separate from /:invoice**: first PUT /order/ID/:invoice (only invoiceDate), then GET /invoice/paymentType → pick the one with "bank" in description (usually "Betalt til bank"), then PUT /invoice/ID/:payment with paymentDate + paymentTypeId + paidAmount=$step_INVOICE.amount + paidAmountCurrency=$step_INVOICE.amount. NEVER hardcode paymentTypeId=0. The invoice response field is `amount` (NOT amountIncVat).
 - **Employee chain — EVERY employee needs ALL of these, in this order**:
-  1. **POST /department** with name from the task/PDF. NEVER use GET /department — it will return empty and break everything. The department name is in the task or file, just CREATE it.
+  1. **GET /department** by name from the task/PDF first (free!). If it exists, use it. If empty, the system will auto-create it. Either way, $step_DEPT.id will work.
   2. **POST /division** with name, startDate, organizationNumber (from task/company). Fresh accounts have no divisions.
   3. **POST /employee** with ALL fields from the task/PDF: firstName, lastName, email, dateOfBirth, nationalIdentityNumber, bankAccountNumber, department:{{"id": $step_DEPT.id}}. NEVER use placeholder dates.
   4. **POST /employee/employment** with employee:{{"id": $step_EMP.id}}, division:{{"id": $step_DIV.id}}, startDate.
