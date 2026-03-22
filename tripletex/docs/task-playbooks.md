@@ -1,148 +1,106 @@
 # Task Type Playbooks
 
-These are the ~20 task types we've seen in the competition. For each, document:
-- The ideal API call sequence
-- Required fields the scoring system checks
-- Known gotchas from production logs
-- Status: how well we currently handle this type
-
-Use this as a reference to improve the agent. Cross-check with actual submission logs.
+Ideal API sequences verified against swagger.json and production logs.
+All use $step_N.id (normalized). GET is free. Compute math directly.
 
 ---
 
-## Simple Tasks (should be near-100%)
+## Simple Tasks
 
 ### Create Customer
-**Ideal plan:** POST /customer
-**Fields:** name, organizationNumber, email, postalAddress, physicalAddress (both!)
-**Status:** Works well. validate_plan auto-copies address fields.
-**Gotcha:** None known.
+**Plan:** POST /customer {name, organizationNumber, email, postalAddress, physicalAddress}
+**Gotcha:** Set BOTH postalAddress AND physicalAddress to same value.
 
 ### Create Employee
-**Ideal plan:** POST /employee → POST /employment → POST /employment/details
-**Fields:** firstName, lastName, email, dateOfBirth (FROM TASK!), userType (STANDARD or EXTENDED)
-**Employment fields:** startDate, division (auto-injected)
-**Details fields:** employmentType, employmentForm, remunerationType, workingHoursScheme, percentageOfFullTimeEquivalent, annualSalary
-**Status:** Improving. ensure_department + ensure_division handle infrastructure.
-**Gotcha:** DOB must come from task (never 1990-01-01). occupationCode is optional — skip it.
+**Plan:** POST /department {name} → POST /employee {firstName, lastName, email, dateOfBirth, userType, department:{id}} → POST /division (if none exist) → POST /employee/employment {employee:{id}, division:{id}, startDate} → POST /employee/employment/details {employment:{id}, date, employmentType, employmentForm, remunerationType, workingHoursScheme, percentageOfFullTimeEquivalent, annualSalary}
+**Gotcha:** DOB from task (never 1990-01-01). Division may need creation. occupationCode optional — skip unless task specifies.
 
 ### Create Product
-**Ideal plan:** POST /product
-**Fields:** name, number (if given), priceExcludingVatCurrency, vatType
-**Status:** Works when products don't already exist. GET first if number given.
-**Gotcha:** Never send priceIncludingVat alongside priceExcluding.
+**Plan:** GET /product?number=X → POST /product {name, number, priceExcludingVatCurrency, vatType:{id:3}}
+**Gotcha:** Search first (may exist). Never send priceIncludingVat alongside priceExcluding.
 
 ### Create Departments
-**Ideal plan:** POST /department/list (bulk)
-**Fields:** name (per department)
-**Status:** Works well with bulk endpoint.
-**Gotcha:** None known.
+**Plan:** POST /department/list [{name}, {name}, {name}]
 
 ### Create Supplier
-**Ideal plan:** POST /supplier
-**Fields:** name, organizationNumber, email
-**Status:** Works well.
-**Gotcha:** None known.
+**Plan:** POST /supplier {name, organizationNumber, email}
+**Gotcha:** Don't send read-only fields (isSupplier, displayName, locale).
 
 ### Create Project
-**Ideal plan:** POST /customer (if needed) → GET /employee (PM) → PUT /employee/entitlement → POST /project
-**Fields:** name, startDate, isInternal (false if customer), customer ref, projectManager ref
-**Status:** Works when PM exists. fixedprice (lowercase p), isFixedPrice=true.
-**Gotcha:** PM needs entitlement granted first.
+**Plan:** GET /customer → POST /customer (if needed) → GET /employee?email=PM → PUT /employee/entitlement/:grantEntitlementsByTemplate → POST /project {name, startDate, isInternal:false, customer:{id}, projectManager:{id}}
+**Gotcha:** fixedprice (lowercase p). PM needs entitlement first.
 
 ---
 
 ## Medium Tasks
 
 ### Travel Expense
-**Ideal plan:** GET /employee → GET /travelExpense/paymentType → POST /travelExpense (with inline costs + perDiem)
-**Fields:** employee ref, title, travelDetails (departureDate, returnDate, destination), costs (category, amount, date, paymentType), perDiemCompensations (location, count, overnightAccommodation)
-**Status:** Works ~67% of time.
-**Gotcha:** costs and perDiem CAN be inlined (our prompt says this).
+**Plan:** GET /employee?email=X → GET /travelExpense/paymentType → POST /travelExpense {employee:{id}, title, travelDetails:{departureDate, returnDate, destination}, costs:[{category, amountCurrencyIncVat, date, paymentType:{id}}], perDiemCompensations:[{location, count, overnightAccommodation}]}
+**Gotcha:** Costs and perDiem CAN be inlined.
 
 ### Supplier Invoice
-**Ideal plan:** GET/POST /supplier → GET /ledger/account (expense) → POST /incomingInvoice?sendTo=ledger
-**Body:** {"invoiceHeader": {"vendorId": supplier_id, "invoiceDate", "dueDate", "invoiceAmount" (incl VAT), "invoiceNumber"}, "orderLines": [{"row": 1, "description", "accountId": expense_account_id, "vatTypeId": INPUT_VAT_ID, "amountInclVat"}]}
-**Status:** FIXED in Round 37. Was using /ledger/voucher (0 points), now using /incomingInvoice.
-**Gotcha:** sendTo=ledger is REQUIRED. AP posting (2400) is automatic. vatTypeId: 1=25%, 11=15%, 13=12%.
+**Plan:** GET /supplier?organizationNumber=X → POST /supplier (if needed) → GET /ledger/account?number=XXXX (expense) → POST /incomingInvoice?sendTo=ledger
+**Body:** {invoiceHeader:{vendorId, invoiceDate, dueDate, invoiceAmount (INCL VAT), invoiceNumber}, orderLines:[{row:1, description, accountId, vatTypeId (INPUT: 1=25%), amountInclVat}]}
+**Gotcha:** sendTo=ledger REQUIRED. AP posting automatic. DO NOT use /ledger/voucher.
 
 ### Order → Invoice → Payment
-**Ideal plan:** POST /customer → GET/POST /product → POST /order → PUT /order/:invoice → GET /invoice/paymentType → PUT /invoice/:payment
-**Status:** ~64%. Product search + payment separation work.
-**Gotcha:** Never combine payment with /:invoice. Use real invoice amount for payment.
+**Plan:** POST /customer → GET/POST /product → POST /order {customer:{id}, orderDate, deliveryDate, orderLines} → PUT /order/$id/:invoice {invoiceDate} → GET /invoice/paymentType → PUT /invoice/$id/:payment {paymentDate, paymentTypeId, paidAmount, paidAmountCurrency}
+**Gotcha:** Never combine payment with /:invoice. Use real invoice amount.
 
 ### Register Payment (existing invoice)
-**Ideal plan:** GET /customer → GET /invoice → GET /invoice/paymentType → PUT /invoice/:payment
-**Status:** ~67%. Finding the invoice can be tricky.
-**Gotcha:** Need invoiceDateFrom/To on GET /invoice. Use customerId filter.
+**Plan:** GET /customer?organizationNumber=X → GET /invoice?customerId=$id&invoiceDateFrom=2020-01-01&invoiceDateTo=2099-12-31 → GET /invoice/paymentType → PUT /invoice/$id/:payment
+**Gotcha:** Need invoiceDateFrom/To on GET /invoice.
 
 ### Custom Dimensions
-**Ideal plan:** POST /ledger/accountingDimensionName → POST /ledger/accountingDimensionValue (×N) → GET accounts → POST /ledger/voucher with freeAccountingDimension1
-**Status:** Unknown — need more logs.
-**Gotcha:** Use dimensionName (not name), displayName (not name).
+**Plan:** POST /ledger/accountingDimensionName {dimensionName} → POST /ledger/accountingDimensionValue {displayName, dimensionName:{id}, number} (×N) → GET /ledger/account → POST /ledger/voucher with freeAccountingDimension1:{id}
 
 ---
 
 ## Hard Tasks
 
 ### Payroll
-**Ideal plan:** GET /employee → check employment → GET /salary/type (×2) → POST /salary/transaction
-**Status:** 23% success. Employment chain issues.
-**Gotcha:** Need employee with DOB + active employment + details BEFORE salary transaction. Rate, count, AND amount all required on specifications.
+**Plan:** GET /employee?email=X → GET /employee/employment?employeeId=$id → (create 3-step chain if no employment) → GET /salary/type?number=1000 → GET /salary/type?number=2000 → POST /salary/transaction {year, month, payslips:[{employee:{id}, specifications:[{salaryType:{id}, rate, count, amount}]}]}
+**Gotcha:** Rate, count, AND amount all required. Employee needs DOB + active employment + details.
 
 ### Year-End Closing
-**Ideal plan:** GET accounts (create if missing) → POST /ledger/voucher (×N for depreciation, 1 per asset) → POST /ledger/voucher (prepaid reversal) → GET /balanceSheet (for tax calc) → POST /ledger/voucher (tax provision)
-**Status:** FIXED in Round 37. Planner now computes math directly, creates missing accounts.
-**Gotcha:** Compute in planner: depreciation = cost / years. Tax = 22% of taxable result. Accounts 1209, 6030, 8700 may not exist — GET then POST if empty. Each depreciation as separate voucher.
+**Plan:** GET /ledger/account?number=XXXX (for each account, create if empty) → POST /ledger/voucher (×N, 1 per asset depreciation) → POST /ledger/voucher (prepaid reversal) → GET /balanceSheet (for taxable result) → POST /ledger/voucher (tax provision 22%)
+**Gotcha:** Compute math directly: depreciation = cost / years. Tax = 22% × taxable result. Accounts 1209, 6030, 8700 may not exist — GET then POST. Each depreciation as SEPARATE voucher.
 
 ### Monthly Closing
-**Ideal plan:** GET accounts (create if missing) → POST /ledger/voucher (accrual) → POST /ledger/voucher (depreciation) → POST /ledger/voucher (salary accrual) → GET /balanceSheet (verify)
-**Status:** 5/10 (account 6030 missing). FIXED in Round 37.
-**Gotcha:** Monthly depreciation = cost / lifetime / 12. Prepaid: amortizationAccount on postings auto-spreads. Accounts may need creation.
+**Plan:** GET accounts (create if missing) → POST /ledger/voucher (accrual reversal) → POST /ledger/voucher (depreciation: cost/lifetime/12) → POST /ledger/voucher (salary accrual) → GET /balanceSheet (verify trial balance)
+**Gotcha:** Monthly depreciation = cost / lifetime_years / 12. Voucher postings support amortizationAccount for auto-periodization.
 
-### Ledger Analysis (top 3 accounts)
-**Ideal plan:** GET /balanceSheet (Jan) → GET /balanceSheet (Feb) → analyze_response (compute top 3) → POST /project/list → POST /activity/list → POST /project/projectActivity/list
-**Status:** 0%. analyze_response was broken (now fixed). Need to test.
-**Gotcha:** Filter expense accounts: accountNumberFrom=3000, accountNumberTo=9999.
+### Ledger Analysis (top 3 expense accounts)
+**Plan:** GET /balanceSheet?dateFrom=YYYY-01-01&dateTo=YYYY-01-31&accountNumberFrom=4000&accountNumberTo=9999 → GET /balanceSheet (same for Feb) → compare and identify top 3 by increase → POST /project/list → POST /activity/list → POST /project/projectActivity/list
+**Alternative:** GET /balanceSheet?sorting=-balanceChange&count=3&accountNumberFrom=4000&accountNumberTo=9999 (single call if sorting works)
+**Gotcha:** Use $step_N._all[0], ._all[1], ._all[2] for the 3 accounts.
 
 ### Employee from PDF
-**Ideal plan:** Read PDF → POST /department → POST /employee → POST /employment → POST /employment/details
-**Status:** 0%. POST /employee 422s.
-**Gotcha:** Must extract ALL values from PDF. NIN, DOB, department, salary, start date, employment percentage.
+**Plan:** Extract ALL data from PDF → POST /department {name from PDF} → POST /employee {all fields from PDF} → POST /division (if needed) → POST /employee/employment → POST /employee/employment/details {all fields from PDF}
+**Gotcha:** Extract EVERYTHING: NIN, DOB, department, salary, start date, employment %, occupation code, working hours.
 
 ### Cancel Payment
-**Ideal plan:** GET /customer → GET /invoice → GET /invoice/paymentType → PUT /invoice/:payment (NEGATIVE amount)
-**Status:** ~50%.
-**Gotcha:** Negative paidAmount reverses the payment.
+**Plan:** GET /customer?organizationNumber=X → GET /invoice?customerId=$id → GET /invoice/paymentType → PUT /invoice/$id/:payment {paymentDate, paymentTypeId, paidAmount: NEGATIVE, paidAmountCurrency: NEGATIVE}
 
 ### Credit Note
-**Ideal plan:** GET /customer → GET /invoice → PUT /invoice/:createCreditNote
-**Status:** ~50%.
-**Gotcha:** Action endpoint — params in query_params.
+**Plan:** GET /customer → GET /invoice → PUT /invoice/$id/:createCreditNote {date, comment}
 
 ### Bank Reconciliation
-**Ideal plan:** Parse CSV → match invoices → register payments
-**Status:** 0%. Invoice search returns empty.
-**Gotcha:** Need correct invoice search params. Pre-existing data.
+**Plan:** POST /bank/statement/import (upload CSV) → PUT /bank/reconciliation/match/:suggest (auto-match)
+**Gotcha:** Auto-matching handles most cases. For unmatched: POST /bank/reconciliation/match.
 
 ### GL Error Correction
-**Ideal plan:** GET /ledger/posting → analyze errors → POST correction vouchers
-**Status:** 0%.
-**Gotcha:** Must reverse wrong posting AND create correct one.
+**Plan:** GET /ledger/posting?dateFrom=X&dateTo=Y → identify errors → POST /ledger/voucher (correction entries that reverse wrong + post correct)
+**Gotcha:** Use ACTUAL counter-accounts from postings. Each correction as balanced voucher.
 
 ### Receipt/Expense
-**Ideal plan:** POST /department → GET accounts → POST /ledger/voucher
-**Status:** Sometimes works.
-**Gotcha:** Correct expense account, proper VAT treatment.
+**Plan:** POST /department {name from task} → GET /ledger/account?number=XXXX (expense) → GET /ledger/account?number=1920 (bank) → POST /ledger/voucher {date, description, postings with correct VAT}
+**Gotcha:** Extract expense account and VAT treatment from task/PDF.
 
 ### Timesheet + Invoice
-**Ideal plan:** POST /activity → POST /project/projectActivity → POST /timesheet/entry/list → POST /order → PUT /:invoice
-**Status:** 0%.
-**Gotcha:** Activity needs activityType, project link needs startDate.
+**Plan:** POST /customer → POST /activity {name, activityType:PROJECT_GENERAL_ACTIVITY} → POST /project → POST /project/projectActivity {activity:{id}, project:{id}, startDate} → POST /timesheet/entry/list → POST /order → PUT /order/:invoice
+**Gotcha:** POST /timesheet/entry (NOT /timesheetEntry). Activity needs activityType.
 
----
-
-## TODO: Cross-check with submissions
-- [ ] For each task type, verify the ideal plan against actual production behavior
-- [ ] Note any API endpoints that return unexpected results
-- [ ] Note any fields the scoring system checks that we're missing
+### Foreign Currency (Agio/Disagio)
+**Plan:** GET /customer → GET /invoice?customerId=$id → GET /invoice/paymentType → PUT /invoice/$id/:payment {paymentDate, paymentTypeId, paidAmount (NOK at current rate), paidAmountCurrency (foreign amount)}
+**Gotcha:** Tripletex auto-calculates exchange rate difference. Send BOTH paidAmount AND paidAmountCurrency.
