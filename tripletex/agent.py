@@ -1892,6 +1892,38 @@ def build_agent():
                         log.info(f"Promoted bank paymentType (id={pt.get('id')}) over cash")
                         break
 
+            # GET-then-CREATE for ledger accounts: if GET by number returns empty,
+            # create with standard name. The planner intended to use this account.
+            if (
+                normalized.get("_empty")
+                and resolved_args.get("method") == "GET"
+                and resolved_args.get("path") == "/ledger/account"
+                and call_api_tool
+            ):
+                acct_number = resolved_args.get("query_params", {}).get("number")
+                if acct_number:
+                    # Standard Norwegian account names (NS4102)
+                    STD_NAMES = {
+                        "1209": "Akkumulerte avskrivninger", "1700": "Forskuddsbetalte kostnader",
+                        "2710": "Inngående merverdiavgift", "2920": "Skyldig skatt",
+                        "6010": "Avskrivning transportmidler", "6030": "Avskrivning inventar",
+                        "6700": "Annen driftskostnad", "8700": "Skattekostnad",
+                    }
+                    name = STD_NAMES.get(str(acct_number))
+                    if name:
+                        log.info(f"GET /ledger/account?number={acct_number} empty — creating standard account")
+                        try:
+                            cr = call_api_tool.invoke({
+                                "method": "POST", "path": "/ledger/account",
+                                "body": {"number": int(acct_number), "name": name},
+                            })
+                            cr_err, _ = _is_api_error(cr)
+                            if not cr_err:
+                                normalized = _normalize_result(json.loads(cr))
+                                log.info(f"Created account {acct_number} '{name}' (id={normalized.get('id')})")
+                        except Exception as e:
+                            log.warning(f"Create account {acct_number} failed: {e}")
+
             # GET-then-CREATE fallback for departments: GET is free and correct
             # to check if it exists. If empty, create it — the name comes from the
             # planner's search query (task-derived data, not fabricated).
