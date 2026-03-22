@@ -293,16 +293,14 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                     if isinstance(mun_id, str) and "$step_" in mun_id:
                         pass  # Step ref — let resolver handle it
                     elif not isinstance(mun_id, int) or mun_id > 10000:
-                        mun["id"] = 301  # Invalid ID — use Oslo default
-                        log.info("Validation: replaced invalid municipality ID with Oslo default")
-                else:
-                    # Missing or wrong type — always use Oslo (ID 301)
-                    db["municipality"] = {"id": 301}
-                    log.info("Validation: set municipality to Oslo default on POST /division")
+                        # Invalid ID — leave it for the API to reject rather than fabricating
+                        log.warning(f"Validation: municipality ID {mun_id} looks invalid, leaving as-is")
+                elif mun is None or not isinstance(mun, dict):
+                    # Missing municipality — do NOT inject a hardcoded default.
+                    # The planner should have provided this from the task.
+                    log.warning("Validation: POST /division missing municipality — planner should have provided it")
                 if "startDate" not in db:
                     db["startDate"] = date.today().isoformat()
-                if "organizationNumber" not in db:
-                    db["organizationNumber"] = "000000000"
                 if "municipalityDate" not in db:
                     db["municipalityDate"] = date.today().isoformat()
 
@@ -2159,6 +2157,52 @@ def build_agent():
                             }
                 except Exception as e:
                     log.warning(f"paymentTypeId fix failed: {e}")
+
+        # ── Deterministic fix: POST /division missing municipality → dynamic lookup and retry ──
+        if (
+            status_code == 422
+            and resolved_args.get("method") == "POST"
+            and resolved_args.get("path") in ("/division", "/division/list")
+            and ("kommune" in error_lower or "municipality" in error_lower)
+        ):
+            call_api_tool = tool_map.get("call_api")
+            if call_api_tool:
+                log.info("Deterministic fix: POST /division missing municipality, looking up dynamically")
+                try:
+                    mun_result = call_api_tool.invoke({
+                        "method": "GET", "path": "/municipality",
+                        "query_params": {"count": 1},
+                    })
+                    mun_parsed = json.loads(mun_result)
+                    mun_values = mun_parsed.get("values", [])
+                    if mun_values:
+                        mun_id = mun_values[0].get("id")
+                        body = resolved_args.get("body", {})
+                        if isinstance(body, dict):
+                            body["municipality"] = {"id": mun_id}
+                            body.setdefault("municipalityDate", date.today().isoformat())
+                        elif isinstance(body, list):
+                            for item in body:
+                                if isinstance(item, dict):
+                                    item["municipality"] = {"id": mun_id}
+                                    item.setdefault("municipalityDate", date.today().isoformat())
+                        resolved_args["body"] = body
+                        retry_result_str = tool.invoke(resolved_args)
+                        retry_is_error, _ = _is_api_error(retry_result_str)
+                        if not retry_is_error:
+                            parsed = json.loads(retry_result_str)
+                            results[f"step_{step['step_number']}"] = _normalize_result(parsed)
+                            completed.append(step["step_number"])
+                            log.info(f"Step {step['step_number']} done (municipality {mun_id} injected)")
+                            return {
+                                "current_step": step_idx + 1,
+                                "results": results,
+                                "completed_steps": completed,
+                                "error_count": error_count,
+                                "messages": [AIMessage(content=f"Step {step['step_number']} done (municipality fixed)")],
+                            }
+                except Exception as e:
+                    log.warning(f"Municipality fix failed: {e}")
 
         # ── Deterministic fix: POST /project missing projectManager → GET any employee and retry ──
         if (
