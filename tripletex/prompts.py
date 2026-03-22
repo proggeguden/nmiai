@@ -67,7 +67,7 @@ If you don't know an account number, GET /ledger/account to search. If you don't
 - **Product conflicts**: NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency
 - **Order lines with existing products**: When the product already exists (GET found it), use the PRODUCT'S vatType from the GET response: vatType:{{"id": "$step_PRODUCT.vatType.id"}}. Do NOT override with a different vatType based on prompt text — the product's configured vatType is the source of truth. The same applies to price: if the product has the correct price, you can omit unitPriceExcludingVatCurrency to let it inherit.
 - **Customer addresses**: set BOTH postalAddress AND physicalAddress: {{"addressLine1": "...", "postalCode": "...", "city": "..."}}
-- **Supplier invoice**: Use **POST /ledger/voucher** with proper postings. Debit the expense account (with vatType for input VAT), credit AP account (2400) with supplier ref. Include vendorInvoiceNumber on the voucher. Each posting needs a row number starting at 1. AP posting needs supplier:{{"id": $supplier_id}}. Example: debit 7000 for 55950 gross with vatType 1 (25%), credit 2400 for -55950 with supplier ref.
+- **Supplier invoice**: Use **POST /incomingInvoice?sendTo=ledger**. Body: {{"invoiceHeader": {{"vendorId": $supplier_id, "invoiceDate": "YYYY-MM-DD", "dueDate": "YYYY-MM-DD", "invoiceAmount": total_incl_vat, "invoiceNumber": "INV-XXX"}}, "orderLines": [{{"row": 1, "externalId": "1", "description": "...", "accountId": $acct_id, "vatTypeId": vat_id, "amountInclVat": amount}}]}}. Each orderLine MUST have externalId.
 - **Project**: POST /project REQUIRES projectManager:{{"id": N}} — this is a MANDATORY field, the API will 422 without it. Flow: GET /employee (find PM by email) → PUT /employee/entitlement/:grantEntitlementsByTemplate?employeeId=N&template=ALL_PRIVILEGES → POST /project with projectManager:{{"id": $pm_step.id}}, customer:{{"id": $cust_step.id}}, isInternal: false, fixedprice (lowercase p)
 - **Custom dimensions**: POST /ledger/accountingDimensionName (field: dimensionName), POST /ledger/accountingDimensionValue (field: displayName). Reference on vouchers: freeAccountingDimension1:{{"id": N}}
 - **GET /invoice** REQUIRES invoiceDateFrom + invoiceDateTo params
@@ -185,7 +185,7 @@ PLAN_PROMPT_V2 = """You are an expert Norwegian accountant planning Tripletex AP
 - **projectManager is MANDATORY** on POST /project (even internal). GET /employee first, grant entitlements, then reference.
 - **POST /employee/standardTime** is required for employee onboarding (fromDate, hoursPerDay)
 - **POST /activity** has NO "project" field. Link via separate POST /project/projectActivity
-- **Supplier invoices**: Use POST /ledger/voucher (NOT /incomingInvoice). Debit expense with vatType, credit AP with supplier ref. Include vendorInvoiceNumber.
+- **Supplier invoices**: POST /incomingInvoice?sendTo=ledger. Each orderLine MUST have externalId (string "1", "2", etc.).
 - **Payment flow**: PUT /:invoice (invoiceDate only) → GET /invoice/paymentType (pick "bank" type) → PUT /:payment (paidAmount=$step_INV.amount)
 - **Order lines with existing products**: Use the product's own vatType: vatType:{{"id": "$step_PRODUCT.vatType.id"}}
 - **Foreign customers** (GmbH/Ltd/Inc/SARL): Use OUTPUT vatType 6 (export, 0%)

@@ -89,66 +89,10 @@ def validate_plan(plan: list[dict], task_text: str = "", phase1: dict = None) ->
     except ImportError:
         return plan
 
-    # ── A-1: Rewrite POST /incomingInvoice → POST /ledger/voucher in the plan ──
-    # The /incomingInvoice endpoint is BETA and returns 403 in most test accounts.
-    # Rewriting at plan time saves the wasted 403 write call (costs DOUBLE efficiency).
-    for step in plan:
-        a = step.get("args", {})
-        if a.get("method") == "POST" and "/incomingInvoice" in a.get("path", ""):
-            orig_body = a.get("body", {})
-            header = orig_body.get("invoiceHeader", {})
-            order_lines = orig_body.get("orderLines", [])
-            if header and order_lines:
-                # Build voucher postings from incomingInvoice body
-                postings = []
-                total = 0
-                supplier_id = header.get("vendorId")
-                supplier_ref = {"id": supplier_id} if supplier_id else None
-                for idx, ol in enumerate(order_lines):
-                    amt = ol.get("amountInclVat") or ol.get("amount") or 0
-                    total += amt
-                    posting = {
-                        "account": {"id": ol.get("accountId")},
-                        "amountGross": amt,
-                        "amountGrossCurrency": amt,
-                        "row": idx + 1,
-                    }
-                    if ol.get("vatTypeId"):
-                        posting["vatType"] = {"id": ol["vatTypeId"]}
-                    if supplier_ref:
-                        posting["supplier"] = supplier_ref
-                    if ol.get("description"):
-                        posting["description"] = ol["description"]
-                    postings.append(posting)
-                # AP credit posting — use $step ref if there's a GET /ledger/account?number=2400 step
-                ap_ref = None
-                for prev in plan:
-                    pa = prev.get("args", {})
-                    if pa.get("method") == "GET" and pa.get("path") == "/ledger/account":
-                        if str(pa.get("query_params", {}).get("number")) == "2400":
-                            ap_ref = f"$step_{prev['step_number']}.id"
-                if total > 0:
-                    ap_posting = {
-                        "amountGross": -total,
-                        "amountGrossCurrency": -total,
-                        "row": len(postings) + 1,
-                    }
-                    if ap_ref:
-                        ap_posting["account"] = {"id": ap_ref}
-                    if supplier_ref:
-                        ap_posting["supplier"] = supplier_ref
-                    postings.append(ap_posting)
-                inv_number = header.get("invoiceNumber", "")
-                a["path"] = "/ledger/voucher"
-                a["body"] = {
-                    "date": header.get("invoiceDate", date.today().isoformat()),
-                    "description": f"Faktura {inv_number}" if inv_number else "Leverandørfaktura",
-                    "postings": postings,
-                }
-                if inv_number:
-                    a["body"]["vendorInvoiceNumber"] = inv_number
-                a.pop("query_params", None)  # Remove ?sendTo=ledger
-                log.info(f"Validation: rewrote POST /incomingInvoice → POST /ledger/voucher (saves 403)")
+    # NOTE: Do NOT rewrite /incomingInvoice to /ledger/voucher at plan time.
+    # The scoring system uses GET /supplierInvoice which ONLY sees records created
+    # via /incomingInvoice. Manual vouchers score 0. The 403 fallback in the executor
+    # handles the rare case where the BETA endpoint is not available.
 
     # ── A0: Merge consecutive same-path POSTs into bulk /list calls ──
     plan = _merge_consecutive_posts_to_list(plan, ENDPOINT_CARDS)
@@ -230,13 +174,15 @@ def validate_plan(plan: list[dict], task_text: str = "", phase1: dict = None) ->
                 s["step_number"] = i + 1
 
     # ── A4: Force vatType 6 for foreign customers (GmbH/Ltd/Inc = export) ──
-    FOREIGN_SUFFIXES = ["GmbH", "Ltd", "Inc", "S.A.", "S.r.l.", "SARL", "AB", "BV", "AG", "Oy", "Lda"]
-    is_foreign = any(f" {s}" in task_text for s in FOREIGN_SUFFIXES)
+    # Only use suffixes that are unambiguous (3+ chars, unlikely in Norwegian names)
+    FOREIGN_SUFFIXES = ["GmbH", "Ltd", "Inc", "S.A.", "S.r.l.", "SARL", "Lda"]
+    is_foreign = any(f" {s}" in task_text or task_text.endswith(f" {s}") for s in FOREIGN_SUFFIXES)
     if not is_foreign and phase1 and isinstance(phase1, dict):
         for role in ("customer", "client"):
             cust = phase1.get("entities", {}).get(role, {})
             cname = (cust.get("data", {}) or {}).get("name", "") if isinstance(cust, dict) else ""
-            if any(s in cname for s in FOREIGN_SUFFIXES):
+            # Use word-boundary check to avoid false positives
+            if any(f" {s}" in cname or cname.endswith(f" {s}") for s in FOREIGN_SUFFIXES):
                 is_foreign = True
                 break
     if is_foreign:
