@@ -529,3 +529,45 @@ def test_save_load_model_roundtrip(tmp_path):
     loaded = load_model(path)
     for key in weights:
         np.testing.assert_array_equal(weights[key], loaded[key])
+
+
+class TestEnsembleSaveLoad:
+    """Tests for saving/loading ensemble weight files."""
+
+    def _make_random_weights(self, seed=0):
+        rng = np.random.default_rng(seed)
+        return {
+            "fc1_w": rng.standard_normal((128, 28)).astype(np.float32),
+            "fc1_b": rng.standard_normal(128).astype(np.float32),
+            "fc2_w": rng.standard_normal((64, 128)).astype(np.float32),
+            "fc2_b": rng.standard_normal(64).astype(np.float32),
+            "fc3_w": rng.standard_normal((32, 64)).astype(np.float32),
+            "fc3_b": rng.standard_normal(32).astype(np.float32),
+            "fc4_w": rng.standard_normal((6, 32)).astype(np.float32),
+            "fc4_b": rng.standard_normal(6).astype(np.float32),
+            "feat_mean": rng.standard_normal(28).astype(np.float32),
+            "feat_std": np.abs(rng.standard_normal(28)).astype(np.float32) + 0.1,
+        }
+
+    def test_save_load_ensemble(self, tmp_path):
+        from ml_predictor import save_ensemble, load_ensemble
+        snapshots = [self._make_random_weights(seed=i) for i in range(3)]
+        path = str(tmp_path / "ensemble.npz")
+        save_ensemble(snapshots, path)
+        loaded = load_ensemble(path)
+        assert len(loaded) == 3
+        for i, (orig, loaded_w) in enumerate(zip(snapshots, loaded)):
+            for key in orig:
+                np.testing.assert_array_equal(loaded_w[key], orig[key],
+                    err_msg=f"Snapshot {i} key {key} mismatch")
+
+    def test_load_model_backward_compat(self, tmp_path):
+        """load_ensemble on a single-model file returns list of 1."""
+        from ml_predictor import save_model, load_ensemble
+        w = self._make_random_weights(seed=42)
+        path = str(tmp_path / "single.npz")
+        save_model(w, path)
+        loaded = load_ensemble(path)
+        assert len(loaded) == 1
+        for key in w:
+            np.testing.assert_array_equal(loaded[0][key], w[key])

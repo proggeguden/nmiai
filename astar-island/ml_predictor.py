@@ -406,3 +406,37 @@ def save_model(weights, path):
 def load_model(path):
     data = np.load(path)
     return {key: data[key] for key in data.files}
+
+
+def save_ensemble(snapshot_weights_list, path):
+    """Save N snapshot weight sets into a single .npz file.
+
+    Format: snap{i}_{key} for each snapshot, plus n_snapshots metadata.
+    """
+    combined = {"n_snapshots": np.array([len(snapshot_weights_list)])}
+    for i, weights in enumerate(snapshot_weights_list):
+        for key, val in weights.items():
+            combined[f"snap{i}_{key}"] = val
+    np.savez(path, **combined)
+
+
+def load_ensemble(path):
+    """Load ensemble weights from .npz file.
+
+    Returns list of weight dicts. Backward-compatible with single-model files
+    (returns a list of 1 weight dict).
+    """
+    data = np.load(path)
+    keys = list(data.files)
+
+    if "n_snapshots" not in keys:
+        # Backward compat: single-model file
+        return [{key: data[key] for key in keys}]
+
+    n = int(data["n_snapshots"].item())
+    snapshots = []
+    for i in range(n):
+        prefix = f"snap{i}_"
+        w = {k[len(prefix):]: data[k] for k in keys if k.startswith(prefix)}
+        snapshots.append(w)
+    return snapshots
