@@ -2383,51 +2383,67 @@ def build_agent():
                 except Exception as e:
                     log.warning(f"paymentTypeId fix failed: {e}")
 
-        # ── Deterministic fix: POST /division missing municipality → dynamic lookup and retry ──
+        # ── Deterministic fix: POST /division 422 → fix missing fields dynamically ──
         if (
             status_code == 422
             and resolved_args.get("method") == "POST"
             and resolved_args.get("path") in ("/division", "/division/list")
-            and ("kommune" in error_lower or "municipality" in error_lower)
         ):
             call_api_tool = tool_map.get("call_api")
             if call_api_tool:
-                log.info("Deterministic fix: POST /division missing municipality, looking up dynamically")
+                log.info("Deterministic fix: POST /division 422, fixing missing required fields")
                 try:
-                    mun_result = call_api_tool.invoke({
-                        "method": "GET", "path": "/municipality",
-                        "query_params": {"count": 1},
-                    })
-                    mun_parsed = json.loads(mun_result)
-                    mun_values = mun_parsed.get("values", [])
-                    if mun_values:
-                        mun_id = mun_values[0].get("id")
-                        body = resolved_args.get("body", {})
-                        if isinstance(body, dict):
-                            body["municipality"] = {"id": mun_id}
-                            body.setdefault("municipalityDate", date.today().isoformat())
-                        elif isinstance(body, list):
-                            for item in body:
-                                if isinstance(item, dict):
-                                    item["municipality"] = {"id": mun_id}
-                                    item.setdefault("municipalityDate", date.today().isoformat())
-                        resolved_args["body"] = body
-                        retry_result_str = tool.invoke(resolved_args)
-                        retry_is_error, _ = _is_api_error(retry_result_str)
-                        if not retry_is_error:
-                            parsed = json.loads(retry_result_str)
-                            results[f"step_{step['step_number']}"] = _normalize_result(parsed)
-                            completed.append(step["step_number"])
-                            log.info(f"Step {step['step_number']} done (municipality {mun_id} injected)")
-                            return {
-                                "current_step": step_idx + 1,
-                                "results": results,
-                                "completed_steps": completed,
-                                "error_count": error_count,
-                                "messages": [AIMessage(content=f"Step {step['step_number']} done (municipality fixed)")],
-                            }
+                    body = resolved_args.get("body", {})
+                    bodies = [body] if isinstance(body, dict) else (body if isinstance(body, list) else [])
+
+                    for b in bodies:
+                        if not isinstance(b, dict):
+                            continue
+                        # Fix municipality
+                        if "municipality" not in b or not isinstance(b.get("municipality"), dict):
+                            mun_result = call_api_tool.invoke({
+                                "method": "GET", "path": "/municipality",
+                                "query_params": {"count": 1},
+                            })
+                            mun_values = json.loads(mun_result).get("values", [])
+                            if mun_values:
+                                b["municipality"] = {"id": mun_values[0]["id"]}
+                                log.info(f"Injected municipality {mun_values[0]['id']}")
+                        b.setdefault("municipalityDate", date.today().isoformat())
+                        # Fix organizationNumber — look up company's own org number
+                        if "organizationNumber" not in b or not b["organizationNumber"]:
+                            try:
+                                co_result = call_api_tool.invoke({
+                                    "method": "GET", "path": "/company",
+                                    "query_params": {"fields": "id,organizationNumber"},
+                                })
+                                co_parsed = json.loads(co_result)
+                                co_val = co_parsed.get("value", co_parsed)
+                                org_nr = co_val.get("organizationNumber", "")
+                                if org_nr:
+                                    b["organizationNumber"] = org_nr
+                                    log.info(f"Injected company orgNumber {org_nr}")
+                            except Exception:
+                                pass
+                        b.setdefault("startDate", date.today().isoformat())
+
+                    resolved_args["body"] = body
+                    retry_result_str = tool.invoke(resolved_args)
+                    retry_is_error, _ = _is_api_error(retry_result_str)
+                    if not retry_is_error:
+                        parsed = json.loads(retry_result_str)
+                        results[f"step_{step['step_number']}"] = _normalize_result(parsed)
+                        completed.append(step["step_number"])
+                        log.info(f"Step {step['step_number']} done (division fields fixed)")
+                        return {
+                            "current_step": step_idx + 1,
+                            "results": results,
+                            "completed_steps": completed,
+                            "error_count": error_count,
+                            "messages": [AIMessage(content=f"Step {step['step_number']} done (division fixed)")],
+                        }
                 except Exception as e:
-                    log.warning(f"Municipality fix failed: {e}")
+                    log.warning(f"Division fix failed: {e}")
 
         # ── Deterministic fix: POST /project missing projectManager → GET any employee and retry ──
         if (
