@@ -378,6 +378,27 @@ def numpy_forward(features, weights):
     return x.reshape(H, W, 6)
 
 
+def numpy_forward_ensemble(features, snapshot_weights_list, temperature=None):
+    """Average predictions from multiple MLP snapshots.
+
+    Args:
+        features: H×W×F float32 array
+        snapshot_weights_list: list of weight dicts (one per snapshot)
+        temperature: optional override temperature (applied to each snapshot)
+    Returns:
+        H×W×6 float64 probability array (mean of snapshot softmax outputs)
+    """
+    preds = []
+    for weights in snapshot_weights_list:
+        if temperature is not None:
+            w = dict(weights)
+            w["temperature"] = np.array([temperature], dtype=np.float64)
+        else:
+            w = weights
+        preds.append(numpy_forward(features, w))
+    return np.mean(preds, axis=0)
+
+
 def save_model(weights, path):
     np.savez(path, **weights)
 
