@@ -96,3 +96,27 @@ Key commits since last stable (Round 38, revision 00070):
 - Round 39b: Division municipality + product/account handlers
 - externalId fix for incomingInvoice
 - CSV handling fix
+
+---
+
+## Self-Improve Cycle 2 (2026-03-22 ~07:15 UTC)
+
+### Failures Found
+- incomingInvoice body structure completely wrong: planner puts header fields at root level instead of in `invoiceHeader` wrapper
+- Uses `{"id": N}` object refs where API expects flat integers (`vendorId`, `accountId`, `vatTypeId`)
+- Both supplier invoice PDF tasks (0/10 and 0/8) failed because of this
+
+### Fixes Applied
+1. **agent.py validate_plan**: Auto-restructure POST /incomingInvoice body
+   - Wrap header fields (supplier, invoiceNumber, dates, amount) into `invoiceHeader`
+   - Flatten `supplier: {"id": N}` → `vendorId: N`
+   - Flatten `account: {"id": N}` → `accountId: N` on orderLines
+   - Flatten `vatType: {"id": N}` → `vatTypeId: N` on orderLines
+
+### Commits
+- `57660e1`: Self-improve cycle 2: Fix incomingInvoice body structure
+
+### Remaining Issues
+- Phase 2 planner still generates wrong body structure (prompt issue) — code fix compensates
+- VAT code mismatch on locked accounts
+- Payroll employment check for existing employees
