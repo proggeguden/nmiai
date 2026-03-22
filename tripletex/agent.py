@@ -1250,13 +1250,24 @@ def build_agent():
     # --- Node: planner (multi-persona) ---
     def planner(state: AgentState) -> dict:
         import random
-        # Weighted selection: precise dominates (60%), thorough (30%), creative (10%)
-        # Creative generates analyze_response-heavy plans that are fragile
-        profile = random.choices(
-            PLANNER_PROFILES,
-            weights=[60, 30, 10],
-            k=1,
-        )[0]
+        # Smart persona selection based on task complexity
+        prompt_lower = state["original_prompt"].lower()
+
+        simple_keywords = ["customer", "product", "department", "supplier",
+                           "kunde", "produkt", "avdeling", "leverandør", "client",
+                           "produit", "producto", "Kunde", "fournisseur", "fornecedor",
+                           "créez le client", "crie o cliente", "erstellen sie"]
+        complex_keywords = ["project", "lifecycle", "payroll", "salary", "year-end",
+                            "month-end", "reconcil", "prosjekt", "lønn", "årsoppgj",
+                            "nómina", "gehalt", "salaire", "clôture", "cierre"]
+
+        if any(kw in prompt_lower for kw in simple_keywords):
+            profile = PLANNER_PROFILES[0]  # precise (temp=0) — simple tasks need reliability
+        elif any(kw in prompt_lower for kw in complex_keywords):
+            profile = PLANNER_PROFILES[1]  # thorough (temp=0.3) — complex tasks need more fields
+        else:
+            # Unknown task type: weighted random favoring precise
+            profile = random.choices(PLANNER_PROFILES, weights=[60, 30, 10], k=1)[0]
 
         prompt_text = PLANNER_PROMPT.format(
             today=date.today().isoformat(),
@@ -1670,6 +1681,23 @@ def build_agent():
                 parsed = json.loads(result_str)
             except (json.JSONDecodeError, TypeError):
                 parsed = {"raw": result_str}
+
+            # Detect analyze_response error results (tool succeeded but returned error JSON)
+            if tool_name == "analyze_response" and isinstance(parsed, dict) and "error" in parsed:
+                log.warning(f"Step {step['step_number']}: analyze_response returned error: {str(parsed.get('error', ''))[:200]}")
+                parsed["_error"] = True
+                results[f"step_{step['step_number']}"] = parsed
+                error_count += 1
+                completed.append(step["step_number"])
+                return {
+                    "current_step": step_idx + 1,
+                    "results": results,
+                    "completed_steps": completed,
+                    "error_count": error_count,
+                    "healed_steps": healed_steps,
+                    "messages": [AIMessage(content=f"Step {step['step_number']} analyze_response error: {str(parsed.get('error', ''))[:100]}")],
+                }
+
             results[f"step_{step['step_number']}"] = _normalize_result(parsed)
             log.info(
                 f"Step {step['step_number']} completed",
@@ -1772,15 +1800,65 @@ def build_agent():
                     except (json.JSONDecodeError, TypeError):
                         pass
 
-        # ── All other errors: fail fast, log for analysis ──
-
-        # Out of replans or non-retryable — record error and move on
+        # ── Single-attempt LLM replan for write failures (flash model, fast) ──
         is_get = resolved_args.get("method", "").upper() == "GET"
+        is_write = not is_get
+        can_replan = (
+            is_write
+            and status_code in RETRYABLE_STATUS_CODES
+            and step["step_number"] not in healed_steps
+        )
+
+        if can_replan:
+            try:
+                from prompts import FIX_ARGS_PROMPT
+                fix_prompt = FIX_ARGS_PROMPT.format(
+                    method=resolved_args.get("method", ""),
+                    path=resolved_args.get("path", ""),
+                    query_params=json.dumps(resolved_args.get("query_params", {}), default=str),
+                    body=json.dumps(resolved_args.get("body", {}), default=str)[:3000],
+                    error_response=result_str[:1000],
+                    endpoint_schema="(see API reference)",
+                    common_errors="(none)",
+                )
+                fix_response = heal_llm.invoke([HumanMessage(content=fix_prompt)])
+                fix_raw = _extract_text(fix_response.content)
+                # Extract JSON from possible markdown
+                fix_json = _parse_plan_json(f"[{fix_raw}]")
+                if fix_json and isinstance(fix_json, list) and fix_json[0].get("method"):
+                    fixed_args = fix_json[0]
+                else:
+                    fixed_args = json.loads(fix_raw)
+
+                retry_result = tool.invoke(fixed_args)
+                retry_error, retry_status = _is_api_error(retry_result)
+                if not retry_error:
+                    retry_parsed = json.loads(retry_result)
+                    results[f"step_{step['step_number']}"] = _normalize_result(retry_parsed)
+                    healed_steps.append(step["step_number"])
+                    completed.append(step["step_number"])
+                    log.info(f"Step {step['step_number']} HEALED via replan (was {status_code})")
+                    return {
+                        "current_step": step_idx + 1,
+                        "results": results,
+                        "completed_steps": completed,
+                        "error_count": error_count,
+                        "healed_steps": healed_steps,
+                        "messages": [AIMessage(content=f"Step {step['step_number']} healed via replan")],
+                    }
+                else:
+                    log.warning(f"Replan retry also failed ({retry_status})")
+            except Exception as e:
+                log.warning(f"Replan attempt failed: {str(e)[:200]}")
+
+        # ── All other errors: fail fast, mark with _error ──
         log.warning(f"Step {step['step_number']} failed with status {status_code}" + (" (GET — free, not counted)" if is_get else ""))
         try:
             parsed = json.loads(result_str)
         except (json.JSONDecodeError, TypeError):
             parsed = {"raw": result_str}
+        # Mark as error so $step_N.id resolves to _UNRESOLVED, not status code
+        parsed["_error"] = True
         results[f"step_{step['step_number']}"] = parsed
         # GET errors are FREE — don't count toward 3-error abort
         if not is_get:
@@ -2334,6 +2412,16 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
         return value
 
     obj = results[result_key]
+
+    # Error results should not be traversed — return UNRESOLVED
+    if isinstance(obj, dict) and obj.get("_error"):
+        log.warning(f"Placeholder {value} references an error result (step {step_num} failed)")
+        return _UNRESOLVED
+
+    # Empty search results should not be traversed
+    if isinstance(obj, dict) and obj.get("_empty"):
+        log.warning(f"Placeholder {value} references an empty search result (step {step_num})")
+        return _UNRESOLVED
 
     # Parse the path: supports .field and [N] indexing
     # e.g. ".value.id", ".values[0].id", ".value.orderLines[0].id"
