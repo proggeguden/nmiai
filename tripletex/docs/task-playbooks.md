@@ -61,12 +61,10 @@ Use this as a reference to improve the agent. Cross-check with actual submission
 **Gotcha:** costs and perDiem CAN be inlined (our prompt says this).
 
 ### Supplier Invoice
-**Ideal plan:** GET/POST /supplier → GET /ledger/account (AP 2400 + expense) → POST /ledger/voucher
-**Voucher fields:** date, description, postings with amountGross/amountGrossCurrency
-**AP posting:** account 2400, negative amount, supplier ref, invoiceNumber
-**Expense posting:** expense account, positive amount, vatType (INPUT: 1=25%, 11=15%, 13=12%)
-**Status:** ~56%. Voucher field format is tricky.
-**Gotcha:** AP posting MUST include supplier:{id}. Use amountGross not amount.
+**Ideal plan:** GET/POST /supplier → GET /ledger/account (expense) → POST /incomingInvoice?sendTo=ledger
+**Body:** {"invoiceHeader": {"vendorId": supplier_id, "invoiceDate", "dueDate", "invoiceAmount" (incl VAT), "invoiceNumber"}, "orderLines": [{"row": 1, "description", "accountId": expense_account_id, "vatTypeId": INPUT_VAT_ID, "amountInclVat"}]}
+**Status:** FIXED in Round 37. Was using /ledger/voucher (0 points), now using /incomingInvoice.
+**Gotcha:** sendTo=ledger is REQUIRED. AP posting (2400) is automatic. vatTypeId: 1=25%, 11=15%, 13=12%.
 
 ### Order → Invoice → Payment
 **Ideal plan:** POST /customer → GET/POST /product → POST /order → PUT /order/:invoice → GET /invoice/paymentType → PUT /invoice/:payment
@@ -93,14 +91,14 @@ Use this as a reference to improve the agent. Cross-check with actual submission
 **Gotcha:** Need employee with DOB + active employment + details BEFORE salary transaction. Rate, count, AND amount all required on specifications.
 
 ### Year-End Closing
-**Ideal plan:** GET accounts → POST /ledger/voucher (×3 for depreciation) → POST /ledger/voucher (prepaid reversal) → analyze tax → POST /ledger/voucher (tax provision)
-**Status:** 0%. Account 1209 doesn't exist.
-**Gotcha:** Annual depreciation = cost / lifetime_years. Tax = 22% of taxable result. Need to compute amounts, not just pass through.
+**Ideal plan:** GET accounts (create if missing) → POST /ledger/voucher (×N for depreciation, 1 per asset) → POST /ledger/voucher (prepaid reversal) → GET /balanceSheet (for tax calc) → POST /ledger/voucher (tax provision)
+**Status:** FIXED in Round 37. Planner now computes math directly, creates missing accounts.
+**Gotcha:** Compute in planner: depreciation = cost / years. Tax = 22% of taxable result. Accounts 1209, 6030, 8700 may not exist — GET then POST if empty. Each depreciation as separate voucher.
 
 ### Monthly Closing
-**Ideal plan:** Multiple vouchers for accrual reversal, depreciation, salary provision, trial balance check
-**Status:** Sometimes works.
-**Gotcha:** Monthly depreciation = cost / lifetime / 12.
+**Ideal plan:** GET accounts (create if missing) → POST /ledger/voucher (accrual) → POST /ledger/voucher (depreciation) → POST /ledger/voucher (salary accrual) → GET /balanceSheet (verify)
+**Status:** 5/10 (account 6030 missing). FIXED in Round 37.
+**Gotcha:** Monthly depreciation = cost / lifetime / 12. Prepaid: amortizationAccount on postings auto-spreads. Accounts may need creation.
 
 ### Ledger Analysis (top 3 accounts)
 **Ideal plan:** GET /balanceSheet (Jan) → GET /balanceSheet (Feb) → analyze_response (compute top 3) → POST /project/list → POST /activity/list → POST /project/projectActivity/list

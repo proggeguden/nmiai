@@ -30,7 +30,9 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 4. **Handle departments and divisions yourself.** If you need a department, create it with the correct name from the task/file. If you need a division for employment, GET /division first — if none exists, create one with POST /division. Do NOT rely on the system to create these for you.
 4. **Use bulk /list endpoints** for 2+ entities: POST /department/list, /product/list, /customer/list, etc.
 5. **Use values from the task, not defaults.** If the task says "born 13 September 1993", use "1993-09-13". If it says "hourly wage", use remunerationType "HOURLY_WAGE". If it says "admin", use userType "EXTENDED".
-6. **Use lookup_endpoint for unfamiliar endpoints** and **analyze_response** when you need to compute values from API data (e.g. "find top 3 accounts").
+6. **Use lookup_endpoint for unfamiliar endpoints** and **analyze_response** ONLY for complex data analysis (e.g. "find top 3 accounts from balance sheet"). For simple math, compute directly in the plan.
+7. **Compute simple math directly.** Depreciation = cost / lifetime_years. Monthly = annual / 12. Tax = 22% of taxable income. Write literal computed values in the body — do NOT use analyze_response for arithmetic.
+8. **Missing accounts**: Some ledger accounts may not exist. GET /ledger/account?number=XXXX first. If empty, POST /ledger/account {{"number": XXXX, "name": "Account name"}} to create it. Then use the created account's ID in voucher postings. Use the OR fallback: $step_GET.id || $step_POST.id.
 
 ## API Constraints (prevent 422 errors)
 - **deliveryDate** REQUIRED on orders — use orderDate if not specified
@@ -42,7 +44,7 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - **occupationCode** is optional — SKIP IT unless the task gives an explicit code number. Do NOT look it up via any API endpoint (they return empty). If needed, just use {{"id": <number_from_task>}}
 - **Product conflicts**: NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency
 - **Customer addresses**: set BOTH postalAddress AND physicalAddress: {{"addressLine1": "...", "postalCode": "...", "city": "..."}}
-- **Supplier invoice voucher**: AP (credit, account 2400) MUST include supplier:{{"id": N}}. Expense line gets vatType for input VAT.
+- **Supplier invoice**: Use **POST /incomingInvoice?sendTo=ledger** (NOT /ledger/voucher!). Body: {{"invoiceHeader": {{"vendorId": $supplier_id, "invoiceDate": "YYYY-MM-DD", "dueDate": "YYYY-MM-DD", "invoiceAmount": total_incl_vat, "invoiceNumber": "INV-XXX"}}, "orderLines": [{{"row": 1, "description": "...", "accountId": $expense_account_id, "vatTypeId": vat_id, "amountInclVat": amount}}]}}. This auto-handles AP posting and VAT — no manual debit/credit needed.
 - **Project**: use fixedprice (lowercase p), isInternal: false when customer-linked, projectManager needs entitlement first
 - **Custom dimensions**: POST /ledger/accountingDimensionName (field: dimensionName), POST /ledger/accountingDimensionValue (field: displayName). Reference on vouchers: freeAccountingDimension1:{{"id": N}}
 - **GET /invoice** REQUIRES invoiceDateFrom + invoiceDateTo params
@@ -53,6 +55,10 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - **Credit note**: PUT /invoice/ID/:createCreditNote with query_params date={today}
 - **Foreign currency invoices (agio/disagio)**: PUT /invoice/ID/:payment needs BOTH paidAmount (NOK amount at current rate) AND paidAmountCurrency (amount in invoice currency). Tripletex auto-calculates the exchange rate difference. Use GET /currency?code=EUR to find currency, then compute: paidAmount = invoiceAmount × currentRate, paidAmountCurrency = invoiceAmount.
 - **Timesheet entries**: POST /timesheet/entry (NOT /timesheetEntry!). Required: employee:{{"id"}}, activity:{{"id"}}, date, hours. Use PROJECT_GENERAL_ACTIVITY for project timesheets. For bulk: POST /timesheet/entry/list.
+- **Voucher periodization**: Postings can have amortizationAccount, amortizationStartDate, amortizationEndDate to auto-spread expenses across months. Useful for prepaid expenses.
+- **Voucher reversal**: PUT /ledger/voucher/ID/:reverse with query_params date=YYYY-MM-DD. Auto-creates reverse voucher.
+- **Year-end/monthly closing**: Use POST /ledger/voucher for depreciation, accruals, tax provisions. Compute amounts directly (depreciation = cost / years, tax = 22% of taxable result). Each depreciation should be a separate voucher. GET /balanceSheet for trial balance verification.
+- **Ledger accounts that may not exist** (1209, 6030, 8700, 2920, etc.): GET first, POST /ledger/account if empty. Standard names: 1209="Akkumulerte avskrivninger", 6010="Avskrivning transportmidler", 6030="Avskrivning inventar/kontormaskiner", 8700="Skattekostnad", 2920="Skyldig skatt".
 - **Paths** must NOT include /v2 prefix
 
 ## ID Resolution — SIMPLE
