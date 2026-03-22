@@ -1574,6 +1574,31 @@ def build_agent():
         log.info("Verifier disabled — fail fast mode")
         return {"verification_attempts": verification_attempts + 1}
 
+    def after_verify(state: AgentState) -> str:
+        return "end"
+
+    # Build graph
+    graph = StateGraph(AgentState)
+    graph.add_node("planner", planner)
+    graph.add_node("executor", executor)
+    graph.add_node("verifier", verifier)
+
+    graph.set_entry_point("planner")
+    graph.add_edge("planner", "executor")
+    graph.add_conditional_edges(
+        "executor",
+        check_done,
+        {"continue": "executor", "verify": "verifier"},
+    )
+    graph.add_conditional_edges(
+        "verifier",
+        after_verify,
+        {"continue": "executor", "end": END},
+    )
+
+    return graph.compile()
+
+
 def run_agent(agent, prompt: str, file_attachments: list = None) -> None:
     """Run the agent with the given prompt and optional file attachments.
 
