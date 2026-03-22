@@ -215,7 +215,16 @@ Return ONLY a valid JSON object with the answer. Use the exact field names reque
             response = llm.invoke([HumanMessage(content=prompt)])
             content = response.content
             if isinstance(content, list):
-                raw = "".join(str(part) for part in content).strip()
+                # Content blocks: [{'type': 'text', 'text': '...'}, ...] or [str, ...]
+                parts = []
+                for part in content:
+                    if isinstance(part, dict) and "text" in part:
+                        parts.append(part["text"])
+                    elif isinstance(part, str):
+                        parts.append(part)
+                    else:
+                        parts.append(str(part))
+                raw = "".join(parts).strip()
             else:
                 raw = str(content).strip()
             # Strip markdown code blocks if present
