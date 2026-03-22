@@ -67,7 +67,7 @@ def _normalize_result(raw: dict) -> dict:
             return result
         return {"_all": values}
 
-    # Passthrough (already flat, analyze_response result, or unknown shape)
+    # Passthrough (already flat or unknown shape)
     return raw
 
 
