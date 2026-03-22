@@ -1447,14 +1447,24 @@ def build_agent():
         file_parts = state.get("file_content_parts", [])
 
         if phase1:
-            # Two-phase: use Phase 1 output
+            # Two-phase: use Phase 1 output + workflow-specific hint
+            tx_type = phase1.get("transaction_type", "unknown")
+            WORKFLOW_HINTS = {
+                "year_end_closing": "\n## WORKFLOW: Year-End\n- POST missing accounts (1209, 6030, 8700, 2920) FIRST\n- Each depreciation = SEPARATE voucher\n- LAST: GET /balanceSheet → filter_data sum → compute 22% → POST tax voucher. NEVER use 0 or placeholder.",
+                "monthly_closing": "\n## WORKFLOW: Monthly\n- Each entry = SEPARATE voucher\n- For prepaid: debit expense, credit prepaid account\n- For depreciation: annual/12",
+                "ledger_error_correction": "\n## WORKFLOW: Error Correction\n- FIRST: GET /ledger/posting to find erroneous vouchers\n- For each: PUT /ledger/voucher/ID/:reverse\n- Then POST correct voucher with BOTH sides\n- NEVER use suspense accounts",
+                "ledger_analysis": "\n## WORKFLOW: Analysis\n- For period comparison: GET /balanceSheet for EACH period separately\n- COMPUTE differences manually (Feb-Jan)\n- Pick top N by DIFFERENCE, not by absolute value\n- POST /project needs projectManager (GET /employee first)\n- POST /activity then POST /project/projectActivity (separate steps)",
+                "payroll": "\n## WORKFLOW: Payroll\n- Check employee has active employment (if not, create division+employment+details)\n- GET /salary/type?number=2000 for Fastlønn\n- POST /salary/transaction?generateTaxDeduction=true",
+                "supplier_invoice": "\n## WORKFLOW: Supplier Invoice\n- Use POST /ledger/voucher (NOT /incomingInvoice — it's 403)\n- Debit expense + VAT, Credit AP (2400) with supplier ref\n- Include vendorInvoiceNumber on voucher",
+            }
+            hint = WORKFLOW_HINTS.get(tx_type, "")
             prompt_text = PLAN_PROMPT_V2.format(
                 today=date.today().isoformat(),
                 phase1_output=json.dumps(phase1, indent=2, default=str),
                 tool_summaries=tool_summaries,
                 task=state["original_prompt"],
-            )
-            log.info(f"Phase 2 PLAN invoked", model=planner_model, phase1_type=phase1.get("transaction_type"), prompt_length=len(prompt_text))
+            ) + hint
+            log.info(f"Phase 2 PLAN invoked", model=planner_model, phase1_type=tx_type, prompt_length=len(prompt_text), has_hint=bool(hint))
         else:
             # Fallback: single-phase planning
             profile = PLANNER_PROFILE
