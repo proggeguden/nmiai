@@ -518,6 +518,13 @@ Root cause: expansion rate estimation underestimates forest clearing by 42%.
 Training loss: 0.0211 (was 0.0237, -11%). Weights: 990KB.
 
 **R22 submitted** with wide ensemble. Survival=16.5% (harsh round).
+**R22 scored 91.12 (rank 1/278)** — first place! Weighted=266.6, #1 on leaderboard.
+
+### R23 — Final round (2026-03-22)
+
+Retrained ensemble on 22 rounds (1.12M samples), then submitted R23.
+R23 characteristics: survival=48%, expansion=13.6%, forest_clearing=21.5%.
+R23 weight=3.07 — highest ever. Competition closes at 15:00 CET, leaderboard revealed at 17:00.
 
 ### Production scores (updated 2026-03-22)
 | Round | Score | Rank | Model |
@@ -539,7 +546,8 @@ Training loss: 0.0211 (was 0.0237, -11%). Weights: 990KB.
 | R19 | 93.5 | 31/228 | ML 28-feat single |
 | R20 | 90.5 | 36/181 | ML 28-feat single |
 | R21 | 86.3 | 90/225 | ML 28-feat single |
-| R22 | pending | — | ML 32-feat wide ensemble |
+| R22 | 91.1 | 1/278 | ML 32-feat wide ensemble |
+| R23 | pending | — | ML 32-feat wide ensemble (22-round retrain) |
 
 ---
 
