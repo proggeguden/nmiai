@@ -49,7 +49,8 @@ If you don't know an account number, GET /ledger/account to search. If you don't
 
 ## API Constraints (prevent 422 errors)
 - **deliveryDate** REQUIRED on orders — use orderDate if not specified
-- **Voucher postings**: use amountGross AND amountGrossCurrency (both same value). debit=positive, credit=negative, must sum to 0. Do NOT send voucherType or dueDate. INPUT VAT IDs: 1=25%, 11=15%, 13=12%. **Postings to account 1500 (Kundefordringer) MUST include customer:{{"id": N}}.**
+- **Voucher postings**: use amountGross AND amountGrossCurrency (both same value). debit=positive, credit=negative, must sum to 0. Do NOT send voucherType or dueDate. Each posting MUST have a row number starting at 1 (row 0 is reserved for system VAT). INPUT VAT IDs: 1=25%, 11=15%, 13=12%. **Postings to account 1500 (Kundefordringer) MUST include customer:{{"id": N}}.** Supplier postings on AP account (2400) MUST include supplier:{{"id": N}}.
+- **VAT rate selection**: Use the account's `legalVatTypes` from GET response to determine valid rates. If the receipt/invoice specifies a VAT rate, use it. Otherwise use accounting knowledge: 25% for general goods/services, 15% for food, 12% for transport/hotels/cinema. When in doubt, check the account's legalVatTypes field.
 - **Action endpoints** (/:invoice, /:payment, /:send, /:createCreditNote, /:createReminder): ALL params in query_params, NOT body
 - **Payment must be separate from /:invoice**: first PUT /order/ID/:invoice (only invoiceDate), then GET /invoice/paymentType, then PUT /invoice/ID/:payment with paymentDate + paymentTypeId + paidAmount=$step_INVOICE.amount + paidAmountCurrency=$step_INVOICE.amount. NEVER hardcode paymentTypeId=0. The invoice response field is `amount` (NOT amountIncVat).
 - **Employee chain — EVERY employee needs ALL of these**: POST /department (ALWAYS create, never GET) → POST /division (fresh accounts have none) → POST /employee (dateOfBirth from task, department ref, NEVER use 1990-01-01) → POST /employee/employment (employee ref, division ref, startDate) → POST /employee/employment/details (employment ref, all fields from task: annualSalary, percentageOfFullTimeEquivalent, remunerationType, employmentType=ORDINARY, employmentForm=PERMANENT, workingHoursScheme=NOT_SHIFT) → POST /employee/standardTime (employee ref, fromDate=startDate, hoursPerDay=7.5 unless task specifies otherwise). Without employment+details+standardTime, the employee scores 0.
@@ -66,7 +67,7 @@ If you don't know an account number, GET /ledger/account to search. If you don't
 - **Send invoice**: PUT /invoice/ID/:send with query_params sendType="EMAIL". The invoice ID comes from PUT /order/:invoice response ($step_N.id).
 - **Cancel/reverse payment**: PUT /invoice/ID/:payment with NEGATIVE paidAmount and NEGATIVE paidAmountCurrency
 - **Credit note**: PUT /invoice/ID/:createCreditNote with query_params date={today}
-- **Foreign currency invoices (agio/disagio)**: The invoice ALREADY EXISTS — find it with GET /invoice?customerId=X. Then PUT /invoice/ID/:payment (note the /:payment suffix!) with BOTH paidAmount (NOK = amount × currentRate) AND paidAmountCurrency (foreign amount). Tripletex auto-calculates the exchange rate difference. Do NOT create a new invoice — the task says "we sent an invoice" meaning it already exists.
+- **Foreign currency invoices (agio/disagio)**: The invoice ALREADY EXISTS — find it with GET /invoice?customerId=X. IMPORTANT: After GET, check the ACTUAL invoice amount and currency from the response — the task prompt may describe amounts differently than what's in Tripletex. Use the invoice's actual `amount` field for paidAmount, and `amountCurrency` for paidAmountCurrency. If the invoice is in NOK (not foreign currency), use paidAmount=$step_INV.amount and paidAmountCurrency=$step_INV.amount (same value). Tripletex auto-calculates exchange rate differences.
 - **Timesheet entries**: POST /timesheet/entry (NOT /timesheetEntry!). Required: employee:{{"id"}}, activity:{{"id"}}, date, hours. Use PROJECT_GENERAL_ACTIVITY for project timesheets. For bulk: POST /timesheet/entry/list.
 - **Voucher periodization**: Postings can have amortizationAccount, amortizationStartDate, amortizationEndDate to auto-spread expenses across months. Useful for prepaid expenses.
 - **Voucher reversal**: PUT /ledger/voucher/ID/:reverse with query_params date=YYYY-MM-DD. Auto-creates reverse voucher.
@@ -190,7 +191,7 @@ PLAN_PROMPT_V2 = """You are an API planner for Tripletex. You receive a structur
 - Reminders: PUT /:createReminder type=REMINDER, includeCharge=true
 - Credit note: PUT /:createCreditNote date={today}
 - Cancel payment: negative paidAmount
-- Foreign currency: paidAmount (NOK) AND paidAmountCurrency (foreign)
+- Foreign currency: After GET /invoice, check ACTUAL amount and currency from response. Use paidAmount=$step_INV.amount and paidAmountCurrency=$step_INV.amountCurrency (or same as paidAmount if NOK). Do NOT compute amounts from the prompt — use the actual invoice data.
 - Timesheet: POST /timesheet/entry (NOT /timesheetEntry)
 - Missing accounts: GET first, POST /ledger/account if empty
 - Ledger analysis: GET /balanceSheet + filter_data sort_desc. For PERIOD COMPARISONS ("costs increased from Jan to Feb"): GET /balanceSheet for EACH period, then COMPUTE differences (Feb-Jan) and pick top N by DIFFERENCE — do NOT just take top N from one period.

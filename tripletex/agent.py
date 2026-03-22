@@ -982,6 +982,9 @@ def _shift_step_refs(obj, offset: int, min_step: int = 0):
         for k, v in list(obj.items()):
             if isinstance(v, str):
                 obj[k] = re.sub(r"\$step_(\d+)", _replace, v)
+            elif isinstance(v, int) and k == "previous_step" and v >= min_step:
+                # filter_data uses integer previous_step — must shift too
+                obj[k] = v + offset
             else:
                 _shift_step_refs(v, offset, min_step)
     elif isinstance(obj, list):
@@ -1625,7 +1628,27 @@ def build_agent():
                 elif operation == "sum":
                     total = sum(float(i.get(field, 0)) for i in items if i.get(field) is not None)
                     result_data = {"total": total}
+                elif operation in ("greater_than", "gt"):
+                    try:
+                        threshold = float(value)
+                    except (TypeError, ValueError):
+                        threshold = 0
+                    result_data = [i for i in items if get_val(i, field) > threshold]
+                elif operation in ("less_than", "lt"):
+                    try:
+                        threshold = float(value)
+                    except (TypeError, ValueError):
+                        threshold = 0
+                    result_data = [i for i in items if get_val(i, field) < threshold]
+                elif operation in ("sort_asc",):
+                    sorted_items = sorted(items, key=lambda x: get_val(x, field))
+                    result_data = sorted_items[:count] if count > 0 else sorted_items
+                elif operation in ("max",):
+                    result_data = [max(items, key=lambda x: get_val(x, field))] if items else []
+                elif operation in ("min",):
+                    result_data = [min(items, key=lambda x: get_val(x, field))] if items else []
                 else:
+                    log.warning(f"filter_data: unknown operation '{operation}', passing through all items")
                     result_data = items
 
                 # Normalize: first item promoted, rest in _all
@@ -1738,6 +1761,10 @@ def build_agent():
                     header = orig_body.get("invoiceHeader", {})
                     order_lines = orig_body.get("orderLines", [])
 
+                    # Extract supplier ID from header for posting refs
+                    supplier_id = header.get("vendorId")
+                    supplier_ref = {"id": supplier_id} if supplier_id else None
+
                     postings = []
                     total_gross = 0
                     row_num = 1
@@ -1754,6 +1781,8 @@ def build_agent():
                         }
                         if ol.get("vatTypeId"):
                             posting["vatType"] = {"id": ol["vatTypeId"]}
+                        if supplier_ref:
+                            posting["supplier"] = supplier_ref
                         postings.append(posting)
                         row_num += 1
 
@@ -1766,12 +1795,15 @@ def build_agent():
                         ap_parsed = json.loads(ap_result)
                         ap_values = ap_parsed.get("values", [])
                         if ap_values:
-                            postings.append({
+                            ap_posting = {
                                 "account": {"id": ap_values[0]["id"]},
                                 "amountGross": -total_gross,
                                 "amountGrossCurrency": -total_gross,
                                 "row": row_num,
-                            })
+                            }
+                            if supplier_ref:
+                                ap_posting["supplier"] = supplier_ref
+                            postings.append(ap_posting)
 
                     voucher_body = {
                         "date": header.get("invoiceDate", date.today().isoformat()),
