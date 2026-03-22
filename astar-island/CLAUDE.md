@@ -82,34 +82,35 @@ position, population, food, wealth, defense, tech level, port status, longship o
 ## Prediction Strategy
 
 **Current approach (ML model)**: PyTorch MLP trained on GT data from all completed rounds.
-Predicts P(class | 20 spatial+round features) per cell. Trained offline with noisy rate
-augmentation to handle production estimation noise. Numpy-only inference (54KB weights).
+Predicts P(class | 28 spatial+round features) per cell. Trained offline with noisy rate
+augmentation to handle production estimation noise. Numpy-only inference (58KB weights).
+Per-cell observation blending DISABLED (ML model accurate enough that obs add noise).
+Survival-conditional temperature: T=0.85 when estimated survival < 10%.
 
 **Pipeline**:
 1. Observe all 5 seeds (50 queries total, 10 per seed, full coverage)
 2. Estimate round-level rates from observations (survival, expansion, port, forest, ruin)
-3. ML model: extract 20 features per cell → numpy forward pass → base predictions
-4. Per-cell observation blending (adaptive k, sparse boost)
-5. Probability floor (0.0005)
+3. ML model: extract 28 features per cell → conditional temperature → numpy forward pass
+4. Probability floor (0.0005)
+5. NO per-cell blending (disabled — ML model is accurate enough)
 
 **ML model details** (`ml_predictor.py` + `train_model.py`):
-- 20 features: 6 terrain one-hot + 9 spatial (dist_settlement, coastal, adj_forest/settlement/ocean/mountain counts, cluster, interior, dist_to_coast) + 5 round rates
-- Architecture: Input(20) → 128 → 64 → 32 → Softmax(6), KL divergence loss
-- Training: 1.05M cells from 18 rounds × 5 seeds × 10 noisy rate augmentations
-- Weights: `model_weights.npz` (54KB, committed to git)
+- 28 features: 6 terrain one-hot + 12 spatial + 5 round rates + 3 rate interactions + 2 distance
+  - Spatial: dist_settlement, coastal, adj_forest/settlement/ocean/mountain/ruin, cluster, interior, settlement_count_r3/r5, forest_density_r2, dist_to_forest, dist_to_coast
+  - Rate interactions: survival×expansion, survival/expansion, expansion×port
+- Architecture: Input(28) → 128 → 64 → 32 → Softmax(6), KL divergence loss
+- Training: 1.11M cells from 19 rounds × 5 seeds × 10 noisy rate augmentations
+- Weights: `model_weights.npz` (58KB, committed to git)
 - Production inference: numpy matmuls only, zero PyTorch dependency
 
 **Backtest performance** (simulated-production KL, lower is better):
-- ML model avg: **0.0317** (18 rounds, 3 runs) — **35.7% better than bucket model (0.0493)**
-- ML wins on ALL 18 rounds, zero regressions
+- ML model avg: **0.0281** (19 rounds, 3 runs) — **43% better than bucket model (0.0493)**
 - Probability floor: 0.0005
 
-**Proven improvement techniques (from deep research 2026-03-22)**:
-1. Post-hoc temperature scaling on logits (divide by T before softmax, find T by grid search)
-2. Snapshot ensemble (cyclic LR, save weights at minima, average predictions)
-3. Test-time augmentation: run forward pass K times with perturbed rates, average
-4. More features: settlement_count_r3, forest_density_r2, dist_to_forest, continuous cluster count
-5. LightGBM knowledge distillation (train LGBM, blend into MLP training targets)
+**Proven improvement techniques not yet implemented**:
+1. Snapshot ensemble (cyclic LR, save weights at minima, average 3-5 predictions)
+2. LightGBM knowledge distillation (train LGBM, blend into MLP training targets)
+3. Wider MLP with residual connections (256→256→128 + skip + LayerNorm)
 
 **Known dead ends** (do NOT retry):
 - MRF-style spatial smoothing (blurs across terrain boundaries, +10% regression)
@@ -117,6 +118,9 @@ augmentation to handle production estimation noise. Numpy-only inference (54KB w
 - Extra bucket features with 50 queries (more buckets = less data per bucket)
 - Terrain-aware A* distance (mountains never create barriers on competition maps)
 - Forward model / Monte Carlo sim (uncalibrated mechanics add noise, +1.1%)
+- TTA via rate perturbation (model already trained on noisy rates, double-perturbing adds noise)
+- Post-hoc temperature scaling (T=1.0 already optimal — KL-trained model is self-calibrated)
+- Per-cell observation blending with ML model (noisy discrete obs add noise, -6.6% when disabled)
 
 **Bucket model (fallback)**: Still in predictor.py as `build_prediction()`. ML model in
 `build_prediction_ml()`. main.py auto-selects ML if `model_weights.npz` exists.

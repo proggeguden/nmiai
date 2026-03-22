@@ -61,10 +61,14 @@
 - Round 12: **59.4** (rank 38/146) — tough round
 - Round 13: **73.2** (rank 126/186)
 - Round 14: **74.1** (rank 71/244) — degraded by accidental resubmission
-- Round 15: **86.1** (rank 97/262) — best raw score ever, weighted=179.0
-- Round 16: submitted with k-boost fix, pending score
-- Leaderboard: best weighted=179.0. Top teams: ~196 weighted.
-- Gap to close: ~6-8 raw points. Need ~90 raw on later rounds to compete.
+- Round 15: **86.1** (rank 97/262)
+- Round 16: **84.0** (rank 48/272)
+- Round 17: **90.0** (rank 47/283) — first ML model submission
+- Round 18: **84.9** (rank 43/265) — high expansion round
+- Round 19: **93.5** (rank 31/228) — best raw score ever, harsh round (4% survival), weighted=236.2
+- Round 20: submitted with 28-feature model, pending score
+- Leaderboard: best weighted=236.2. Top teams: ~241.5 weighted.
+- Gap to close: ~2 raw points on R20+ to reach #1.
 
 ---
 
@@ -439,6 +443,37 @@ Four parallel research agents analyzed top-team strategies, architecture, featur
 - TabNet/FT-Transformer — complex numpy implementation
 - Change query allocation (10/10/10/10/10 near-optimal)
 - Terrain-aware spatial smoothing (MRF already failed)
+
+### Implementation results (2026-03-22 session)
+
+**Tested and implemented:**
+- **Disable per-cell blending** ✅: ML model accurate enough that obs add noise. -6.6% KL, all 18 rounds improved.
+- **5 new spatial features** ✅: settlement_count_r3/r5, forest_density_r2, dist_to_forest, adj_ruin_count. -1.7% KL.
+- **3 rate interaction features** ✅: survival×expansion, survival/expansion ratio, expansion×port. -3.4% KL. Addresses R7/R12 anomaly (high survival + low expansion decoupling).
+- **Survival-conditional temperature** ✅: T=0.85 when survival < 10%. -31% on extreme rounds (R19), zero regressions on moderate rounds.
+
+**Tested and rejected:**
+- **Post-hoc temperature scaling** ❌: T=1.0 already optimal — model trained with KL loss is self-calibrated.
+- **TTA via rate perturbation** ❌: Model already trained on noisy rates. Double-perturbing adds noise. R8 +33%, R10 +67%, R3 +39% regression.
+
+**Combined session results (28 features, 19 rounds, no blending, conditional T)**:
+| Step | SimProd KL | Cumulative vs Bucket |
+|------|-----------|---------------------|
+| Bucket model baseline | 0.0493 | — |
+| +2 features, retrain 18 rounds | 0.0317 | -36% |
+| Disable per-cell blending | 0.0296 | -40% |
+| +5 spatial features, retrain 19 rounds | 0.0291 | -41% |
+| +3 rate interactions, retrain | **0.0281** | **-43%** |
+
+**R19 scored 93.5 (rank 31/228)** — best raw score ever. Weighted=236.2. Top teams at 241.5.
+**R20 submitted** with 28-feature model. Pending score.
+
+**Key discovery: R7/R12 are not harsh-winter rounds.** They're mild survival (47-60%) but with anomalously low expansion (0.126-0.145 vs typical 0.25+). The model over-predicts expansion because it assumes survival correlates with expansion. Rate interaction features partially address this but only 2/19 rounds exhibit the pattern.
+
+**Remaining improvement directions (not yet tried):**
+1. Snapshot ensemble (expected 2-4%, 2h)
+2. LightGBM knowledge distillation (expected 3-8%, 3-4h)
+3. Wider MLP with residual connections (expected 3-7%, 2-3h)
 
 **Key insight**: Top teams likely use ensembling + spatial context. Our single-model MLP with independent cell predictions is the biggest architectural limitation. Ensembling addresses calibration; spatial features address neighborhood dynamics.
 
