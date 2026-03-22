@@ -202,15 +202,25 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                                 "Validation: stripped unknown vatType from order line"
                             )
 
-        # ── B0b2: Inject default vatType 25% on order lines missing vatType ──
+        # ── B0b2: Inject vatType on order lines missing it ──
+        # Prefer the product's own vatType (via $step ref) over hardcoded default
         if method == "POST" and path in ("/order", "/order/list") and isinstance(body, (dict, list)):
             bodies = body if isinstance(body, list) else [body]
             for b in bodies:
                 if isinstance(b, dict):
                     for ol in b.get("orderLines", []):
                         if isinstance(ol, dict) and "vatType" not in ol:
-                            ol["vatType"] = {"id": 3}
-                            log.info("Validation: injected default vatType 25% on order line")
+                            # Check if this order line references a product step
+                            prod_ref = ol.get("product", {})
+                            prod_id = prod_ref.get("id", "") if isinstance(prod_ref, dict) else str(prod_ref)
+                            if isinstance(prod_id, str) and "$step_" in prod_id:
+                                # Use the product's vatType instead of hardcoding
+                                step_ref = prod_id.split(".")[0]  # "$step_3" from "$step_3.id"
+                                ol["vatType"] = {"id": f"{step_ref}.vatType.id"}
+                                log.info(f"Validation: set vatType to {step_ref}.vatType.id (from product)")
+                            else:
+                                ol["vatType"] = {"id": 3}
+                                log.info("Validation: injected default vatType 25% on order line (no product ref)")
 
         # ── B0c: Auto-inject invoiceDueDate for POST /invoice ──
         if method == "POST" and path == "/invoice" and isinstance(body, dict):
@@ -1784,6 +1794,22 @@ def build_agent():
                 parsed = {"raw": result_str}
 
             normalized = _normalize_result(parsed)
+
+            # Post-success: for GET /invoice/paymentType, prefer "bank" over "cash"
+            # so $step_N.id resolves to the bank payment type (most common for invoices)
+            if (
+                resolved_args.get("method") == "GET"
+                and "/invoice/paymentType" in resolved_args.get("path", "")
+                and isinstance(normalized.get("_all"), list)
+                and len(normalized["_all"]) > 1
+            ):
+                for pt in normalized["_all"]:
+                    if isinstance(pt, dict) and "bank" in str(pt.get("description", "")).lower():
+                        # Promote bank payment type to top level
+                        normalized = dict(pt)
+                        normalized["_all"] = parsed.get("values", [])
+                        log.info(f"Promoted bank paymentType (id={pt.get('id')}) over cash")
+                        break
 
             # Post-success: if GET /ledger/account returned empty, auto-create the account
             if (
