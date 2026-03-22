@@ -1174,8 +1174,9 @@ def _score_plan(plan: list[dict], prompt: str) -> float:
         if "/:invoice" in path and method == "PUT":
             if qp.get("paidAmount") or qp.get("paymentTypeId") is not None:
                 score += 5  # combined invoice+payment
-            if qp.get("sendToCustomer"):
-                score += 5  # combined invoice+send
+            # NOTE: sendToCustomer=true on /:invoice silently fails without email
+            # configured. The planner should use a separate /:send step instead.
+            # No bonus for sendToCustomer — it's unreliable.
 
         # Bonus: bulk /list endpoints
         if path.endswith("/list") and method == "POST":
