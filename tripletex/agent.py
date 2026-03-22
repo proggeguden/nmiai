@@ -1654,7 +1654,13 @@ def build_agent():
                     sorted_items = sorted(items, key=lambda x: get_val(x, field), reverse=True)
                     result_data = sorted_items[:count]
                 elif operation in ("find", "equals", "filter"):
-                    result_data = [i for i in items if str(i.get(field, "")) == str(value)]
+                    # Use numeric comparison for numeric values (52750.0 == 52750)
+                    def _match(item_val, target):
+                        try:
+                            return float(item_val) == float(target)
+                        except (TypeError, ValueError):
+                            return str(item_val) == str(target)
+                    result_data = [i for i in items if _match(i.get(field, ""), value)]
                 elif operation in ("contains", "search", "like"):
                     val_lower = str(value).lower()
                     result_data = [i for i in items if val_lower in str(i.get(field, "")).lower()]
