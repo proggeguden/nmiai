@@ -1941,6 +1941,32 @@ def build_agent():
                         pass
                 b.setdefault("startDate", date.today().isoformat())
 
+        # Pre-flight: enrich POST /project with missing projectManager BEFORE the call
+        if (
+            tool_name == "call_api"
+            and resolved_args.get("method") == "POST"
+            and resolved_args.get("path") in ("/project", "/project/list")
+            and call_api_tool
+        ):
+            body = resolved_args.get("body", {})
+            bodies = [body] if isinstance(body, dict) else (body if isinstance(body, list) else [])
+            needs_pm = False
+            for b in bodies:
+                if isinstance(b, dict) and "projectManager" not in b:
+                    needs_pm = True
+            if needs_pm:
+                try:
+                    emp_r = call_api_tool.invoke({"method": "GET", "path": "/employee", "query_params": {"count": 1}})
+                    emp_vals = json.loads(emp_r).get("values", [])
+                    if emp_vals:
+                        pm_id = emp_vals[0].get("id")
+                        for b in bodies:
+                            if isinstance(b, dict) and "projectManager" not in b:
+                                b["projectManager"] = {"id": pm_id}
+                                log.info(f"Pre-flight: injected projectManager={pm_id} on POST /project")
+                except Exception:
+                    pass
+
         # First attempt
         try:
             result_str = tool.invoke(resolved_args)
