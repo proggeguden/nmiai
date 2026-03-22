@@ -103,7 +103,7 @@ Auto-detects feature count from weights for backward compatibility.
   - New: forest_clearing_rate (P(non-forest | initially forest) estimated from observations)
 - Architecture: Input(32) → 256 → 128 → 64 → Softmax(6), KL divergence loss
 - Ensemble: 5 snapshots with different torch seeds, averaged softmax at inference
-- Training: 1.1M cells from 21 rounds × 5 seeds × 10 noisy rate augmentations
+- Training: 1.12M cells from 22 rounds × 5 seeds × 10 noisy rate augmentations
 - Weights: `model_weights.npz` (990KB, committed to git)
 - Production inference: numpy matmuls only, zero PyTorch dependency
 - Retrain after each round: `rm training_data.npz && python3 train_model.py --rebuild-data --augmentations 10 --n-snapshots 5 --output model_weights.npz`
