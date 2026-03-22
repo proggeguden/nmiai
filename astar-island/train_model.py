@@ -85,12 +85,21 @@ def compute_gt_rates(gt, initial_grid):
                 non_forest_near += 1.0
                 forest_reclaimed += gt_dist[4]
 
+    # Forest clearing rate: P(non-forest | initially forest)
+    forest_total, forest_cleared = 0.0, 0.0
+    for r in range(H):
+        for c in range(W):
+            if initial_grid[r][c] == 4:
+                forest_total += 1.0
+                forest_cleared += (1.0 - gt[r, c, 4])  # 1 - P(stays forest)
+
     return {
         "survival": sett_alive / max(sett_total, 1),
-        "expansion": min(new_sett / max(non_sett, 1), 0.30),
+        "expansion": min(new_sett / max(non_sett, 1), 0.50),
         "port_formation": min(port_formed / max(coastal_non_port, 1), 0.15),
         "forest_reclamation": min(forest_reclaimed / max(non_forest_near, 1), 0.40),
         "ruin": min(ruin_count / max(sett_total, 1), 0.95),
+        "forest_clearing": min(forest_cleared / max(forest_total, 1), 0.60),
     }
 
 
@@ -300,12 +309,12 @@ def train_model(X, Y, round_ids=None, exclude_round=None,
     from torch.utils.data import TensorDataset, DataLoader
 
     class TerrainMLP(nn.Module):
-        def __init__(self, n_features=28, n_classes=6):
+        def __init__(self, n_features=NUM_FEATURES, n_classes=6):
             super().__init__()
-            self.fc1 = nn.Linear(n_features, 128)
-            self.fc2 = nn.Linear(128, 64)
-            self.fc3 = nn.Linear(64, 32)
-            self.fc4 = nn.Linear(32, n_classes)
+            self.fc1 = nn.Linear(n_features, 256)
+            self.fc2 = nn.Linear(256, 128)
+            self.fc3 = nn.Linear(128, 64)
+            self.fc4 = nn.Linear(64, n_classes)
             self.dropout = nn.Dropout(0.1)
 
         def forward(self, x):

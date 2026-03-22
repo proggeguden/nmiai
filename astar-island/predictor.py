@@ -613,6 +613,43 @@ def estimate_ruin_rate(initial_grids, observations):
     return max(0.0, min(ruined / observed, 0.95))
 
 
+def estimate_forest_clearing_rate(initial_grids, observations):
+    """Estimate P(non-forest | initially forest) from observations.
+
+    Counts how many initial forest cells became non-forest in viewport observations.
+    """
+    forest_total = 0
+    forest_cleared = 0
+
+    for obs in observations:
+        vp = obs["viewport"]
+        grid = obs["grid"]
+        seed_idx = obs.get("seed_index", 0)
+        if seed_idx >= len(initial_grids):
+            continue
+        init_grid = initial_grids[seed_idx]
+        vp_x, vp_y = vp["x"], vp["y"]
+        vp_h = len(grid)
+        vp_w = len(grid[0]) if vp_h > 0 else 0
+
+        for dr in range(vp_h):
+            for dc in range(vp_w):
+                r = vp_y + dr
+                c = vp_x + dc
+                H = len(init_grid)
+                W = len(init_grid[0])
+                if 0 <= r < H and 0 <= c < W:
+                    if init_grid[r][c] == 4:  # Initially forest
+                        forest_total += 1
+                        obs_code = grid[dr][dc]
+                        if obs_code != 4:  # Not forest anymore
+                            forest_cleared += 1
+
+    if forest_total < 10:
+        return 0.1  # default
+    return min(forest_cleared / forest_total, 0.60)
+
+
 def estimate_all_rates(initial_grids, observations):
     """Estimate all forward model rates from observations.
 
@@ -624,6 +661,7 @@ def estimate_all_rates(initial_grids, observations):
         "port_formation": estimate_port_formation_rate(initial_grids, observations),
         "forest_reclamation": estimate_forest_reclamation_rate(initial_grids, observations),
         "ruin": estimate_ruin_rate(initial_grids, observations),
+        "forest_clearing": estimate_forest_clearing_rate(initial_grids, observations),
     }
 
 

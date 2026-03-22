@@ -32,7 +32,7 @@ class TestExtractFeaturesShape:
     def test_shape(self):
         grid = _make_grid(6, 8)
         result = extract_features(grid)
-        assert result.shape == (6, 8, 28), f"Expected (6,8,25), got {result.shape}"
+        assert result.shape == (6, 8, NUM_FEATURES), f"Expected (6,8,{NUM_FEATURES}), got {result.shape}"
 
     def test_dtype(self):
         grid = _make_grid(4, 4)
@@ -40,10 +40,10 @@ class TestExtractFeaturesShape:
         assert result.dtype == np.float32, f"Expected float32, got {result.dtype}"
 
     def test_num_features_constant(self):
-        assert NUM_FEATURES == 28
+        assert NUM_FEATURES == 32
 
     def test_feature_names_length(self):
-        assert len(FEATURE_NAMES) == 28
+        assert len(FEATURE_NAMES) == 32
 
 
 class TestExtractFeaturesOnehot:
@@ -140,7 +140,7 @@ class TestExtractFeaturesRatesAppended:
                     err_msg=f"Rate features wrong at ({r},{c}): {actual_rates}")
 
     def test_rate_keys(self):
-        assert RATE_KEYS == ["survival", "expansion", "port_formation", "forest_reclamation", "ruin"]
+        assert RATE_KEYS == ["survival", "expansion", "port_formation", "forest_reclamation", "ruin", "forest_clearing"]
 
     def test_partial_rates_order(self):
         """Order of rates must match RATE_KEYS exactly."""
@@ -435,16 +435,16 @@ def _make_weights(rng=None):
     if rng is None:
         rng = np.random.default_rng(42)
     return {
-        "fc1_w": rng.standard_normal((128, 28)).astype(np.float32) * 0.1,
-        "fc1_b": np.zeros(128, dtype=np.float32),
-        "fc2_w": rng.standard_normal((64, 128)).astype(np.float32) * 0.1,
-        "fc2_b": np.zeros(64, dtype=np.float32),
-        "fc3_w": rng.standard_normal((32, 64)).astype(np.float32) * 0.1,
-        "fc3_b": np.zeros(32, dtype=np.float32),
-        "fc4_w": rng.standard_normal((6, 32)).astype(np.float32) * 0.1,
+        "fc1_w": rng.standard_normal((256, 32)).astype(np.float32) * 0.1,
+        "fc1_b": np.zeros(256, dtype=np.float32),
+        "fc2_w": rng.standard_normal((128, 256)).astype(np.float32) * 0.1,
+        "fc2_b": np.zeros(128, dtype=np.float32),
+        "fc3_w": rng.standard_normal((64, 128)).astype(np.float32) * 0.1,
+        "fc3_b": np.zeros(64, dtype=np.float32),
+        "fc4_w": rng.standard_normal((6, 64)).astype(np.float32) * 0.1,
         "fc4_b": np.zeros(6, dtype=np.float32),
-        "feat_mean": np.zeros(28, dtype=np.float32),
-        "feat_std": np.ones(28, dtype=np.float32),
+        "feat_mean": np.zeros(32, dtype=np.float32),
+        "feat_std": np.ones(32, dtype=np.float32),
     }
 
 
@@ -454,7 +454,7 @@ class TestEnsembleForward:
     def test_ensemble_averages_snapshots(self):
         """Ensemble output equals mean of individual forwards."""
         rng = np.random.default_rng(0)
-        features = rng.standard_normal((5, 5, 28)).astype(np.float32)
+        features = rng.standard_normal((5, 5, 32)).astype(np.float32)
         w1 = _make_weights(np.random.default_rng(1))
         w2 = _make_weights(np.random.default_rng(2))
         w3 = _make_weights(np.random.default_rng(3))
@@ -468,7 +468,7 @@ class TestEnsembleForward:
     def test_ensemble_sums_to_one(self):
         """Ensemble output sums to 1 per cell."""
         rng = np.random.default_rng(7)
-        features = rng.standard_normal((4, 6, 28)).astype(np.float32)
+        features = rng.standard_normal((4, 6, 32)).astype(np.float32)
         w1 = _make_weights(np.random.default_rng(10))
         w2 = _make_weights(np.random.default_rng(11))
         result = numpy_forward_ensemble(features, [w1, w2])
@@ -479,7 +479,7 @@ class TestEnsembleForward:
     def test_ensemble_single_snapshot_matches_forward(self):
         """1-snapshot ensemble equals plain numpy_forward."""
         rng = np.random.default_rng(99)
-        features = rng.standard_normal((3, 3, 28)).astype(np.float32)
+        features = rng.standard_normal((3, 3, 32)).astype(np.float32)
         w = _make_weights(np.random.default_rng(5))
         result_ensemble = numpy_forward_ensemble(features, [w])
         result_forward = numpy_forward(features, w)
@@ -491,18 +491,18 @@ def test_numpy_forward_shape():
     """Forward pass produces H×W×6 with valid probabilities."""
     rng = np.random.default_rng(42)
     weights = {
-        "fc1_w": rng.standard_normal((128, 28)).astype(np.float32) * 0.1,
-        "fc1_b": np.zeros(128, dtype=np.float32),
-        "fc2_w": rng.standard_normal((64, 128)).astype(np.float32) * 0.1,
-        "fc2_b": np.zeros(64, dtype=np.float32),
-        "fc3_w": rng.standard_normal((32, 64)).astype(np.float32) * 0.1,
-        "fc3_b": np.zeros(32, dtype=np.float32),
-        "fc4_w": rng.standard_normal((6, 32)).astype(np.float32) * 0.1,
+        "fc1_w": rng.standard_normal((256, 32)).astype(np.float32) * 0.1,
+        "fc1_b": np.zeros(256, dtype=np.float32),
+        "fc2_w": rng.standard_normal((128, 256)).astype(np.float32) * 0.1,
+        "fc2_b": np.zeros(128, dtype=np.float32),
+        "fc3_w": rng.standard_normal((64, 128)).astype(np.float32) * 0.1,
+        "fc3_b": np.zeros(64, dtype=np.float32),
+        "fc4_w": rng.standard_normal((6, 64)).astype(np.float32) * 0.1,
         "fc4_b": np.zeros(6, dtype=np.float32),
-        "feat_mean": np.zeros(28, dtype=np.float32),
-        "feat_std": np.ones(28, dtype=np.float32),
+        "feat_mean": np.zeros(32, dtype=np.float32),
+        "feat_std": np.ones(32, dtype=np.float32),
     }
-    features = rng.standard_normal((5, 5, 28)).astype(np.float32)
+    features = rng.standard_normal((5, 5, 32)).astype(np.float32)
     preds = numpy_forward(features, weights)
     assert preds.shape == (5, 5, 6)
     sums = preds.sum(axis=2)
@@ -513,16 +513,16 @@ def test_numpy_forward_shape():
 def test_save_load_model_roundtrip(tmp_path):
     """Weights survive save/load roundtrip."""
     weights = {
-        "fc1_w": np.ones((128, 28), dtype=np.float32),
-        "fc1_b": np.zeros(128, dtype=np.float32),
-        "fc2_w": np.ones((64, 128), dtype=np.float32),
-        "fc2_b": np.zeros(64, dtype=np.float32),
-        "fc3_w": np.ones((32, 64), dtype=np.float32),
-        "fc3_b": np.zeros(32, dtype=np.float32),
-        "fc4_w": np.ones((6, 32), dtype=np.float32),
+        "fc1_w": np.ones((256, 32), dtype=np.float32),
+        "fc1_b": np.zeros(256, dtype=np.float32),
+        "fc2_w": np.ones((128, 256), dtype=np.float32),
+        "fc2_b": np.zeros(128, dtype=np.float32),
+        "fc3_w": np.ones((64, 128), dtype=np.float32),
+        "fc3_b": np.zeros(64, dtype=np.float32),
+        "fc4_w": np.ones((6, 64), dtype=np.float32),
         "fc4_b": np.zeros(6, dtype=np.float32),
-        "feat_mean": np.zeros(28, dtype=np.float32),
-        "feat_std": np.ones(28, dtype=np.float32),
+        "feat_mean": np.zeros(32, dtype=np.float32),
+        "feat_std": np.ones(32, dtype=np.float32),
     }
     path = str(tmp_path / "test_weights.npz")
     save_model(weights, path)
@@ -537,16 +537,16 @@ class TestEnsembleSaveLoad:
     def _make_random_weights(self, seed=0):
         rng = np.random.default_rng(seed)
         return {
-            "fc1_w": rng.standard_normal((128, 28)).astype(np.float32),
-            "fc1_b": rng.standard_normal(128).astype(np.float32),
-            "fc2_w": rng.standard_normal((64, 128)).astype(np.float32),
-            "fc2_b": rng.standard_normal(64).astype(np.float32),
-            "fc3_w": rng.standard_normal((32, 64)).astype(np.float32),
-            "fc3_b": rng.standard_normal(32).astype(np.float32),
-            "fc4_w": rng.standard_normal((6, 32)).astype(np.float32),
+            "fc1_w": rng.standard_normal((256, 32)).astype(np.float32),
+            "fc1_b": rng.standard_normal(256).astype(np.float32),
+            "fc2_w": rng.standard_normal((128, 256)).astype(np.float32),
+            "fc2_b": rng.standard_normal(128).astype(np.float32),
+            "fc3_w": rng.standard_normal((64, 128)).astype(np.float32),
+            "fc3_b": rng.standard_normal(64).astype(np.float32),
+            "fc4_w": rng.standard_normal((6, 64)).astype(np.float32),
             "fc4_b": rng.standard_normal(6).astype(np.float32),
-            "feat_mean": rng.standard_normal(28).astype(np.float32),
-            "feat_std": np.abs(rng.standard_normal(28)).astype(np.float32) + 0.1,
+            "feat_mean": rng.standard_normal(32).astype(np.float32),
+            "feat_std": np.abs(rng.standard_normal(32)).astype(np.float32) + 0.1,
         }
 
     def test_save_load_ensemble(self, tmp_path):
