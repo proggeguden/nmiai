@@ -80,6 +80,7 @@ If you don't know an account number, GET /ledger/account to search. If you don't
 - **Bank reconciliation**: Use POST /bank/statement/import to upload CSV, then PUT /bank/reconciliation/match/:suggest to auto-match payments to invoices.
 - **Travel expense (reiseregning)**: perDiemCompensations MUST include: location, count, rate (daily NOK rate FROM TASK), amount (count × rate), overnightAccommodation. travelDetails MUST include: purpose (from task), departureDate, returnDate, destination. Then PUT /travelExpense/:deliver to submit.
 - **Fixed-price project partial invoicing** (e.g. "invoice 75%"): PUT /order/{{id}}/:invoice with query_params createOnAccount="WITH_VAT" and amountOnAccount=partial_amount. Do NOT put the partial amount as an order line price — use createOnAccount.
+- **Payroll (salary/lønn)**: Employee MUST have active employment in the pay period. If GET /employee shows `employments: []`, create division + employment + employment/details FIRST. Then: GET /salary/type?number=2000 for "Fastlønn" (base salary), GET /salary/type by name or number for bonus/other types. POST /salary/transaction?generateTaxDeduction=true with body: {{"year": YYYY, "month": M, "payslips": [{{"employee": {{"id": N}}, "specifications": [{{"salaryType": {{"id": N}}, "rate": amount, "count": 1, "amount": amount}}]}}]}}. Use salary type NUMBER for reliable lookup (2000=Fastlønn, 2001=Timelønn).
 - **Paths** must NOT include /v2 prefix
 - **Language**: The task may be in any language. Use field values EXACTLY as written in the task (names, descriptions, department names) — do NOT translate them. Write step descriptions in English.
 
@@ -200,6 +201,7 @@ PLAN_PROMPT_V2 = """You are an API planner for Tripletex. You receive a structur
 - Missing accounts: GET first, POST /ledger/account if empty
 - Ledger analysis: GET /balanceSheet + filter_data sort_desc. For PERIOD COMPARISONS ("costs increased from Jan to Feb"): GET /balanceSheet for EACH period, then COMPUTE differences (Feb-Jan) and pick top N by DIFFERENCE — do NOT just take top N from one period.
 - Payment: NEVER hardcode paymentTypeId=0. Always GET /invoice/paymentType first to find a valid ID.
+- Payroll: Employee MUST have active employment. If employments=[], create division+employment+details first. GET /salary/type?number=2000 for Fastlønn. POST /salary/transaction?generateTaxDeduction=true with {year, month, payslips:[{employee:{id}, specifications:[{salaryType:{id}, rate, count:1, amount}]}]}.
 - Paths: NO /v2 prefix
 - Travel expense (reiseregning): perDiemCompensations MUST include: location, count, rate (daily NOK rate FROM TASK), amount (count × rate), overnightAccommodation. travelDetails MUST include: purpose (from task), departureDate, returnDate, destination. Then PUT /travelExpense/:deliver to submit.
 - Fixed-price project partial invoicing (e.g. "invoice 75%"): PUT /order/{{id}}/:invoice with query_params createOnAccount="WITH_VAT" and amountOnAccount=partial_amount. Do NOT put the partial amount as an order line price — use createOnAccount.
@@ -217,6 +219,8 @@ PLAN_PROMPT_V2 = """You are an API planner for Tripletex. You receive a structur
 - GET /ledger/posting: params dateFrom, dateTo, accountNumberFrom, accountNumberTo
 - POST /employee/standardTime: {{employee:{{id}}, fromDate: "YYYY-MM-DD", hoursPerDay: 7.5}} — REQUIRED for employee onboarding
 - GET /invoice/paymentType: returns valid payment types. Use $step_N.id as paymentTypeId for /:payment calls
+- GET /salary/type: params number, name. Returns salary types. Use number=2000 for Fastlønn (base salary)
+- POST /salary/transaction: {{year, month, payslips:[{{employee:{{id}}, specifications:[{{salaryType:{{id}}, rate, count, amount}}]}}]}}. Query param: generateTaxDeduction=true
 
 ## ID Resolution — CRITICAL
 Use $step_N.id to reference the ID from step N. This works everywhere:

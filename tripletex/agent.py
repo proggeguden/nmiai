@@ -1625,6 +1625,9 @@ def build_agent():
                     result_data = sorted_items[:count]
                 elif operation in ("find", "equals", "filter"):
                     result_data = [i for i in items if str(i.get(field, "")) == str(value)]
+                elif operation in ("contains", "search", "like"):
+                    val_lower = str(value).lower()
+                    result_data = [i for i in items if val_lower in str(i.get(field, "")).lower()]
                 elif operation == "sum":
                     total = sum(float(i.get(field, 0)) for i in items if i.get(field) is not None)
                     result_data = {"total": total}
