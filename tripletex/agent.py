@@ -1299,22 +1299,36 @@ def build_agent():
         else:
             planner_content = prompt_text
 
+        # Phase 2 with timeout — if planner takes >90s, abort and try fallback
+        import concurrent.futures
+        def _call_planner(llm, content):
+            response = llm.invoke([HumanMessage(content=content)])
+            return _extract_text(response.content)
+
         try:
-            response = planner_llm.invoke([HumanMessage(content=planner_content)])
-            raw = _extract_text(response.content)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_call_planner, planner_llm, planner_content)
+                raw = future.result(timeout=90)
             best = _parse_plan_json(raw)
             log.info(f"Planner returned {len(best)} steps")
+        except concurrent.futures.TimeoutError:
+            log.warning("Planner timed out after 90s — trying fallback")
+            best = []
         except Exception as e:
             log.warning(f"Planner failed: {e}")
             best = []
 
         if not best:
-            log.warning("Empty plan — retrying with fallback model")
+            log.warning("Empty/timed-out plan — retrying with fallback model")
             try:
-                response = heal_llm.invoke([HumanMessage(content=planner_content)])
-                raw = _extract_text(response.content)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_call_planner, heal_llm, planner_content)
+                    raw = future.result(timeout=60)
                 best = _parse_plan_json(raw)
                 log.info(f"Fallback planner returned {len(best)} steps")
+            except concurrent.futures.TimeoutError:
+                log.warning("Fallback also timed out after 60s")
+                best = []
             except Exception as e:
                 log.warning(f"Fallback also failed: {e}")
                 best = []
