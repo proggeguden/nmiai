@@ -27,12 +27,12 @@ from predictor import (
 )
 
 # ML model: load weights at startup if available
-ML_WEIGHTS = None
+ML_WEIGHTS = None  # list of weight dicts (ensemble) or None
 ML_WEIGHTS_PATH = os.path.join(os.path.dirname(__file__), "model_weights.npz")
 if os.path.exists(ML_WEIGHTS_PATH):
-    from ml_predictor import load_model
-    ML_WEIGHTS = load_model(ML_WEIGHTS_PATH)
-    print(f"ML model loaded from {ML_WEIGHTS_PATH}")
+    from ml_predictor import load_ensemble
+    ML_WEIGHTS = load_ensemble(ML_WEIGHTS_PATH)
+    print(f"ML model loaded from {ML_WEIGHTS_PATH} ({len(ML_WEIGHTS)} snapshot(s))")
 else:
     print(f"ML model not found at {ML_WEIGHTS_PATH}, using bucket model")
 
@@ -190,7 +190,7 @@ def run_pipeline(round_id):
         if use_ml:
             pred = build_prediction_ml(
                 height, width, initial_grid, seed_obs,
-                ml_weights=ML_WEIGHTS,
+                ml_snapshots=ML_WEIGHTS,
                 rates=forward_rates,
                 spatial_obs=spatial_obs,
                 skip_blending=True,

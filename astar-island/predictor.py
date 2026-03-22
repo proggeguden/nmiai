@@ -1395,12 +1395,12 @@ def build_prediction(height, width, initial_grid, observations,
 
 
 def build_prediction_ml(height, width, initial_grid, observations,
-                        ml_weights, rates=None,
+                        ml_snapshots, rates=None,
                         spatial_obs=None, skip_blending=False):
     """Build a H×W×6 probability tensor using an ML model for base predictions.
 
-    Uses extract_features() + numpy_forward() from ml_predictor for base
-    predictions instead of the bucket spatial model, then applies the same
+    Uses extract_features() + numpy_forward_ensemble() from ml_predictor for
+    base predictions instead of the bucket spatial model, then applies the same
     per-cell observation blending and probability floor as build_prediction().
 
     Parameters
@@ -1411,8 +1411,9 @@ def build_prediction_ml(height, width, initial_grid, observations,
         H×W initial terrain codes.
     observations : list[dict]
         Viewport observations from simulate queries.
-    ml_weights : dict
-        Loaded ML model weights (from ml_predictor.load_model).
+    ml_snapshots : list[dict]
+        List of ML model weight dicts (from ml_predictor.load_ensemble).
+        Single-model files are backward compatible (list of 1 weight dict).
     rates : dict | None
         Round-level rate estimates with keys: survival, expansion,
         port_formation, forest_reclamation, ruin.  None → default 0.5.
@@ -1420,20 +1421,16 @@ def build_prediction_ml(height, width, initial_grid, observations,
         Bucket → observation count mapping from learn_spatial_transition_model.
         Used only for k-confidence scaling in per-cell blending.
     """
-    from ml_predictor import extract_features, numpy_forward
+    from ml_predictor import extract_features, numpy_forward_ensemble
 
-    # Step 1: Base predictions from ML model
+    # Step 1: Base predictions from ML ensemble
     survival = rates.get("survival", 0.5) if rates else 0.5
 
     # Survival-conditional temperature: sharpen on harsh rounds (surv < 10%)
-    if survival < 0.10:
-        eff_weights = dict(ml_weights)
-        eff_weights["temperature"] = np.array([0.85], dtype=np.float64)
-    else:
-        eff_weights = ml_weights
+    temperature = 0.85 if survival < 0.10 else None
 
     features = extract_features(initial_grid, rates=rates)
-    predictions = numpy_forward(features, eff_weights)  # H×W×6 float64
+    predictions = numpy_forward_ensemble(features, ml_snapshots, temperature=temperature)
 
     # Override static cells with deterministic predictions
     # Ocean (code 10) → Empty class (0), Mountain (code 5) → Mountain class (5)
