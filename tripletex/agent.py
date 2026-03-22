@@ -1967,32 +1967,6 @@ def build_agent():
                 except Exception:
                     pass
 
-        # Pre-flight: ensure /:payment has paymentTypeId (required, can't be null)
-        if (
-            tool_name == "call_api"
-            and resolved_args.get("method") == "PUT"
-            and "/:payment" in resolved_args.get("path", "")
-            and call_api_tool
-        ):
-            qp = resolved_args.get("query_params", {})
-            if isinstance(qp, dict) and not qp.get("paymentTypeId"):
-                try:
-                    pt_r = call_api_tool.invoke({"method": "GET", "path": "/invoice/paymentType", "query_params": {"count": 10}})
-                    pt_vals = json.loads(pt_r).get("values", [])
-                    # Prefer bank type
-                    chosen = None
-                    for pt in pt_vals:
-                        if "bank" in str(pt.get("description", "")).lower():
-                            chosen = pt.get("id")
-                            break
-                    if not chosen and pt_vals:
-                        chosen = pt_vals[0].get("id")
-                    if chosen:
-                        qp["paymentTypeId"] = chosen
-                        log.info(f"Pre-flight: injected paymentTypeId={chosen} on /:payment")
-                except Exception:
-                    pass
-
         # Pre-flight: probe /incomingInvoice availability before wasting a write call
         # GET is FREE — if it 403s, rewrite to /ledger/voucher to avoid double penalty
         if (
