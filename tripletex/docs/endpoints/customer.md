@@ -92,7 +92,7 @@ Create customer. Related customer addresses may also be created.
 **Capture for next steps:**
 - `value.id — the customer ID`
 
-> ⚠️ Sandbox starts empty — always CREATE, never search for existing customers
+> ⚠️ Production may have pre-existing data — SEARCH first, only CREATE if not found
 
 ---
 

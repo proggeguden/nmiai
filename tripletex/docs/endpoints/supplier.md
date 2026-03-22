@@ -81,7 +81,7 @@ Create supplier. Related supplier addresses may also be created.
 **Capture for next steps:**
 - `value.id — the supplier ID`
 
-> ⚠️ Sandbox starts empty — always CREATE, never search for existing suppliers
+> ⚠️ Production may have pre-existing data — SEARCH first, only CREATE if not found
 
 ---
 

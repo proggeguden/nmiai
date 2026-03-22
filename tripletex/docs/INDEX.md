@@ -46,5 +46,5 @@ Read this first. Then read the file(s) you need.
 5. **Never send readOnly fields** on create (id, url, amounts, displayName, version)
 6. **Action endpoints** (prefixed with `:`): params go in **query_params**, NOT body
 7. **Response envelope:** single = `{value: {...}}`, list = `{fullResultSize, from, count, values: [...]}`
-8. **Known VAT type IDs** (no lookup needed): 1=0%, 3=25%, 5=15%(food), 6=12%(transport)
-9. **Sandbox starts empty** — always CREATE resources, never search (except employee dedup by email)
+8. **Known VAT type OUTPUT IDs**: 3=25%, 31=15%(food), 32=12%(transport), 5=0%(exempt), 6=0%(outside VAT). INPUT IDs: 1=25%, 11=15%, 13=12%.
+9. **Production has pre-existing data** — SEARCH BEFORE CREATE (GET is free). Only create if search returns empty.

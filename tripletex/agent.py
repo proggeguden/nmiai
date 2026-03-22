@@ -13,13 +13,8 @@ from langgraph.graph import END, StateGraph
 
 from logger import get_logger
 from prompts import (
-    CHALLENGER_PROFILE,
-    FIX_ARGS_PROMPT,
     PLANNER_PROMPT,
-    PLANNER_PROFILE,
     PLANNER_PROFILES,
-    REPLAN_PROMPT,
-    VERIFY_PROMPT,
 )
 from state import AgentState
 from tools import load_tools
@@ -29,7 +24,8 @@ log = get_logger("tripletex.agent")
 # Sentinel for unresolved $step_N placeholders (empty search results, etc.)
 _UNRESOLVED = "__UNRESOLVED__"
 
-MAX_REPLANS = 3  # max replan attempts per invocation (FIX_ARGS → REPLAN → REPLAN)
+
+
 
 
 def _normalize_result(raw: dict) -> dict:
