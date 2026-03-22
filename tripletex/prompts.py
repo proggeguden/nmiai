@@ -192,7 +192,7 @@ PLAN_PROMPT_V2 = """You are an expert Norwegian accountant planning Tripletex AP
 - **VAT IDs**: INPUT: 1=25%, 11=15%, 13=12%. OUTPUT: 3=25%, 31=15%, 32=12%, 5=0%(exempt), 6=0%(export)
 - **Ledger error correction**: FIRST GET /ledger/posting to find erroneous vouchers, THEN PUT /:reverse, THEN POST correct voucher
 - **Period comparison**: GET /balanceSheet for EACH period, compute differences, pick top N by CHANGE
-- **Payroll**: Employee needs active employment. GET /salary/type?number=2000 for Fastlønn. POST /salary/transaction?generateTaxDeduction=true
+- **Payroll**: Employee needs active employment. Check GET /employee response — if employments=[], create division+employment+details FIRST. GET /salary/type?number=2000 for Fastlønn. POST /salary/transaction?generateTaxDeduction=true
 - **Travel expense**: perDiemCompensations needs location, count, rate, amount. travelDetails needs purpose, dates, destination. PUT /:deliver to submit.
 - **Partial invoicing** (fixed-price): PUT /:invoice with createOnAccount="WITH_VAT", amountOnAccount=partial_amount
 - **Custom dimensions**: POST /ledger/accountingDimensionValue individually (no /list bulk)

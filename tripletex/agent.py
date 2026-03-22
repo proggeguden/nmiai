@@ -2748,17 +2748,17 @@ def _resolve_placeholder(value: Any, results: dict, llm) -> Any:
     }
 
     # COMPATIBILITY: After normalization, results are flat {id: N, ...}.
-    # But the planner may still use old patterns like .value.id or .values[0].id.
+    # But the planner may use old patterns like .value.id, .values[0].id, or ._all[0].id.
     # Strip these prefixes so they resolve against the flat structure.
     clean_path = path_str
     if clean_path.startswith(".value."):
         clean_path = "." + clean_path[7:]  # .value.id → .id
-        log.info(f"Resolver: stripped .value. prefix from {path_str}")
     elif clean_path.startswith(".values[0]."):
         clean_path = "." + clean_path[11:]  # .values[0].id → .id
-        log.info(f"Resolver: stripped .values[0]. prefix from {path_str}")
-    elif clean_path == ".value" or clean_path == ".values[0]":
-        # Bare .value or .values[0] — return the object itself (it's already flat)
+    elif clean_path.startswith("._all[0]."):
+        clean_path = "." + clean_path[9:]  # ._all[0].id → .id
+    elif clean_path in (".value", ".values[0]", "._all[0]"):
+        # Bare ref — return the object itself (it's already flat)
         return obj if isinstance(obj, dict) else _UNRESOLVED
 
     # Parse the path: supports .field and [N] indexing
