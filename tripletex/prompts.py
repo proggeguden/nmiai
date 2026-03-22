@@ -210,7 +210,7 @@ PLAN_PROMPT_V2 = """You are an API planner for Tripletex. You receive a structur
 - POST /incomingInvoice?sendTo=ledger: Body: {{"invoiceHeader": {{"vendorId": N, "invoiceDate", "dueDate", "invoiceAmount" (incl VAT), "invoiceNumber"}}, "orderLines": [{{"row": 1, "externalId": "1", "accountId": N, "vatTypeId": N, "amountInclVat": N, "description": "..."}}]}}
 - GET /balanceSheet: params dateFrom, dateTo, accountNumberFrom, accountNumberTo, count, fields. Use fields=account(id,number,name),balanceChange
 - POST /timesheet/entry: {{employee:{{id}}, activity:{{id}}, project:{{id}}, date, hours}}
-- POST /activity: {{name, activityType: "PROJECT_GENERAL_ACTIVITY"}}
+- POST /activity: {{name, activityType: "PROJECT_GENERAL_ACTIVITY"}}. Do NOT include "project" field — it doesn't exist on this endpoint. To link activity to project: POST /project/projectActivity {{activity:{{id}}, project:{{id}}}}
 - POST /ledger/accountingDimensionName: {{dimensionName: "..."}}
 - POST /ledger/accountingDimensionValue: {{displayName: "...", dimensionIndex: N, externalId: "1"}}
 - POST /bank/statement/import: upload CSV, params bankId, accountId, fromDate, toDate

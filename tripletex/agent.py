@@ -441,12 +441,20 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                             log.info(f"Validation: flattened {field} → {flat_field} on incomingInvoice orderLine")
 
         # Auto-inject activityType on POST /activity if missing (required field)
+        # Also strip 'project' field (not valid on /activity — use /project/projectActivity to link)
         if method == "POST" and path in ("/activity", "/activity/list") and isinstance(body, (dict, list)):
             act_bodies = body if isinstance(body, list) else [body]
             for ab in act_bodies:
-                if isinstance(ab, dict) and "activityType" not in ab:
-                    ab["activityType"] = "PROJECT_GENERAL_ACTIVITY"
-                    log.info("Validation: injected activityType=PROJECT_GENERAL_ACTIVITY on POST /activity")
+                if isinstance(ab, dict):
+                    if "activityType" not in ab:
+                        ab["activityType"] = "PROJECT_GENERAL_ACTIVITY"
+                        log.info("Validation: injected activityType=PROJECT_GENERAL_ACTIVITY on POST /activity")
+                    # Strip project field — causes 422 "Feltet eksisterer ikke"
+                    proj_ref = ab.pop("project", None)
+                    if proj_ref:
+                        log.info(f"Validation: stripped 'project' from POST /activity (will need /project/projectActivity to link)")
+                        # Queue a follow-up step to link activity to project
+                        step["_link_activity_to_project"] = proj_ref
 
         # Strip read-only fields from POST /supplier (cause 422)
         if method == "POST" and path in ("/supplier", "/supplier/list") and isinstance(body, (dict, list)):
@@ -1738,6 +1746,24 @@ def build_agent():
                 f"Step {step['step_number']} completed",
                 result_preview=str(results[f"step_{step['step_number']}"])[:500],
             )
+
+            # Post-success: link activity to project if validate_plan flagged it
+            link_proj = step.get("_link_activity_to_project")
+            if link_proj and call_api_tool:
+                activity_id = results[f"step_{step['step_number']}"].get("id")
+                proj_id = link_proj.get("id") if isinstance(link_proj, dict) else link_proj
+                if activity_id and proj_id:
+                    try:
+                        proj_id_resolved = _resolve_placeholder(str(proj_id), results, None) if isinstance(proj_id, str) and "$step_" in str(proj_id) else proj_id
+                        if proj_id_resolved and proj_id_resolved != _UNRESOLVED:
+                            link_result = call_api_tool.invoke({
+                                "method": "POST", "path": "/project/projectActivity",
+                                "body": {"activity": {"id": activity_id}, "project": {"id": proj_id_resolved}},
+                            })
+                            log.info(f"Auto-linked activity {activity_id} to project {proj_id_resolved}")
+                    except Exception as e:
+                        log.warning(f"Failed to link activity to project: {e}")
+
             completed.append(step["step_number"])
             return {
                 "current_step": step_idx + 1,
