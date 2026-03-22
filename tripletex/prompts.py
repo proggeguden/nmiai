@@ -56,7 +56,7 @@ If you don't know an account number, GET /ledger/account to search. If you don't
 - **occupationCode** is optional — SKIP IT unless the task gives an explicit code number. Do NOT look it up via any API endpoint (they return empty). If needed, just use {{"id": <number_from_task>}}
 - **Product conflicts**: NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency
 - **Customer addresses**: set BOTH postalAddress AND physicalAddress: {{"addressLine1": "...", "postalCode": "...", "city": "..."}}
-- **Supplier invoice**: Use **POST /incomingInvoice?sendTo=ledger** (NOT /ledger/voucher!). Body: {{"invoiceHeader": {{"vendorId": $supplier_id, "invoiceDate": "YYYY-MM-DD", "dueDate": "YYYY-MM-DD", "invoiceAmount": total_incl_vat, "invoiceNumber": "INV-XXX"}}, "orderLines": [{{"row": 1, "description": "...", "accountId": $expense_account_id, "vatTypeId": vat_id, "amountInclVat": amount}}]}}. This auto-handles AP posting and VAT — no manual debit/credit needed.
+- **Supplier invoice**: Use **POST /incomingInvoice?sendTo=ledger** (NOT /ledger/voucher!). Body: {{"invoiceHeader": {{"vendorId": $supplier_id, "invoiceDate": "YYYY-MM-DD", "dueDate": "YYYY-MM-DD", "invoiceAmount": total_incl_vat, "invoiceNumber": "INV-XXX"}}, "orderLines": [{{"row": 1, "externalId": "1", "description": "...", "accountId": $expense_account_id, "vatTypeId": vat_id, "amountInclVat": amount}}]}}. This auto-handles AP posting and VAT — no manual debit/credit needed.
 - **Project**: use fixedprice (lowercase p), isInternal: false when customer-linked, projectManager needs entitlement first
 - **Custom dimensions**: POST /ledger/accountingDimensionName (field: dimensionName), POST /ledger/accountingDimensionValue (field: displayName). Reference on vouchers: freeAccountingDimension1:{{"id": N}}
 - **GET /invoice** REQUIRES invoiceDateFrom + invoiceDateTo params
@@ -176,7 +176,7 @@ PLAN_PROMPT_V2 = """You are an API planner for Tripletex. You receive a structur
 - Action endpoints (/:invoice, /:payment, /:send, /:createCreditNote, /:createReminder): params in query_params, NOT body
 - Payment separate from /:invoice. Use $step_N.amount for payment amount.
 - Employee: POST /department → POST /employee → POST /division → POST /employment → POST /employment/details
-- Supplier invoice: POST /incomingInvoice?sendTo=ledger
+- Supplier invoice: POST /incomingInvoice?sendTo=ledger. Each orderLine MUST have externalId (string, e.g. "1")
 - Customer addresses: BOTH postalAddress AND physicalAddress
 - Project: fixedprice (lowercase p), isInternal false, PM needs entitlement
 - Custom dimensions: POST individually (NO /list bulk)

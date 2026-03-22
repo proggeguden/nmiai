@@ -388,6 +388,13 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                     cb["postalAddress"] = dict(cb["physicalAddress"])
                     log.info("Validation: copied physicalAddress → postalAddress on customer")
 
+        # Auto-inject externalId on POST /incomingInvoice orderLines (required field)
+        if method == "POST" and "/incomingInvoice" in path and isinstance(body, dict):
+            for idx, ol in enumerate(body.get("orderLines", [])):
+                if isinstance(ol, dict) and "externalId" not in ol:
+                    ol["externalId"] = str(idx + 1)
+                    log.info(f"Validation: injected externalId={idx+1} on incomingInvoice orderLine")
+
         # Fix fixedPrice → fixedprice on POST /project (API uses lowercase 'p')
         if method == "POST" and path in ("/project", "/project/list") and isinstance(body, (dict, list)):
             project_bodies = body if isinstance(body, list) else [body]

@@ -1,6 +1,4 @@
-# Manual Submission Tests — Round 38 (revision tripletex-00069-knn)
-
-Logs filter: `resource.labels.revision_name="tripletex-00070-v79"`
+# Manual Submission Tests — Round 38
 
 Key changes:
 - thinking_level="low" on all LLMs (was "high" default → 60-180s wasted)
@@ -76,10 +74,82 @@ No API error, but something going wrong. Check the dataflow between the endpoint
 # SUBMISSION 5
 
 ## PROMPT
+Opprett ein ordre for kunden Skogheim AS (org.nr 865101422) med produkta Opplæring (2677) til 15100 kr og Webdesign (5844) til 20600 kr. Konverter ordren til faktura og registrer full betaling.
+
+## SCORE
+8/8
+
+## NOTES
+
+
+---
+
+
+
+---
+
+# SUBMISSION 6
+
+## PROMPT
+Recebemos a fatura INV-2026-7230 do fornecedor Solmar Lda (org. nº 973188410) no valor de 7700 NOK com IVA incluído. O montante refere-se a serviços de escritório (conta 7140). Registe a fatura do fornecedor com o IVA dedutível correto (25 %).
+
+## SCORE
+0/8
+
+## NOTES
+POST /incomingInvoice → 422
+response: "{"status":422,"code":18000,"message":"Validering feilet.","link":"https://tripletex.no/v2-docs/","developerMessage":null,"validationMessages":[{"field":"orderLines.externalId","message":"Kan ikke være null.","path":"orderLines[0].externalId","rootId":null}],"requestId":"a01e0d58-15f8-435c-9fea-9ab4e5b0767f"}"
+
+---
+
+
+---
+
+# SUBMISSION 7
+
+## PROMPT
+Sie haben einen Arbeitsvertrag erhalten (siehe beigefugte PDF). Erstellen Sie den Mitarbeiter in Tripletex mit allen Details aus dem Vertrag: Personalnummer, Geburtsdatum, Abteilung, Berufsschluessel, Gehalt, Beschaeftigungsprozentsatz und Startdatum.
+
+### FILE
+files/arbeidskontrakt_de_07.pdf
+
+## SCORE
+10/22
+
+## NOTES
+POST /division → 422
+Still not extracting data
+
+---
+
+---
+
+# SUBMISSION 8
+
+## PROMPT
+Vous avez recu une lettre d'offre (voir PDF ci-joint) pour un nouvel employe. Effectuez l'integration complete : creez l'employe, attribuez le bon departement, configurez les details d'emploi avec le pourcentage et le salaire annuel, et configurez les heures de travail standard.
+
+### FILE
+files/tilbudsbrev_fr_07.pdf
+
+## SCORE
+5/14
+
+## NOTES
+Kind of similar errors as the one over I think.
+
+---
+
+
+---
+
+# SUBMISSION 9
+
+## PROMPT
 
 
 ## SCORE
-/
+
 
 ## NOTES
 
