@@ -191,17 +191,22 @@ PLAN_PROMPT_V2 = """You are an API planner for Tripletex. You receive a structur
 - Ledger analysis: GET /balanceSheet + filter_data sort_desc
 - Paths: NO /v2 prefix
 
-## ID Resolution
-- $step_N.id — entity ID (POST, GET, /list all work)
-- $step_N.fieldName — any field
-- $step_N._all[1].id — second item
-- Reference: {{"id": $step_N.id}}
+## ID Resolution — CRITICAL
+Use $step_N.id to reference the ID from step N. This works everywhere:
+- In body: {{"customer": {{"id": "$step_1.id"}}}}
+- In path: "/order/$step_3.id/:invoice" — the ID is substituted into the URL
+- In query_params: {{"customerId": "$step_1.id"}}
+- For flat ID fields (incomingInvoice): "vendorId": "$step_1.id", "accountId": "$step_2.id"
+- Second item from list: $step_N._all[1].id
+- Any field: $step_N.amount, $step_N.name
+- NEVER use literal {{id}} in paths — always use $step_N.id
 - vatType OUTPUT: 3=25%, 31=15%, 32=12%, 5=0%, 6=0%
 
 ## Output
 Return ONLY a JSON array:
 [
-  {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "...", "path": "...", "query_params": {{}}, "body": {{}}}}, "description": "..."}}
+  {{"step_number": 1, "tool_name": "call_api", "args": {{"method": "POST", "path": "/customer", "body": {{"name": "X"}}}}, "description": "Create customer"}},
+  {{"step_number": 2, "tool_name": "call_api", "args": {{"method": "PUT", "path": "/order/$step_1.id/:invoice", "query_params": {{"invoiceDate": "{today}"}}}}, "description": "Note: $step_1.id in the path"}}
 ]
 
 ## Original Task (reference)
