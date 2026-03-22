@@ -1908,6 +1908,39 @@ def build_agent():
                 "messages": [AIMessage(content=f"Step {step['step_number']} failed: bank statement upload")],
             }
 
+        # Pre-flight: enrich POST /division with missing required fields BEFORE the call
+        # This avoids a wasted 422 (4xx on writes costs DOUBLE efficiency)
+        if (
+            tool_name == "call_api"
+            and resolved_args.get("method") == "POST"
+            and resolved_args.get("path") in ("/division", "/division/list")
+            and call_api_tool
+        ):
+            body = resolved_args.get("body", {})
+            bodies = [body] if isinstance(body, dict) else (body if isinstance(body, list) else [])
+            for b in bodies:
+                if not isinstance(b, dict):
+                    continue
+                if "municipality" not in b or not isinstance(b.get("municipality"), dict):
+                    try:
+                        mun_r = call_api_tool.invoke({"method": "GET", "path": "/municipality", "query_params": {"count": 1}})
+                        mun_vals = json.loads(mun_r).get("values", [])
+                        if mun_vals:
+                            b["municipality"] = {"id": mun_vals[0]["id"]}
+                    except Exception:
+                        pass
+                b.setdefault("municipalityDate", date.today().isoformat())
+                if "organizationNumber" not in b or not b["organizationNumber"]:
+                    try:
+                        co_r = call_api_tool.invoke({"method": "GET", "path": "/company", "query_params": {"fields": "id,organizationNumber"}})
+                        co_val = json.loads(co_r).get("value", json.loads(co_r))
+                        org = co_val.get("organizationNumber", "")
+                        if org:
+                            b["organizationNumber"] = org
+                    except Exception:
+                        pass
+                b.setdefault("startDate", date.today().isoformat())
+
         # First attempt
         try:
             result_str = tool.invoke(resolved_args)
