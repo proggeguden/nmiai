@@ -66,7 +66,7 @@ If you don't know an account number, GET /ledger/account to search. If you don't
 - **GET /invoice** REQUIRES invoiceDateFrom + invoiceDateTo params
 - **GET /balanceSheet** and **GET /ledger/posting** REQUIRE dateFrom + dateTo params
 - **Reminders**: PUT /invoice/ID/:createReminder with query_params type=REMINDER, date={today}, includeCharge=true, includeInterest=true, includeRemittance=true
-- **Send invoice**: PUT /invoice/ID/:send with query_params sendType="EMAIL". The invoice ID comes from PUT /order/:invoice response ($step_N.id).
+- **Send invoice**: ALWAYS use a SEPARATE step: PUT /invoice/$step_INV.id/:send with query_params sendType="EMAIL". Do NOT use sendToCustomer=true on /:invoice — it silently fails if no email is configured. The /:send step is more reliable and the scoring checks for it.
 - **Cancel/reverse payment**: PUT /invoice/ID/:payment with NEGATIVE paidAmount and NEGATIVE paidAmountCurrency
 - **Credit note**: PUT /invoice/ID/:createCreditNote with query_params date={today}
 - **Foreign currency invoices (agio/disagio)**: The invoice ALREADY EXISTS — find it with GET /invoice?customerId=X. IMPORTANT: After GET, check the ACTUAL invoice amount and currency from the response — the task prompt may describe amounts differently than what's in Tripletex. Use the invoice's actual `amount` field for paidAmount, and `amountCurrency` for paidAmountCurrency. If the invoice is in NOK (not foreign currency), use paidAmount=$step_INV.amount and paidAmountCurrency=$step_INV.amount (same value). Tripletex auto-calculates exchange rate differences.

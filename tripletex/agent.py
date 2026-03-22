@@ -600,9 +600,26 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 if pt_id == 0 or pt_id == "0":
                     qp.pop("paymentTypeId", None)
                     log.info("Validation: stripped paymentTypeId=0 from /:payment (invalid, causes 500)")
-                if "invoiceDate" not in qp:
-                    qp["invoiceDate"] = date.today().isoformat()
-                    log.info("Validation: auto-injected invoiceDate for /:invoice")
+
+        # Fix 3d: /:payment paidAmount should reference invoice amount, not hardcoded value
+        # The planner often computes ex-VAT amount from prompt text, forgetting the invoice
+        # total includes VAT. Fix: if paidAmount is a literal number and we can find the
+        # /:invoice step, replace with $step_INVOICE.amount
+        if method == "PUT" and "/:payment" in path:
+            qp = args.get("query_params", {})
+            if isinstance(qp, dict):
+                paid = qp.get("paidAmount")
+                if isinstance(paid, (int, float)):
+                    # Find the /:invoice step that created this invoice
+                    invoice_step = None
+                    for prev in plan[:step_idx]:
+                        prev_args = prev.get("args", {})
+                        if "/:invoice" in prev_args.get("path", "") and prev_args.get("method") == "PUT":
+                            invoice_step = prev["step_number"]
+                    if invoice_step:
+                        qp["paidAmount"] = f"$step_{invoice_step}.amount"
+                        qp["paidAmountCurrency"] = f"$step_{invoice_step}.amount"
+                        log.info(f"Validation: replaced hardcoded paidAmount={paid} with $step_{invoice_step}.amount")
 
         if not body or not isinstance(body, dict):
             continue
