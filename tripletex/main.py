@@ -136,10 +136,10 @@ async def solve(request: Request, body: SolveRequest):
                         "content_base64": f.content_base64,
                         "mime_type": f.mime_type,
                     })
-            elif f.mime_type.startswith("text/") or f.mime_type == "application/json" or f.mime_type == "text/csv":
-                # Text files: decode and pass as text
+            elif f.mime_type.startswith("text/") or f.mime_type in ("application/json", "application/csv", "application/octet-stream"):
+                # Text/CSV files: decode and pass as text with filename label
                 decoded = content_bytes.decode("utf-8", errors="replace")
-                file_attachments.append({"type": "text", "filename": f.filename, "text": decoded})
+                file_attachments.append({"type": "text", "filename": f.filename, "text": f"\n[Contents of {f.filename}]\n{decoded}"})
             else:
                 # Images, etc: pass as base64 for Gemini multimodal
                 file_attachments.append({
