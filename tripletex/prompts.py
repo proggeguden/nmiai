@@ -57,7 +57,7 @@ If you don't know an account number, GET /ledger/account to search. If you don't
 - **Product conflicts**: NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency
 - **Customer addresses**: set BOTH postalAddress AND physicalAddress: {{"addressLine1": "...", "postalCode": "...", "city": "..."}}
 - **Supplier invoice**: Use **POST /incomingInvoice?sendTo=ledger** (NOT /ledger/voucher!). Body: {{"invoiceHeader": {{"vendorId": $supplier_id, "invoiceDate": "YYYY-MM-DD", "dueDate": "YYYY-MM-DD", "invoiceAmount": total_incl_vat, "invoiceNumber": "INV-XXX"}}, "orderLines": [{{"row": 1, "externalId": "1", "description": "...", "accountId": $expense_account_id, "vatTypeId": vat_id, "amountInclVat": amount}}]}}. This auto-handles AP posting and VAT — no manual debit/credit needed.
-- **Project**: use fixedprice (lowercase p), isInternal: false when customer-linked, projectManager needs entitlement first
+- **Project**: use fixedprice (lowercase p), isInternal: false when customer-linked. projectManager needs PUT /employee/entitlement/:grantEntitlementsByTemplate?employeeId=N&template=ALL_PRIVILEGES BEFORE POST /project
 - **Custom dimensions**: POST /ledger/accountingDimensionName (field: dimensionName), POST /ledger/accountingDimensionValue (field: displayName). Reference on vouchers: freeAccountingDimension1:{{"id": N}}
 - **GET /invoice** REQUIRES invoiceDateFrom + invoiceDateTo params
 - **GET /balanceSheet** and **GET /ledger/posting** REQUIRE dateFrom + dateTo params
@@ -74,6 +74,8 @@ If you don't know an account number, GET /ledger/account to search. If you don't
 - **Ledger analysis** ("find top 3 expense accounts"): GET /balanceSheet?dateFrom=X&dateTo=Y&accountNumberFrom=4000&accountNumberTo=9999&count=1000, then filter_data(previous_step="N", operation="sort_desc", field="balanceChange", count=3). Use $step_FILTER._all[0].account.name, $step_FILTER._all[1].account.name, etc.
 - **Custom dimensions**: POST /ledger/accountingDimensionValue individually for EACH value (NO /list bulk endpoint). Fields: displayName, dimensionIndex (from parent dimension response).
 - **Bank reconciliation**: Use POST /bank/statement/import to upload CSV, then PUT /bank/reconciliation/match/:suggest to auto-match payments to invoices.
+- **Travel expense (reiseregning)**: perDiemCompensations MUST include: location, count, rate (daily NOK rate FROM TASK), amount (count × rate), overnightAccommodation. travelDetails MUST include: purpose (from task), departureDate, returnDate, destination. Then PUT /travelExpense/:deliver to submit.
+- **Fixed-price project partial invoicing** (e.g. "invoice 75%"): PUT /order/{{id}}/:invoice with query_params createOnAccount="WITH_VAT" and amountOnAccount=partial_amount. Do NOT put the partial amount as an order line price — use createOnAccount.
 - **Paths** must NOT include /v2 prefix
 - **Language**: The task may be in any language. Use field values EXACTLY as written in the task (names, descriptions, department names) — do NOT translate them. Write step descriptions in English.
 
@@ -179,7 +181,7 @@ PLAN_PROMPT_V2 = """You are an API planner for Tripletex. You receive a structur
 - Employee: POST /department → POST /employee → POST /division → POST /employment → POST /employment/details
 - Supplier invoice: POST /incomingInvoice?sendTo=ledger. Each orderLine MUST have externalId (string, e.g. "1")
 - Customer addresses: BOTH postalAddress AND physicalAddress
-- Project: fixedprice (lowercase p), isInternal false, PM needs entitlement
+- Project: fixedprice (lowercase p), isInternal false. projectManager needs PUT /employee/entitlement/:grantEntitlementsByTemplate?employeeId=N&template=ALL_PRIVILEGES BEFORE POST /project
 - Custom dimensions: POST individually (NO /list bulk)
 - GET /invoice needs invoiceDateFrom + invoiceDateTo
 - GET /balanceSheet needs dateFrom + dateTo. Add fields=account(id,number,name).
@@ -191,6 +193,20 @@ PLAN_PROMPT_V2 = """You are an API planner for Tripletex. You receive a structur
 - Missing accounts: GET first, POST /ledger/account if empty
 - Ledger analysis: GET /balanceSheet + filter_data sort_desc
 - Paths: NO /v2 prefix
+- Travel expense (reiseregning): perDiemCompensations MUST include: location, count, rate (daily NOK rate FROM TASK), amount (count × rate), overnightAccommodation. travelDetails MUST include: purpose (from task), departureDate, returnDate, destination. Then PUT /travelExpense/:deliver to submit.
+- Fixed-price project partial invoicing (e.g. "invoice 75%"): PUT /order/{{id}}/:invoice with query_params createOnAccount="WITH_VAT" and amountOnAccount=partial_amount. Do NOT put the partial amount as an order line price — use createOnAccount.
+
+## Critical Endpoints (not in main catalog)
+- POST /incomingInvoice?sendTo=ledger: Body: {{"invoiceHeader": {{"vendorId": N, "invoiceDate", "dueDate", "invoiceAmount" (incl VAT), "invoiceNumber"}}, "orderLines": [{{"row": 1, "externalId": "1", "accountId": N, "vatTypeId": N, "amountInclVat": N, "description": "..."}}]}}
+- GET /balanceSheet: params dateFrom, dateTo, accountNumberFrom, accountNumberTo, count, fields. Use fields=account(id,number,name),balanceChange
+- POST /timesheet/entry: {{employee:{{id}}, activity:{{id}}, project:{{id}}, date, hours}}
+- POST /activity: {{name, activityType: "PROJECT_GENERAL_ACTIVITY"}}
+- POST /ledger/accountingDimensionName: {{dimensionName: "..."}}
+- POST /ledger/accountingDimensionValue: {{displayName: "...", dimensionIndex: N, externalId: "1"}}
+- POST /bank/statement/import: upload CSV, params bankId, accountId, fromDate, toDate
+- PUT /bank/reconciliation/match/:suggest: auto-match payments
+- POST /ledger/account: {{number: N, name: "..."}}
+- GET /ledger/posting: params dateFrom, dateTo, accountNumberFrom, accountNumberTo
 
 ## ID Resolution — CRITICAL
 Use $step_N.id to reference the ID from step N. This works everywhere:

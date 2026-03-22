@@ -202,6 +202,16 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                                 "Validation: stripped unknown vatType from order line"
                             )
 
+        # ── B0b2: Inject default vatType 25% on order lines missing vatType ──
+        if method == "POST" and path in ("/order", "/order/list") and isinstance(body, (dict, list)):
+            bodies = body if isinstance(body, list) else [body]
+            for b in bodies:
+                if isinstance(b, dict):
+                    for ol in b.get("orderLines", []):
+                        if isinstance(ol, dict) and "vatType" not in ol:
+                            ol["vatType"] = {"id": 3}
+                            log.info("Validation: injected default vatType 25% on order line")
+
         # ── B0c: Auto-inject invoiceDueDate for POST /invoice ──
         if method == "POST" and path == "/invoice" and isinstance(body, dict):
             if "invoiceDueDate" not in body:
