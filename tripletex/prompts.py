@@ -140,7 +140,7 @@ Compute all math directly (depreciation = cost / years, tax = 22% of result, mon
 ## Output
 Return ONLY a JSON object:
 {{
-  "transaction_type": "<create_customer|create_employee|create_supplier|create_product|create_department|create_project|create_order|invoice_and_payment|register_payment|cancel_payment|credit_note|supplier_invoice|travel_expense|ledger_voucher|year_end_closing|monthly_closing|ledger_analysis|custom_dimensions|bank_reconciliation|timesheet|payroll|foreign_currency_payment|receipt_expense|unknown>",
+  "transaction_type": "<create_customer|create_employee|create_supplier|create_product|create_department|create_project|create_order|invoice_and_payment|register_payment|cancel_payment|credit_note|supplier_invoice|travel_expense|ledger_voucher|year_end_closing|monthly_closing|ledger_analysis|ledger_error_correction|custom_dimensions|bank_reconciliation|timesheet|payroll|foreign_currency_payment|receipt_expense|unknown>",
   "summary": "<1-sentence description>",
   "entities": {{
     "<role>": {{"exists": <true/false>, "data": {{<fields>}}}}
