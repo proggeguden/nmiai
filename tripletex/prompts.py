@@ -48,11 +48,11 @@ UNDERSTAND_PROMPT = """Analyze this accounting task and produce a structured und
 ## Today's date: {today}
 
 ## Instructions
-Read the task carefully (may be in Norwegian, English, Spanish, Portuguese, Nynorsk, German, French).
-Extract ALL data from the task and any attached files (PDFs, receipts, contracts).
-For RECEIPTS: parse EVERY line item individually (product, quantity, unit price, VAT per line, line total). If the task asks about a SPECIFIC item, include ONLY that item's amount in your output — NOT the receipt grand total.
+Read the task AND all attached files (PDFs, receipts, contracts) very carefully.
+Extract EVERY piece of data: names, emails, dates, amounts, department names, occupation codes, salary, percentages.
+For employee tasks with PDF: the PDF contains ALL the data. Read it thoroughly — department name, email, national ID, bank account, salary, start date, occupation code. NEVER guess "HR" or any other default — use the EXACT department name from the PDF.
+For RECEIPTS: parse EVERY line item individually. If the task asks about a SPECIFIC item, include ONLY that item.
 Do NOT translate field values — keep names, descriptions, department names exactly as written.
-Compute all math directly (depreciation = cost / years, tax = 22% of result, monthly = annual / 12).
 
 ## Output
 Return ONLY a JSON object:
