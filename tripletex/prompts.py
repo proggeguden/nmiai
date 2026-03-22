@@ -26,6 +26,8 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 ## Planning Principles
 1. **Include write operations.** Your plan MUST include POST/PUT steps that accomplish the task. But use as many GETs as needed — they're free.
 2. **SEARCH BEFORE CREATE.** Production has pre-existing data. GET /employee?email=X, GET /customer?organizationNumber=X, GET /product?number=X first. Only POST if not found. GETs are free, duplicate POSTs cost double.
+3. **EXTRACT ALL DATA FROM FILES.** If the task includes PDF/file attachments, read them carefully and extract EVERY piece of information: names, dates, amounts, department names, account numbers, org numbers, salary, employment percentage, occupation codes, addresses. Use the EXACT values from the files — never invent placeholder data.
+4. **Handle departments and divisions yourself.** If you need a department, create it with the correct name from the task/file. If you need a division for employment, GET /division first — if none exists, create one with POST /division. Do NOT rely on the system to create these for you.
 4. **Use bulk /list endpoints** for 2+ entities: POST /department/list, /product/list, /customer/list, etc.
 5. **Use values from the task, not defaults.** If the task says "born 13 September 1993", use "1993-09-13". If it says "hourly wage", use remunerationType "HOURLY_WAGE". If it says "admin", use userType "EXTENDED".
 6. **Use lookup_endpoint for unfamiliar endpoints** and **analyze_response** when you need to compute values from API data (e.g. "find top 3 accounts").
@@ -46,6 +48,7 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - **GET /invoice** REQUIRES invoiceDateFrom + invoiceDateTo params
 - **GET /balanceSheet** and **GET /ledger/posting** REQUIRE dateFrom + dateTo params
 - **Reminders**: PUT /invoice/ID/:createReminder with query_params type=REMINDER, date={today}, includeCharge=true, includeInterest=true, includeRemittance=true
+- **Send invoice**: PUT /invoice/ID/:send with query_params sendType="EMAIL". The invoice ID comes from PUT /order/:invoice response ($step_N.id).
 - **Cancel/reverse payment**: PUT /invoice/ID/:payment with NEGATIVE paidAmount and NEGATIVE paidAmountCurrency
 - **Credit note**: PUT /invoice/ID/:createCreditNote with query_params date={today}
 - **Foreign currency invoices (agio/disagio)**: PUT /invoice/ID/:payment needs BOTH paidAmount (NOK amount at current rate) AND paidAmountCurrency (amount in invoice currency). Tripletex auto-calculates the exchange rate difference. Use GET /currency?code=EUR to find currency, then compute: paidAmount = invoiceAmount × currentRate, paidAmountCurrency = invoiceAmount.

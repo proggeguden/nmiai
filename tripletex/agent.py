@@ -118,93 +118,10 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         )
         log.info("Validation: prepended ensure_bank_account step for invoicing plan")
 
-    # ── A2a: Strip planner's manual POST/GET /division steps BEFORE injecting ensure_division ──
-    # ensure_division handles this reliably. Planner's manual attempts cause 422s.
-    pre_strip_len = len(plan)
-    plan = [
-        step for step in plan
-        if not (
-            step.get("tool_name") == "call_api"
-            and step.get("args", {}).get("method") in ("POST", "GET")
-            and step.get("args", {}).get("path") in ("/division", "/division/list")
-        )
-    ]
-    if len(plan) < pre_strip_len:
-        # Renumber after stripping
-        for i, step in enumerate(plan):
-            step["step_number"] = i + 1
-        log.info(f"Validation: stripped {pre_strip_len - len(plan)} manual /division steps")
-
-    # ── A2: ALWAYS inject ensure_division before POST /employee/employment ──
-    # The planner may search for divisions manually but on fresh accounts they don't exist.
-    # ensure_division safely creates one if none exist. Always override the division ref.
-    employment_idx = None
-    for i, step in enumerate(plan):
-        if step.get("tool_name") != "call_api":
-            continue
-        args = step.get("args", {})
-        if args.get("method") == "POST" and args.get("path") == "/employee/employment":
-            employment_idx = i
-            break
-
-    if employment_idx is not None:
-        emp_step = plan[employment_idx]
-        emp_body = emp_step.get("args", {}).get("body", {})
-        if isinstance(emp_body, dict):
-            div_step_number = emp_step["step_number"]
-            for step in plan[employment_idx:]:
-                step["step_number"] += 1
-                _shift_step_refs(step, offset=1, min_step=div_step_number)
-            plan.insert(
-                employment_idx,
-                {
-                    "step_number": div_step_number,
-                    "tool_name": "ensure_division",
-                    "args": {},
-                    "description": "Ensure company division exists (required for employment)",
-                },
-            )
-            # Always override division ref with guaranteed result
-            emp_body["division"] = {"id": f"$step_{div_step_number}.id"}
-            log.info("Validation: prepended ensure_division step for employment plan")
-
-    # (A3 moved to A2a — strip /division before injection, not after)
-
-    # ── B4: ALWAYS inject ensure_department before POST /employee ──
-    # The planner may search for departments manually (GET /department) but on fresh accounts
-    # these return empty. ensure_department safely creates one if none exist.
-    employee_post_idx = None
-    for i, step in enumerate(plan):
-        if step.get("tool_name") != "call_api":
-            continue
-        args = step.get("args", {})
-        if args.get("method") == "POST" and args.get("path") == "/employee":
-            employee_post_idx = i
-            break
-
-    if employee_post_idx is not None:
-        dept_step_number = plan[employee_post_idx]["step_number"]
-        for step in plan[employee_post_idx:]:
-            step["step_number"] += 1
-            _shift_step_refs(step, offset=1, min_step=dept_step_number)
-        plan.insert(
-            employee_post_idx,
-            {
-                "step_number": dept_step_number,
-                "tool_name": "ensure_department",
-                "args": {},
-                "description": "Ensure a department exists (required for employee)",
-            },
-        )
-        # Inject/override department ref into employee body — always use the guaranteed result
-        emp_step = plan[employee_post_idx + 1]
-        emp_body = emp_step.get("args", {}).get("body", {})
-        if isinstance(emp_body, dict):
-            emp_body["department"] = {"id": f"$step_{dept_step_number}.id"}
-        log.info(
-            "Validation: injected ensure_department step for POST /employee"
-        )
-
+    # ── A2/B4: REMOVED ensure_division and ensure_department ──
+    # These were OVERRIDING the planner's correct department/division handling with dummy data
+    # ("Avdeling", org number "999999999"). The planner should handle departments and divisions
+    # correctly using data from the task/PDF. If it doesn't, fix the planner, not the validator.
     for step in plan:
         if step.get("tool_name") != "call_api":
             continue
