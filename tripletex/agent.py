@@ -1436,6 +1436,19 @@ def build_agent():
         healed_steps = list(state.get("healed_steps", []))
         completed = list(state.get("completed_steps", []))
 
+        # Deadline enforcement — stop starting new steps if we're past 240s
+        deadline = state.get("deadline", 0)
+        if deadline and time.monotonic() > deadline:
+            log.warning(f"Past deadline — aborting remaining {len(plan) - step_idx} steps to preserve partial credit")
+            return {
+                "current_step": len(plan),
+                "results": results,
+                "completed_steps": completed,
+                "error_count": error_count,
+                "healed_steps": healed_steps,
+                "messages": [AIMessage(content="DEADLINE: aborting remaining steps")],
+            }
+
         if step_idx >= len(plan):
             return {"current_step": step_idx}
 
