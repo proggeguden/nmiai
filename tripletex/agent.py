@@ -603,25 +603,9 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                     qp.pop("paymentTypeId", None)
                     log.info("Validation: stripped paymentTypeId=0 from /:payment (invalid, causes 500)")
 
-        # Fix 3d: /:payment paidAmount should reference invoice amount, not hardcoded value
-        # The planner often computes ex-VAT amount from prompt text, forgetting the invoice
-        # total includes VAT. Fix: if paidAmount is a literal number and we can find the
-        # /:invoice step, replace with $step_INVOICE.amount
-        if method == "PUT" and "/:payment" in path:
-            qp = args.get("query_params", {})
-            if isinstance(qp, dict):
-                paid = qp.get("paidAmount")
-                if isinstance(paid, (int, float)):
-                    # Find the /:invoice step that created this invoice
-                    invoice_step = None
-                    for prev in plan[:step_idx]:
-                        prev_args = prev.get("args", {})
-                        if "/:invoice" in prev_args.get("path", "") and prev_args.get("method") == "PUT":
-                            invoice_step = prev["step_number"]
-                    if invoice_step:
-                        qp["paidAmount"] = f"$step_{invoice_step}.amount"
-                        qp["paidAmountCurrency"] = f"$step_{invoice_step}.amount"
-                        log.info(f"Validation: replaced hardcoded paidAmount={paid} with $step_{invoice_step}.amount")
+        # NOTE: Do NOT auto-replace paidAmount with $step_INVOICE.amount here.
+        # The planner may have intentionally set a specific amount for partial payments.
+        # The prompt guides the planner to use $step_INV.amount for full payments.
 
         if not body or not isinstance(body, dict):
             continue
@@ -1812,7 +1796,8 @@ def build_agent():
             ):
                 acct_number = resolved_args.get("query_params", {}).get("number")
                 if acct_number:
-                    # Standard Norwegian account names
+                    # ONLY auto-create accounts with known standard names (NS4102).
+                    # Do NOT create unknown accounts — that would be inventing data.
                     ACCOUNT_NAMES = {
                         "1209": "Akkumulerte avskrivninger",
                         "1700": "Forskuddsbetalte kostnader",
@@ -1823,20 +1808,24 @@ def build_agent():
                         "6700": "Annen driftskostnad",
                         "8700": "Skattekostnad",
                     }
-                    name = ACCOUNT_NAMES.get(str(acct_number), f"Konto {acct_number}")
-                    log.info(f"GET /ledger/account?number={acct_number} returned empty — auto-creating")
-                    try:
-                        create_result = call_api_tool.invoke({
-                            "method": "POST", "path": "/ledger/account",
-                            "body": {"number": int(acct_number), "name": name},
-                        })
-                        cr_error, _ = _is_api_error(create_result)
-                        if not cr_error:
-                            cr_parsed = json.loads(create_result)
-                            normalized = _normalize_result(cr_parsed)
-                            log.info(f"Auto-created account {acct_number} '{name}' (id={normalized.get('id')})")
-                    except Exception as e:
-                        log.warning(f"Auto-create account {acct_number} failed: {e}")
+                    name = ACCOUNT_NAMES.get(str(acct_number))
+                    if not name:
+                        log.info(f"GET /ledger/account?number={acct_number} returned empty — NOT auto-creating (unknown account)")
+                    else:
+                        log.info(f"GET /ledger/account?number={acct_number} returned empty — auto-creating standard account")
+                    if name:
+                        try:
+                            create_result = call_api_tool.invoke({
+                                "method": "POST", "path": "/ledger/account",
+                                "body": {"number": int(acct_number), "name": name},
+                            })
+                            cr_error, _ = _is_api_error(create_result)
+                            if not cr_error:
+                                cr_parsed = json.loads(create_result)
+                                normalized = _normalize_result(cr_parsed)
+                                log.info(f"Auto-created account {acct_number} '{name}' (id={normalized.get('id')})")
+                        except Exception as e:
+                            log.warning(f"Auto-create account {acct_number} failed: {e}")
 
             results[f"step_{step['step_number']}"] = normalized
             log.info(
