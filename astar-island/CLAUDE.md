@@ -81,36 +81,36 @@ position, population, food, wealth, defense, tech level, port status, longship o
 
 ## Prediction Strategy
 
-**Current approach (ML ensemble)**: 5-snapshot MLP ensemble trained on GT data from all
-completed rounds. Each snapshot is the same architecture trained with a different torch seed.
-Predictions are the average of all 5 softmax outputs — reduces variance from random init.
-28 features per cell, noisy rate augmentation for production robustness.
-Numpy-only inference (292KB weights). Per-cell observation blending DISABLED.
+**Current approach (wide ML ensemble)**: 5-snapshot wide MLP ensemble trained on GT data
+from all completed rounds. Each snapshot is the same architecture trained with a different
+torch seed. Predictions are the average of all 5 softmax outputs — reduces variance.
+32 features per cell, noisy rate augmentation for production robustness.
+Numpy-only inference (990KB weights). Per-cell observation blending DISABLED.
 Survival-conditional temperature: T=0.85 when estimated survival < 10%.
+Auto-detects feature count from weights for backward compatibility.
 
 **Pipeline**:
 1. Observe all 5 seeds (50 queries total, 10 per seed, full coverage)
-2. Estimate round-level rates from observations (survival, expansion, port, forest, ruin)
-3. ML ensemble: extract 28 features per cell → numpy_forward_ensemble (avg 5 snapshots)
+2. Estimate round-level rates from observations (survival, expansion, port, forest, ruin, forest_clearing)
+3. ML ensemble: extract 32 features per cell → numpy_forward_ensemble (avg 5 snapshots)
 4. Probability floor (0.0005)
 5. NO per-cell blending (disabled — ML model is accurate enough)
 
 **ML model details** (`ml_predictor.py` + `train_model.py`):
-- 28 features: 6 terrain one-hot + 12 spatial + 5 round rates + 3 rate interactions + 2 distance
+- 32 features: 6 terrain one-hot + 12 spatial + 5 round rates + 4 rate interactions + 3 distance interactions + forest_clearing_rate + 1 distance
   - Spatial: dist_settlement, coastal, adj_forest/settlement/ocean/mountain/ruin, cluster, interior, settlement_count_r3/r5, forest_density_r2, dist_to_forest, dist_to_coast
-  - Rate interactions: survival×expansion, survival/expansion, expansion×port
-- Architecture: Input(28) → 128 → 64 → 32 → Softmax(6), KL divergence loss
+  - Rate interactions: survival×expansion, survival/expansion, expansion×port, expansion×invdist, survival×invdist, expansion×sett_r3
+  - New: forest_clearing_rate (P(non-forest | initially forest) estimated from observations)
+- Architecture: Input(32) → 256 → 128 → 64 → Softmax(6), KL divergence loss
 - Ensemble: 5 snapshots with different torch seeds, averaged softmax at inference
-- Training: 1.1M cells from 20 rounds × 5 seeds × 10 noisy rate augmentations
-- Weights: `model_weights.npz` (292KB, committed to git)
+- Training: 1.1M cells from 21 rounds × 5 seeds × 10 noisy rate augmentations
+- Weights: `model_weights.npz` (990KB, committed to git)
 - Production inference: numpy matmuls only, zero PyTorch dependency
 - Retrain after each round: `rm training_data.npz && python3 train_model.py --rebuild-data --augmentations 10 --n-snapshots 5 --output model_weights.npz`
 
 **Backtest performance** (simulated-production KL, lower is better):
-- ML ensemble avg: **0.0262** (19 rounds, 3 runs) — **5.1% better than single ML (0.0276), 44.6% better than bucket (0.0473)**
+- Wide ML ensemble: R21 SimProd KL **0.0177** — **32% better than old 28-feat ensemble (0.0260), 48% better than single model (0.0341)**
 - Probability floor: 0.0005
-2. LightGBM knowledge distillation (train LGBM, blend into MLP training targets)
-3. Wider MLP with residual connections (256→256→128 + skip + LayerNorm)
 
 **Known dead ends** (do NOT retry):
 - MRF-style spatial smoothing (blurs across terrain boundaries, +10% regression)
@@ -121,6 +121,9 @@ Survival-conditional temperature: T=0.85 when estimated survival < 10%.
 - TTA via rate perturbation (model already trained on noisy rates, double-perturbing adds noise)
 - Post-hoc temperature scaling (T=1.0 already optimal — KL-trained model is self-calibrated)
 - Per-cell observation blending with ML model (noisy discrete obs add noise, -6.6% when disabled)
+- LightGBM distillation (MLP is 2x better than LightGBM on this task — strictly dominates)
+- Residual MLP (worse than plain Wide due to overfitting at this data scale)
+- Narrow MLP 128→64→32 (wide 256→128→64 is 17% better with same training)
 
 **Bucket model (fallback)**: Still in predictor.py as `build_prediction()`. ML model in
 `build_prediction_ml()`. main.py auto-selects ML if `model_weights.npz` exists.
