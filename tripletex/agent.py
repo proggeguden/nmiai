@@ -516,6 +516,7 @@ def validate_plan(plan: list[dict], task_text: str = "", phase1: dict = None) ->
                 log.info("Validation: restructured incomingInvoice body into invoiceHeader + orderLines")
 
             # Fix orderLines: accountId and vatTypeId should be flat integers, not {"id": N}
+            # Also round amountInclVat to 2 decimals (API requirement)
             for ol in body.get("orderLines", []):
                 if isinstance(ol, dict):
                     for field in ("account", "vatType"):
@@ -526,7 +527,17 @@ def validate_plan(plan: list[dict], task_text: str = "", phase1: dict = None) ->
                                 ol[flat_field] = val["id"]
                             elif isinstance(val, (int, str)):
                                 ol[flat_field] = val
-                            log.info(f"Validation: flattened {field} → {flat_field} on incomingInvoice orderLine")
+                    # Round amounts to 2 decimals
+                    for amt_field in ("amountInclVat", "amount"):
+                        val = ol.get(amt_field)
+                        if isinstance(val, (int, float)):
+                            ol[amt_field] = round(val, 2)
+            # Round invoiceAmount in header too
+            header = body.get("invoiceHeader", {})
+            if isinstance(header, dict):
+                inv_amt = header.get("invoiceAmount")
+                if isinstance(inv_amt, (int, float)):
+                    header["invoiceAmount"] = round(inv_amt, 2)
 
         # Auto-inject activityType on POST /activity if missing (required field)
         # Also strip 'project' field (not valid on /activity — use /project/projectActivity to link)
@@ -2054,10 +2065,8 @@ def build_agent():
                     total_gross = 0
                     row_num = 1
                     for ol in order_lines:
-                        amount = ol.get("amountInclVat") or ol.get("amount") or 0
+                        amount = round(ol.get("amountInclVat") or ol.get("amount") or 0, 2)
                         total_gross += amount
-                        # Use vatType with explicit row numbers (row must start at 1,
-                        # row 0 is reserved for system-generated VAT postings)
                         posting = {
                             "account": {"id": ol.get("accountId")},
                             "amountGross": amount,
@@ -2082,8 +2091,8 @@ def build_agent():
                         if ap_values:
                             ap_posting = {
                                 "account": {"id": ap_values[0]["id"]},
-                                "amountGross": -total_gross,
-                                "amountGrossCurrency": -total_gross,
+                                "amountGross": round(-total_gross, 2),
+                                "amountGrossCurrency": round(-total_gross, 2),
                                 "row": row_num,
                             }
                             if supplier_ref:
