@@ -415,6 +415,14 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             args["path"] = "/company"
             log.info("Validation: fixed PUT /company/{id} → PUT /company (singleton)")
 
+        # Fix: PUT /invoice/{id} without action suffix → add /:payment if payment params present
+        if method == "PUT" and re.match(r"^/invoice/\d+$", path):
+            qp = args.get("query_params", {})
+            if isinstance(qp, dict) and ("paidAmount" in qp or "paymentTypeId" in qp or "paymentDate" in qp):
+                args["path"] = path + "/:payment"
+                path = args["path"]
+                log.info(f"Validation: added /:payment to PUT /invoice (had payment params)")
+
         # Fix 3b: Clean up /:invoice action endpoints
         if method == "PUT" and "/:invoice" in path:
             qp = args.get("query_params", {})
