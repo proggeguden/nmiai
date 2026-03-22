@@ -2078,22 +2078,6 @@ def build_agent():
 
             normalized = _normalize_result(parsed)
 
-            # Post-success: for GET /invoice/paymentType, prefer "bank" over "cash"
-            # so $step_N.id resolves to the bank payment type (most common for invoices)
-            if (
-                resolved_args.get("method") == "GET"
-                and "/invoice/paymentType" in resolved_args.get("path", "")
-                and isinstance(normalized.get("_all"), list)
-                and len(normalized["_all"]) > 1
-            ):
-                for pt in normalized["_all"]:
-                    if isinstance(pt, dict) and "bank" in str(pt.get("description", "")).lower():
-                        # Promote bank payment type to top level
-                        normalized = dict(pt)
-                        normalized["_all"] = parsed.get("values", [])
-                        log.info(f"Promoted bank paymentType (id={pt.get('id')}) over cash")
-                        break
-
             # GET-then-CREATE for ledger accounts: if GET by number returns empty,
             # create with standard name. The planner intended to use this account.
             if (

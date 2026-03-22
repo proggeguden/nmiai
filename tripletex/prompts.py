@@ -20,7 +20,7 @@ PLANNER_PROMPT = """You are an expert Norwegian accountant planning Tripletex AP
 - **POST /employee/standardTime** required for employee onboarding
 - **POST /activity** has NO "project" field. Link via POST /project/projectActivity
 - **Supplier invoices**: POST /incomingInvoice?sendTo=ledger. Each orderLine needs externalId.
-- **Payment**: PUT /:invoice (invoiceDate) → GET /invoice/paymentType (pick "bank") → PUT /:payment with ALL 4 required params: paymentDate, paymentTypeId=$step_PT.id, paidAmount=$step_INV.amount, paidAmountCurrency=$step_INV.amount
+- **Payment**: PUT /:invoice (invoiceDate) → GET /invoice/paymentType → PUT /:payment with ALL 4 required params: paymentDate, paymentTypeId=$step_PT.id, paidAmount=$step_INV.amount, paidAmountCurrency=$step_INV.amount
 - **Products**: Use product's own vatType from GET: vatType:{{"id": "$step_PRODUCT.vatType.id"}}
 - **Foreign customers** (GmbH/Ltd/Inc/SARL): OUTPUT vatType 6 (export, 0%)
 - **VAT IDs**: INPUT: 1=25%, 11=15%, 13=12%. OUTPUT: 3=25%, 31=15%, 32=12%, 5=0%, 6=0%
@@ -103,7 +103,7 @@ PLAN_PROMPT_V2 = """You are an expert Norwegian accountant planning Tripletex AP
 - **POST /employee/standardTime** is required for employee onboarding (fromDate, hoursPerDay)
 - **POST /activity** has NO "project" field. Link via separate POST /project/projectActivity
 - **Supplier invoices**: POST /incomingInvoice?sendTo=ledger. Each orderLine MUST have externalId (string "1", "2", etc.).
-- **Payment flow**: PUT /order/$ID/:invoice (query_params: invoiceDate) → GET /invoice/paymentType (pick the one with "bank" in description) → PUT /invoice/$INV_ID/:payment (query_params: paymentDate, paymentTypeId=$step_PT.id, paidAmount=$step_INV.amount, paidAmountCurrency=$step_INV.amount). ALL four payment params are REQUIRED.
+- **Payment flow**: PUT /order/$ID/:invoice (query_params: invoiceDate) → GET /invoice/paymentType → PUT /invoice/$INV_ID/:payment (query_params: paymentDate, paymentTypeId=$step_PT.id, paidAmount=$step_INV.amount, paidAmountCurrency=$step_INV.amount). ALL four payment params are REQUIRED.
 - **Order lines with existing products**: Use the product's own vatType: vatType:{{"id": "$step_PRODUCT.vatType.id"}}
 - **Foreign customers** (GmbH/Ltd/Inc/SARL): Use OUTPUT vatType 6 (export, 0%)
 - **VAT IDs**: INPUT: 1=25%, 11=15%, 13=12%. OUTPUT: 3=25%, 31=15%, 32=12%, 5=0%(exempt), 6=0%(export)
