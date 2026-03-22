@@ -201,7 +201,7 @@ PLAN_PROMPT_V2 = """You are an API planner for Tripletex. You receive a structur
 - Missing accounts: GET first, POST /ledger/account if empty
 - Ledger analysis: GET /balanceSheet + filter_data sort_desc. For PERIOD COMPARISONS ("costs increased from Jan to Feb"): GET /balanceSheet for EACH period, then COMPUTE differences (Feb-Jan) and pick top N by DIFFERENCE — do NOT just take top N from one period.
 - Payment: NEVER hardcode paymentTypeId=0. Always GET /invoice/paymentType first to find a valid ID.
-- Payroll: Employee MUST have active employment. If employments=[], create division+employment+details first. GET /salary/type?number=2000 for Fastlønn. POST /salary/transaction?generateTaxDeduction=true with {year, month, payslips:[{employee:{id}, specifications:[{salaryType:{id}, rate, count:1, amount}]}]}.
+- Payroll: Employee MUST have active employment. If employments=[], create division+employment+details first. GET /salary/type?number=2000 for Fastlønn. POST /salary/transaction?generateTaxDeduction=true with {{year, month, payslips:[{{employee:{{id}}, specifications:[{{salaryType:{{id}}, rate, count:1, amount}}]}}]}}.
 - Paths: NO /v2 prefix
 - Travel expense (reiseregning): perDiemCompensations MUST include: location, count, rate (daily NOK rate FROM TASK), amount (count × rate), overnightAccommodation. travelDetails MUST include: purpose (from task), departureDate, returnDate, destination. Then PUT /travelExpense/:deliver to submit.
 - Fixed-price project partial invoicing (e.g. "invoice 75%"): PUT /order/{{id}}/:invoice with query_params createOnAccount="WITH_VAT" and amountOnAccount=partial_amount. Do NOT put the partial amount as an order line price — use createOnAccount.
