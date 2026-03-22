@@ -308,9 +308,11 @@ def validate_plan(plan: list[dict]) -> list[dict]:
 
         # Quick fix: POST /ledger/voucher — remove invalid fields, fix null postings, add row numbers
         if method == "POST" and path == "/ledger/voucher" and isinstance(body, dict):
-            if "voucherType" in body:
+            # Only strip voucherType if it's not a valid ref — keep it for supplier invoice vouchers
+            vt = body.get("voucherType")
+            if vt is not None and not (isinstance(vt, dict) and "id" in vt):
                 del body["voucherType"]
-                log.info("Validation: stripped voucherType from POST /ledger/voucher")
+                log.info("Validation: stripped invalid voucherType from POST /ledger/voucher")
             # Strip dueDate from postings — not a valid field on voucher postings
             for posting in body.get("postings", []) if isinstance(body.get("postings"), list) else []:
                 if isinstance(posting, dict) and "dueDate" in posting:
@@ -1851,11 +1853,35 @@ def build_agent():
                                 ap_posting["supplier"] = supplier_ref
                             postings.append(ap_posting)
 
+                    # Look up supplier invoice voucherType so the voucher creates
+                    # a SupplierInvoice record visible to GET /supplierInvoice
+                    voucher_type_ref = None
+                    try:
+                        vt_result = call_api_tool.invoke({
+                            "method": "GET", "path": "/ledger/voucherType",
+                            "query_params": {"count": 100},
+                        })
+                        vt_parsed = json.loads(vt_result)
+                        for vt in vt_parsed.get("values", []):
+                            vt_name = str(vt.get("name", "")).lower()
+                            if "leverandør" in vt_name or "supplier" in vt_name or "innkjøp" in vt_name:
+                                voucher_type_ref = {"id": vt["id"]}
+                                log.info(f"Found supplier voucherType: {vt['name']} (id={vt['id']})")
+                                break
+                    except Exception:
+                        pass
+
+                    inv_number = header.get("invoiceNumber", "")
                     voucher_body = {
                         "date": header.get("invoiceDate", date.today().isoformat()),
-                        "description": header.get("description", "Supplier invoice (fallback)"),
+                        "description": f"Faktura {inv_number}" if inv_number else "Supplier invoice (fallback)",
                         "postings": postings,
                     }
+                    if voucher_type_ref:
+                        voucher_body["voucherType"] = voucher_type_ref
+                    if inv_number:
+                        voucher_body["vendorInvoiceNumber"] = inv_number
+
                     voucher_result = call_api_tool.invoke({
                         "method": "POST", "path": "/ledger/voucher",
                         "body": voucher_body,
