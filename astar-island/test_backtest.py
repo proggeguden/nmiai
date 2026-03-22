@@ -24,6 +24,7 @@ import numpy as np
 import api_client
 from predictor import (
     build_prediction,
+    build_prediction_ml,
     compute_feature_map,
     learn_spatial_transition_model,
     estimate_survival_rate,
@@ -458,7 +459,8 @@ def _simulate_observations(gt, initial_grid, height, width, n_queries, rng):
     return observations
 
 
-def backtest_round_simulated(round_id, n_runs=5, verbose=True):
+def backtest_round_simulated(round_id, n_runs=5, verbose=True,
+                             model="bucket", ml_weights=None):
     """Backtest a round by simulating the full production pipeline.
 
     Instead of using GT directly, samples discrete terrain from GT distributions
@@ -539,16 +541,25 @@ def backtest_round_simulated(round_id, n_runs=5, verbose=True):
             init_grid = initial_states[seed_idx]["grid"]
             seed_obs = seed_observations.get(seed_idx, [])
 
-            pred = build_prediction(
-                height, width, init_grid, seed_obs,
-                transition_model=global_model,
-                spatial_model=spatial_model,
-                survival_rate=survival_rate,
-                spatial_obs=spatial_obs,
-                expansion_rate=expansion_rate,
-                port_formation_rate=port_formation_rate,
-                mc_rates=forward_rates,
-            )
+            if model == "ml" and ml_weights is not None:
+                pred = build_prediction_ml(
+                    height, width, init_grid, seed_obs,
+                    ml_snapshots=ml_weights,
+                    rates=forward_rates,
+                    spatial_obs=spatial_obs,
+                    skip_blending=True,
+                )
+            else:
+                pred = build_prediction(
+                    height, width, init_grid, seed_obs,
+                    transition_model=global_model,
+                    spatial_model=spatial_model,
+                    survival_rate=survival_rate,
+                    spatial_obs=spatial_obs,
+                    expansion_rate=expansion_rate,
+                    port_formation_rate=port_formation_rate,
+                    mc_rates=forward_rates,
+                )
             wkl, _ = score_predictions(pred, gt)
             seed_kls.append(float(wkl))
 
@@ -634,6 +645,10 @@ def main():
                         help="Run simulated-production backtest (samples discrete obs from GT)")
     parser.add_argument("--sim-runs", type=int, default=5,
                         help="Number of stochastic runs per round in simulated-production mode")
+    parser.add_argument("--model", choices=["bucket", "ml"], default="bucket",
+                        help="Which prediction model to use (default: bucket)")
+    parser.add_argument("--ml-weights", default="model_weights.npz",
+                        help="Path to ML model weights (used when --model ml)")
     args = parser.parse_args()
 
     try:
@@ -651,11 +666,22 @@ def main():
 
         # --- Simulated-production mode ---
         if args.simulate_production:
+            # Load ML weights if needed
+            ml_weights = None
+            if args.model == "ml":
+                from ml_predictor import load_ensemble
+                ml_weights = load_ensemble(args.ml_weights)
+                print(f"Using ML ensemble from {args.ml_weights} ({len(ml_weights)} snapshot(s))")
+            else:
+                print(f"Using bucket model")
+
             print(f"Simulated-production backtest: {len(round_ids)} round(s), "
                   f"{args.sim_runs} runs each...")
             sim_results = []
             for rid in round_ids:
-                result = backtest_round_simulated(rid, n_runs=args.sim_runs)
+                result = backtest_round_simulated(
+                    rid, n_runs=args.sim_runs,
+                    model=args.model, ml_weights=ml_weights)
                 sim_results.append(result)
 
             # Also run oracle backtest for comparison

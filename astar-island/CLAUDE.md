@@ -80,62 +80,63 @@ position, population, food, wealth, defense, tech level, port status, longship o
 - **Rate limit**: max 5 req/sec
 
 ## Prediction Strategy
-**Current approach**: Allocate queries proportional to settlement density across all 5 seeds →
-learn spatial transition model P(final_class | bucket_key) with Bayesian smoothing → apply to all seeds.
-Per-cell observations blended with adaptive k (terrain-dependent).
 
-**Why this works**: Hidden parameters are shared across all seeds. More seeds give
-more diverse terrain layouts → better spatial bucket coverage → better model.
+**Current approach (wide ML ensemble)**: 5-snapshot wide MLP ensemble trained on GT data
+from all completed rounds. Each snapshot is the same architecture trained with a different
+torch seed. Predictions are the average of all 5 softmax outputs — reduces variance.
+32 features per cell, noisy rate augmentation for production robustness.
+Numpy-only inference (990KB weights). Per-cell observation blending DISABLED.
+Survival-conditional temperature: T=0.85 when estimated survival < 10%.
+Auto-detects feature count from weights for backward compatibility.
 
-**Key spatial features (implemented)**:
-- Manhattan distance to nearest settlement: 3-level bucket (≤2, 3-4, 5+) with continuous interpolation
-- Settlement cluster density: binary `is_clustered` for Settlement and Plains bucket keys
-- Binary forest adjacency for settlements, coastal-only for ports
-- Coastal adjacency for plains and settlements
-- Adjacent forest for plains, empty cells
-- 3-level adjacent settlement for forest (0/1/2+), interior flag (adj_forest≥4)
-- Adjacent settlement for ruin cells
-- BFS-precomputed distances for efficiency
-- Bayesian smoothing towards global prior (K=3-10 per terrain)
+**Pipeline**:
+1. Observe all 5 seeds (50 queries total, 10 per seed, full coverage)
+2. Estimate round-level rates from observations (survival, expansion, port, forest, ruin, forest_clearing)
+3. ML ensemble: extract 32 features per cell → numpy_forward_ensemble (avg 5 snapshots)
+4. Probability floor (0.0005)
+5. NO per-cell blending (disabled — ML model is accurate enough)
 
-**Post-model adjustments (applied after spatial model, before floor)**:
-- Rate-adaptive port calibration (Step 1.5): uses observed port_formation_rate to scale port minimums for coastal cells d≤5. Conservative multipliers (1.0x near, 0.5x mid, cap 25%/15%).
-- Winter severity calibration (Step 1.6): estimate survival rate from observations, scale settlement/port predictions. Harsh winter → boost Ruin+Forest.
-- Continuous distance interpolation: blend between adjacent distance brackets based on raw distance
-- Expansion modulation (Step 1.75): 30% dampened correction (not full override) of Settlement+Port predictions for d≤8 cells, clamp [0.7, 1.5]. The spatial model already encodes expansion from observations — full override was double-counting.
-- Forest entropy injection (Step 1.85): shrink over-confident Forest predictions when observed retention < 0.85
-- Distance-based temperature scaling (Step 1.8): T=1.10 near settlements (spread), T=0.92 far (sharpen)
-- Monte Carlo blending (Step 2.5): DISABLED — hurts +1.1% in simulated production due to uncalibrated mechanics.
-
-**Query strategy**: Full coverage first, then repeats. All unique tile positions queried (sorted by settlement density), remaining queries repeat top tiles. Every query MUST be used. Rate-limit retry with backoff on 429 errors.
-
-**Adaptive smoothing**: Per-cell blending uses terrain-dependent k values:
-- Settlements k=8 (high variance → trust model more)
-- Ports k=15 (very few observations per cell → trust model much more)
-- Plains/forest/empty k=3 (predictable → trust observations more)
-- **Sparse observation k-boost**: For Plains/Forest/Empty cells with ≤2 observations, k is tripled (k=9). Prevents single-outlier distortion where one Ruin observation on Plains produces 21% Ruin prediction (GT: 0.5%).
+**ML model details** (`ml_predictor.py` + `train_model.py`):
+- 32 features: 6 terrain one-hot + 12 spatial + 5 round rates + 4 rate interactions + 3 distance interactions + forest_clearing_rate + 1 distance
+  - Spatial: dist_settlement, coastal, adj_forest/settlement/ocean/mountain/ruin, cluster, interior, settlement_count_r3/r5, forest_density_r2, dist_to_forest, dist_to_coast
+  - Rate interactions: survival×expansion, survival/expansion, expansion×port, expansion×invdist, survival×invdist, expansion×sett_r3
+  - New: forest_clearing_rate (P(non-forest | initially forest) estimated from observations)
+- Architecture: Input(32) → 256 → 128 → 64 → Softmax(6), KL divergence loss
+- Ensemble: 5 snapshots with different torch seeds, averaged softmax at inference
+- Training: 1.12M cells from 22 rounds × 5 seeds × 10 noisy rate augmentations
+- Weights: `model_weights.npz` (990KB, committed to git)
+- Production inference: numpy matmuls only, zero PyTorch dependency
+- Retrain after each round: `rm training_data.npz && python3 train_model.py --rebuild-data --augmentations 10 --n-snapshots 5 --output model_weights.npz`
 
 **Backtest performance** (simulated-production KL, lower is better):
-- Rounds 1–16 avg: **0.0504** (simulated production, 5 runs)
-- Best: 0.026 (R8), 0.029 (R4), Worst: 0.131 (R12), 0.104 (R7)
-- Oracle backtest avg: 0.043 (but misleading — see below)
+- Wide ML ensemble: R21 SimProd KL **0.0177** — **32% better than old 28-feat ensemble (0.0260), 48% better than single model (0.0341)**
 - Probability floor: 0.0005
 
+**Known dead ends** (do NOT retry):
+- MRF-style spatial smoothing (blurs across terrain boundaries, +10% regression)
+- Focused/repeat query strategy (less coverage = worse buckets, -5 to -23%)
+- Extra bucket features with 50 queries (more buckets = less data per bucket)
+- Terrain-aware A* distance (mountains never create barriers on competition maps)
+- Forward model / Monte Carlo sim (uncalibrated mechanics add noise, +1.1%)
+- TTA via rate perturbation (model already trained on noisy rates, double-perturbing adds noise)
+- Post-hoc temperature scaling (T=1.0 already optimal — KL-trained model is self-calibrated)
+- Per-cell observation blending with ML model (noisy discrete obs add noise, -6.6% when disabled)
+- LightGBM distillation (MLP is 2x better than LightGBM on this task — strictly dominates)
+- Residual MLP (worse than plain Wide due to overfitting at this data scale)
+- Narrow MLP 128→64→32 (wide 256→128→64 is 17% better with same training)
+
+**Bucket model (fallback)**: Still in predictor.py as `build_prediction()`. ML model in
+`build_prediction_ml()`. main.py auto-selects ML if `model_weights.npz` exists.
+
 **CRITICAL: Use simulated-production backtest for validation, not oracle.**
-The oracle backtest trains on full GT distributions and evaluates on same data.
-Simulated-production (`--simulate-production`) has rho=0.964 rank correlation
-with actual production scores; oracle only has rho=0.750.
-Oracle improvements can be production regressions (confirmed empirically).
+Simulated-production has rho=0.964 rank correlation with actual production scores; oracle only 0.750.
 
-**CRITICAL: Rate estimates from 50 queries are noisy (2-4x off).**
-Approaches that gate on survival_rate thresholds don't trigger correctly in production.
-Prefer model-internal consistency checks over rate-dependent thresholds.
-
-**Known issues**:
-- Plains cells are largest error source (~60% of KL loss) — within-bucket variance
-- R7 and R12 are 2-3x worse than other rounds — harsh/extreme dynamics
-- Gap to top teams: ~6-8 raw points (we score ~86, top teams ~94)
-- Remaining oracle→sim-prod gap (26%) is from spatial bucket coverage limits, not blending
+**Retraining**: After each round completes, retrain on all GT data:
+```bash
+rm training_data.npz  # force rebuild with new round
+python3 train_model.py --augmentations 10 --output model_weights.npz
+python3 test_backtest.py --simulate-production --sim-runs 3 --model ml --output ml_results.json
+```
 
 See `PLAN.md` for error analysis, improvement roadmap, and round-by-round changelog.
 

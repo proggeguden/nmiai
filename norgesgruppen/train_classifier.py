@@ -183,7 +183,7 @@ class CropDataset(Dataset):
         return img, entry["category_id"]
 
 
-def build_datasets(manifest_path):
+def build_datasets(manifest_path, full_train=False):
     """Build train/val datasets with oversampling for rare classes."""
     with open(manifest_path) as f:
         manifest = json.load(f)
@@ -209,11 +209,15 @@ def build_datasets(manifest_path):
         ann_entries = [e for e in entries if e["source"] == "annotation"]
         ref_entries = [e for e in entries if e["source"] == "reference"]
 
-        # Split annotations 90/10
-        random.shuffle(ann_entries)
-        split = max(1, int(len(ann_entries) * 0.9))
-        train_ann = ann_entries[:split]
-        val_ann = ann_entries[split:] if len(ann_entries) > 1 else []
+        if full_train:
+            train_ann = ann_entries  # ALL annotations to train
+            val_ann = []
+        else:
+            # Split annotations 90/10
+            random.shuffle(ann_entries)
+            split = max(1, int(len(ann_entries) * 0.9))
+            train_ann = ann_entries[:split]
+            val_ann = ann_entries[split:] if len(ann_entries) > 1 else []
 
         # Oversample reference images for rare classes
         if len(train_ann) < 20 and ref_entries:
@@ -259,8 +263,11 @@ def main():
                         help="timm model name (default: efficientnet_b2)")
     parser.add_argument("--batch-size", type=int, default=None,
                         help="Override batch size (default: 192)")
+    parser.add_argument("--full-train", action="store_true",
+                        help="Train on ALL data (no validation holdout) for final submission")
     args = parser.parse_args()
 
+    global NUM_EPOCHS, BATCH_SIZE
     if args.epochs is not None:
         NUM_EPOCHS = args.epochs
     if args.batch_size is not None:
@@ -271,7 +278,7 @@ def main():
         print("Error: Run extract_crops.py first!")
         return
 
-    train_entries, val_entries, num_classes = build_datasets(manifest_path)
+    train_entries, val_entries, num_classes = build_datasets(manifest_path, full_train=args.full_train)
 
     # Augmentation params: default vs aggressive
     if args.aggressive_aug:
@@ -328,13 +335,18 @@ def main():
         ])
 
     train_ds = CropDataset(train_entries, train_transform)
-    val_ds = CropDataset(val_entries, val_transform)
     sampler = build_sampler(train_entries)
 
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=sampler,
                               num_workers=NUM_WORKERS, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False,
-                            num_workers=NUM_WORKERS, pin_memory=True)
+
+    if val_entries:
+        val_dataset = CropDataset(val_entries, val_transform)
+        val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False,
+                                num_workers=NUM_WORKERS, pin_memory=True)
+    else:
+        val_loader = None
+        print("=== FULL-TRAIN MODE: no validation, saving periodic checkpoints ===")
 
     # Model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -392,35 +404,43 @@ def main():
 
         scheduler.step()
 
-        # Validate
-        model.eval()
-        val_correct = 0
-        val_total = 0
-
-        with torch.no_grad():
-            for images, labels in val_loader:
-                images, labels = images.to(device), labels.to(device)
-                with torch.amp.autocast("cuda", enabled=USE_AMP):
-                    if use_arcface:
-                        logits, _ = model(images)  # no labels = inference mode
-                    else:
-                        logits = model(images)
-                _, predicted = logits.max(1)
-                val_correct += predicted.eq(labels).sum().item()
-                val_total += labels.size(0)
-
         train_acc = train_correct / train_total if train_total > 0 else 0
-        val_acc = val_correct / val_total if val_total > 0 else 0
         avg_loss = train_loss / train_total if train_total > 0 else 0
+
+        if val_loader is not None:
+            # Validate
+            model.eval()
+            val_correct = 0
+            val_total = 0
+
+            with torch.no_grad():
+                for images, labels in val_loader:
+                    images, labels = images.to(device), labels.to(device)
+                    with torch.amp.autocast("cuda", enabled=USE_AMP):
+                        if use_arcface:
+                            logits, _ = model(images)  # no labels = inference mode
+                        else:
+                            logits = model(images)
+                    _, predicted = logits.max(1)
+                    val_correct += predicted.eq(labels).sum().item()
+                    val_total += labels.size(0)
+
+            val_acc = val_correct / val_total if val_total > 0 else 0
+
+            if val_acc > best_acc:
+                best_acc = val_acc
+                torch.save(model.state_dict(), SAVE_DIR / "best.pt")
+                print(f"  → New best: {val_acc:.4f}")
+        else:
+            # Full-train: save periodically
+            val_acc = 0
+            if (epoch + 1) % 20 == 0 or epoch == NUM_EPOCHS - 1:
+                torch.save(model.state_dict(), SAVE_DIR / "best.pt")
+                print(f"  → Saved checkpoint (full-train, epoch {epoch+1})")
 
         print(f"Epoch {epoch+1}/{NUM_EPOCHS}  loss={avg_loss:.4f}  "
               f"train_acc={train_acc:.4f}  val_acc={val_acc:.4f}  "
               f"lr={scheduler.get_last_lr()[0]:.6f}")
-
-        if val_acc > best_acc:
-            best_acc = val_acc
-            torch.save(model.state_dict(), SAVE_DIR / "best.pt")
-            print(f"  → New best: {val_acc:.4f}")
 
     print(f"\nTraining complete! Best val accuracy: {best_acc:.4f}")
     print(f"Weights saved to {SAVE_DIR / 'best.pt'}")

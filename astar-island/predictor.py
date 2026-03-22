@@ -613,6 +613,43 @@ def estimate_ruin_rate(initial_grids, observations):
     return max(0.0, min(ruined / observed, 0.95))
 
 
+def estimate_forest_clearing_rate(initial_grids, observations):
+    """Estimate P(non-forest | initially forest) from observations.
+
+    Counts how many initial forest cells became non-forest in viewport observations.
+    """
+    forest_total = 0
+    forest_cleared = 0
+
+    for obs in observations:
+        vp = obs["viewport"]
+        grid = obs["grid"]
+        seed_idx = obs.get("seed_index", 0)
+        if seed_idx >= len(initial_grids):
+            continue
+        init_grid = initial_grids[seed_idx]
+        vp_x, vp_y = vp["x"], vp["y"]
+        vp_h = len(grid)
+        vp_w = len(grid[0]) if vp_h > 0 else 0
+
+        for dr in range(vp_h):
+            for dc in range(vp_w):
+                r = vp_y + dr
+                c = vp_x + dc
+                H = len(init_grid)
+                W = len(init_grid[0])
+                if 0 <= r < H and 0 <= c < W:
+                    if init_grid[r][c] == 4:  # Initially forest
+                        forest_total += 1
+                        obs_code = grid[dr][dc]
+                        if obs_code != 4:  # Not forest anymore
+                            forest_cleared += 1
+
+    if forest_total < 10:
+        return 0.1  # default
+    return min(forest_cleared / forest_total, 0.60)
+
+
 def estimate_all_rates(initial_grids, observations):
     """Estimate all forward model rates from observations.
 
@@ -624,6 +661,7 @@ def estimate_all_rates(initial_grids, observations):
         "port_formation": estimate_port_formation_rate(initial_grids, observations),
         "forest_reclamation": estimate_forest_reclamation_rate(initial_grids, observations),
         "ruin": estimate_ruin_rate(initial_grids, observations),
+        "forest_clearing": estimate_forest_clearing_rate(initial_grids, observations),
     }
 
 
@@ -1388,6 +1426,129 @@ def build_prediction(height, width, initial_grid, observations,
     #         predictions = (1 - mc_weight) * predictions + mc_weight * mc_pred
     #         sums = predictions.sum(axis=2, keepdims=True)
     #         predictions = predictions / sums
+
+    # Step 3: Apply probability floor
+    predictions = apply_floor(predictions)
+    return predictions
+
+
+def build_prediction_ml(height, width, initial_grid, observations,
+                        ml_snapshots, rates=None,
+                        spatial_obs=None, skip_blending=False):
+    """Build a H×W×6 probability tensor using an ML model for base predictions.
+
+    Uses extract_features() + numpy_forward_ensemble() from ml_predictor for
+    base predictions instead of the bucket spatial model, then applies the same
+    per-cell observation blending and probability floor as build_prediction().
+
+    Parameters
+    ----------
+    height, width : int
+        Grid dimensions.
+    initial_grid : list[list[int]]
+        H×W initial terrain codes.
+    observations : list[dict]
+        Viewport observations from simulate queries.
+    ml_snapshots : list[dict]
+        List of ML model weight dicts (from ml_predictor.load_ensemble).
+        Single-model files are backward compatible (list of 1 weight dict).
+    rates : dict | None
+        Round-level rate estimates with keys: survival, expansion,
+        port_formation, forest_reclamation, ruin.  None → default 0.5.
+    spatial_obs : dict | None
+        Bucket → observation count mapping from learn_spatial_transition_model.
+        Used only for k-confidence scaling in per-cell blending.
+    """
+    from ml_predictor import extract_features, numpy_forward_ensemble
+
+    # Step 1: Base predictions from ML ensemble
+    survival = rates.get("survival", 0.5) if rates else 0.5
+
+    # Survival-conditional temperature: sharpen on harsh rounds (surv < 10%)
+    temperature = 0.85 if survival < 0.10 else None
+
+    features = extract_features(initial_grid, rates=rates)
+
+    # Auto-detect model's expected feature count from weights and slice if needed
+    # (backward compat: old 28-feature models work with new 32-feature extraction)
+    expected_feats = ml_snapshots[0]["fc1_w"].shape[1]
+    if features.shape[2] > expected_feats:
+        features = features[:, :, :expected_feats]
+
+    predictions = numpy_forward_ensemble(features, ml_snapshots, temperature=temperature)
+
+    # Override static cells with deterministic predictions
+    # Ocean (code 10) → Empty class (0), Mountain (code 5) → Mountain class (5)
+    for r in range(height):
+        for c in range(width):
+            code = initial_grid[r][c]
+            if code in STATIC_CODES:
+                predictions[r, c] = 0.0
+                predictions[r, c, terrain_code_to_class(code)] = 1.0
+
+    # Step 1b: Compute feature map only if needed for k-confidence scaling
+    fmap = None
+    if spatial_obs:
+        fmap, _, _ = compute_feature_map(initial_grid)
+
+    # Step 2: Blend per-cell observations (for directly observed cells)
+    if observations and not skip_blending:
+        cell_counts = np.zeros((height, width, NUM_CLASSES), dtype=np.float64)
+        cell_obs_count = np.zeros((height, width), dtype=np.float64)
+
+        for obs in observations:
+            vp = obs["viewport"]
+            grid = obs["grid"]
+            vp_x, vp_y = vp["x"], vp["y"]
+            vp_h = len(grid)
+            vp_w = len(grid[0]) if vp_h > 0 else 0
+
+            for dr in range(vp_h):
+                for dc in range(vp_w):
+                    r = vp_y + dr
+                    c = vp_x + dc
+                    if 0 <= r < height and 0 <= c < width:
+                        cls = terrain_code_to_class(grid[dr][dc])
+                        cell_counts[r, c, cls] += 1
+                        cell_obs_count[r, c] += 1
+
+        observed_mask = cell_obs_count > 0
+        if observed_mask.any():
+            cell_totals = cell_obs_count[..., np.newaxis]
+            cell_probs = np.zeros_like(cell_counts)
+            np.divide(cell_counts, cell_totals, out=cell_probs,
+                      where=(cell_totals > 0))
+
+            # Adaptive k per terrain type, scaled by spatial model confidence
+            # and observation sparsity (prevent single-outlier distortion)
+            k_grid = np.full((height, width), K_DEFAULT)
+            for r in range(height):
+                for c in range(width):
+                    base_k = K_PER_CODE.get(initial_grid[r][c], K_DEFAULT)
+                    # Scale k up when spatial model has many observations (trust model more)
+                    if spatial_obs and fmap and fmap[r][c] in spatial_obs:
+                        bucket_n = spatial_obs[fmap[r][c]]
+                        confidence_scale = 1.0 + 0.5 * min(bucket_n / 100.0, 3.0)
+                        base_k *= confidence_scale
+                    # Boost k for sparsely-observed non-settlement cells.
+                    # With 1-2 observations, a single outlier (e.g., Ruin on Plains)
+                    # gets 25% weight → wildly inflated rare-class predictions.
+                    # Higher k trusts the ML model more for these cells.
+                    n_obs = cell_obs_count[r, c]
+                    if n_obs <= 2 and initial_grid[r][c] in (0, 11, 4):
+                        base_k *= 3.0  # k=9 for Plains/Forest/Empty with ≤2 obs
+                    k_grid[r, c] = base_k
+
+            alpha = cell_obs_count / (cell_obs_count + k_grid)
+            alpha = alpha[..., np.newaxis]
+
+            for r in range(height):
+                for c in range(width):
+                    if observed_mask[r, c] and initial_grid[r][c] not in STATIC_CODES:
+                        predictions[r, c] = (
+                            alpha[r, c, 0] * cell_probs[r, c]
+                            + (1 - alpha[r, c, 0]) * predictions[r, c]
+                        )
 
     # Step 3: Apply probability floor
     predictions = apply_floor(predictions)

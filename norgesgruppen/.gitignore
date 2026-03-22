@@ -12,3 +12,5 @@ __pycache__/
 _knn_blob.txt
 _knn_meta.json
 _knn_data.json
+val_predictions.json
+docs/

@@ -87,6 +87,12 @@ def load_dino_model(num_classes, device):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=str, default="efficientnet_b2",
+                        help="timm model name (default: efficientnet_b2)")
+    args = parser.parse_args()
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Get num_classes from manifest (or default to 356)
@@ -100,9 +106,9 @@ def main():
         manifest = None
     print(f"Classes: {num_classes}")
 
-    # Load EfficientNet-B2
-    print("Loading EfficientNet-B2...")
-    effnet = timm.create_model("efficientnet_b2", pretrained=False, num_classes=num_classes)
+    # Load EfficientNet
+    print(f"Loading {args.model}...")
+    effnet = timm.create_model(args.model, pretrained=False, num_classes=num_classes)
     effnet_state = torch.load(EFFNET_DIR / "best.pt", map_location=device, weights_only=True)
     effnet.load_state_dict(effnet_state)
     effnet.eval()

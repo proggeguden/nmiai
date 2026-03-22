@@ -42,7 +42,7 @@ WBF_SKIP_BOX_THRESH = 0.01
 CLS_IMGSZ = 260
 CLS_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 CLS_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-PAD_RATIO = 0.05
+PAD_RATIO = 0.08
 
 # Aspect ratio preservation
 # Letterbox helps 6-pack eggs (+0.20 AP) but hurts 12-packs and overall score
@@ -55,7 +55,7 @@ ADAPTIVE_AR_THRESHOLD = 1.5     # aspect ratio threshold for adaptive letterbox
 
 # kNN settings
 KNN_K = 5
-KNN_WEIGHT = 0.1
+KNN_WEIGHT = 0.1  # restored: proven config uses old embeddings with original classifier
 
 # Soft-NMS settings (disabled — hurts on this dataset due to excess FPs)
 USE_SOFT_NMS = False
@@ -71,6 +71,11 @@ SCORE_CLS_POWER = 0.7
 
 # DINOv2 ensemble weight (if dual-backbone classifier)
 DINO_WEIGHT = 0.3
+
+# FP reduction
+MIN_FINAL_SCORE = 0.0        # minimum final score to output (0.0 = disabled, tune via sweep)
+UNKNOWN_SCORE_BOOST = 0.3     # penalty subtracted from cat 355 scores (sweep: +0.0005 local)
+CROSS_CLASS_NMS_IOU = 0.0     # disabled (hurt on test: 0.9216→0.9189)
 
 
 def create_session(path):
@@ -685,6 +690,53 @@ def main():
             fused_boxes = ts_boxes_xyxy
             fused_scores = ts_scores
             fused_labels = ts_labels
+
+        # Filter low-confidence predictions
+        if MIN_FINAL_SCORE > 0:
+            mask = fused_scores >= MIN_FINAL_SCORE
+            fused_boxes = fused_boxes[mask]
+            fused_scores = fused_scores[mask]
+            fused_labels = fused_labels[mask]
+
+        # Suppress low-confidence unknown_product (cat 355)
+        if UNKNOWN_SCORE_BOOST > 0:
+            unknown_mask = fused_labels == 355
+            fused_scores[unknown_mask] = np.maximum(0, fused_scores[unknown_mask] - UNKNOWN_SCORE_BOOST)
+            # Re-filter after suppression
+            keep = fused_scores >= max(MIN_FINAL_SCORE, 0.01)
+            fused_boxes = fused_boxes[keep]
+            fused_scores = fused_scores[keep]
+            fused_labels = fused_labels[keep]
+
+        # Cross-class NMS: remove duplicate detections with different category labels
+        # WBF creates overlapping boxes from two pipelines with different classes.
+        # The lower-scored duplicate is always a pure FP.
+        if CROSS_CLASS_NMS_IOU > 0 and len(fused_boxes) > 1:
+            order = np.argsort(-fused_scores)
+            keep_mask = np.ones(len(fused_boxes), dtype=bool)
+            for ii in range(len(order)):
+                if not keep_mask[order[ii]]:
+                    continue
+                box_i = fused_boxes[order[ii]]
+                for jj in range(ii + 1, len(order)):
+                    if not keep_mask[order[jj]]:
+                        continue
+                    box_j = fused_boxes[order[jj]]
+                    # Compute IoU
+                    xi1 = max(box_i[0], box_j[0])
+                    yi1 = max(box_i[1], box_j[1])
+                    xi2 = min(box_i[2], box_j[2])
+                    yi2 = min(box_i[3], box_j[3])
+                    inter = max(0, xi2 - xi1) * max(0, yi2 - yi1)
+                    area_i = (box_i[2] - box_i[0]) * (box_i[3] - box_i[1])
+                    area_j = (box_j[2] - box_j[0]) * (box_j[3] - box_j[1])
+                    union = area_i + area_j - inter
+                    iou = inter / (union + 1e-6)
+                    if iou > CROSS_CLASS_NMS_IOU:
+                        keep_mask[order[jj]] = False
+            fused_boxes = fused_boxes[keep_mask]
+            fused_scores = fused_scores[keep_mask]
+            fused_labels = fused_labels[keep_mask]
 
         # Build output predictions
         for j in range(len(fused_boxes)):
