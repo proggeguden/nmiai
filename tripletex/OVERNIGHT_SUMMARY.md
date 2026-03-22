@@ -161,3 +161,28 @@ Key commits since last stable (Round 38, revision 00070):
 ### Remaining Issues
 - No new logs — all fixes are proactive improvements based on known patterns
 - Total overnight commits: 4 (resolver fallback, incomingInvoice restructure, municipality validation, ID resolution)
+
+---
+
+## Self-Improve Cycle 5 (2026-03-22 ~08:00 UTC)
+
+### Analysis
+- No new submissions/logs since cycle 4
+- Verified Phase 1→Phase 2 data flow: Phase 1 outputs correct transaction types, Phase 2 receives them with proper prompt lengths
+- 13 requests processed, all with correct Phase 1 classification
+- Phase 2 prompt lengths 12-13K chars (reasonable)
+
+### Fixes Applied
+- None (no new issues found)
+
+### Overall Overnight Status
+Total commits: 5 (4 fixes + 1 summary)
+All committed, NOT deployed. Ready for user review.
+
+Key fixes waiting to deploy:
+1. .values[0].id → .id resolver fallback
+2. Literal {id} path stripping
+3. incomingInvoice body restructuring (header + flat IDs)
+4. Municipality validation (default to Oslo)
+5. Phase 2 ID resolution prompt improvement
+6. bankAccount supplier strip
