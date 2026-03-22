@@ -1423,8 +1423,17 @@ def build_prediction_ml(height, width, initial_grid, observations,
     from ml_predictor import extract_features, numpy_forward
 
     # Step 1: Base predictions from ML model
+    survival = rates.get("survival", 0.5) if rates else 0.5
+
+    # Survival-conditional temperature: sharpen on harsh rounds (surv < 10%)
+    if survival < 0.10:
+        eff_weights = dict(ml_weights)
+        eff_weights["temperature"] = np.array([0.85], dtype=np.float64)
+    else:
+        eff_weights = ml_weights
+
     features = extract_features(initial_grid, rates=rates)
-    predictions = numpy_forward(features, ml_weights)  # H×W×6 float64
+    predictions = numpy_forward(features, eff_weights)  # H×W×6 float64
 
     # Override static cells with deterministic predictions
     # Ocean (code 10) → Empty class (0), Mountain (code 5) → Mountain class (5)
