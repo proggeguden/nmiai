@@ -1740,19 +1740,40 @@ def build_agent():
 
                     postings = []
                     total_gross = 0
+                    total_vat = 0
                     for ol in order_lines:
                         amount = ol.get("amountInclVat") or ol.get("amount") or 0
                         total_gross += amount
-                        posting = {
+                        # Compute net and VAT manually (don't use vatType — it triggers
+                        # system-generated rows that cause 422)
+                        vat_id = ol.get("vatTypeId")
+                        vat_rate = {1: 0.25, 11: 0.15, 13: 0.12}.get(vat_id, 0)
+                        net = round(amount / (1 + vat_rate)) if vat_rate else amount
+                        vat_amount = amount - net
+                        total_vat += vat_amount
+                        # Debit expense account for net amount
+                        postings.append({
                             "account": {"id": ol.get("accountId")},
-                            "amountGross": amount,
-                            "amountGrossCurrency": amount,
-                        }
-                        if ol.get("vatTypeId"):
-                            posting["vatType"] = {"id": ol["vatTypeId"]}
-                        postings.append(posting)
+                            "amountGross": net,
+                            "amountGrossCurrency": net,
+                        })
 
                     if total_gross:
+                        # Debit input VAT account (2710) for VAT portion
+                        if total_vat > 0:
+                            vat_acct_result = call_api_tool.invoke({
+                                "method": "GET", "path": "/ledger/account",
+                                "query_params": {"number": "2710", "count": 1},
+                            })
+                            vat_acct_parsed = json.loads(vat_acct_result)
+                            vat_acct_values = vat_acct_parsed.get("values", [])
+                            if vat_acct_values:
+                                postings.append({
+                                    "account": {"id": vat_acct_values[0]["id"]},
+                                    "amountGross": total_vat,
+                                    "amountGrossCurrency": total_vat,
+                                })
+                        # Credit AP account (2400) for total gross
                         ap_result = call_api_tool.invoke({
                             "method": "GET", "path": "/ledger/account",
                             "query_params": {"number": "2400", "count": 1},
