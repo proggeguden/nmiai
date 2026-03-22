@@ -4,7 +4,7 @@ Extracts a fixed-length feature vector for each cell in the initial grid.
 These features are used to train an ML model that replaces the bucket-based
 spatial transition model in predictor.py.
 
-Feature layout (25 features total):
+Feature layout (28 features total):
   [0..5]   One-hot terrain class (Empty, Settlement, Port, Ruin, Forest, Mountain)
   [6]      Distance to nearest settlement (BFS, capped at 20)
   [7]      Is coastal (has adjacent ocean cell, 8-connected)
@@ -25,6 +25,9 @@ Feature layout (25 features total):
   [22]     dist_to_forest (BFS distance to nearest forest cell, capped at 10)
   [23]     settlement_count_r5 (count of settlement cells within Manhattan distance 5)
   [24]     adj_ruin_count (count of adjacent ruin cells, 8-connected, 0-8)
+  [25]     survival_x_expansion (survival * expansion rate interaction)
+  [26]     survival_over_expansion (survival / (expansion + 0.01) ratio)
+  [27]     expansion_x_port (expansion * port_formation rate interaction)
 """
 
 import numpy as np
@@ -67,9 +70,12 @@ FEATURE_NAMES = [
     "dist_to_forest",
     "settlement_count_r5",
     "adj_ruin_count",
+    "survival_x_expansion",
+    "survival_over_expansion",
+    "expansion_x_port",
 ]
 
-NUM_FEATURES = 25
+NUM_FEATURES = 28
 
 RATE_KEYS = ["survival", "expansion", "port_formation", "forest_reclamation", "ruin"]
 
@@ -84,7 +90,7 @@ _DIST_CAP = 20
 # ---------------------------------------------------------------------------
 
 def extract_features(initial_grid, rates=None):
-    """Extract a 25-feature vector for every cell in initial_grid.
+    """Extract a 28-feature vector for every cell in initial_grid.
 
     Parameters
     ----------
@@ -96,7 +102,7 @@ def extract_features(initial_grid, rates=None):
 
     Returns
     -------
-    np.ndarray, shape (H, W, 25), dtype float32
+    np.ndarray, shape (H, W, 28), dtype float32
     """
     H = len(initial_grid)
     W = len(initial_grid[0])
@@ -245,7 +251,7 @@ def _resolve_rates(rates):
 def _compute_cell_features(initial_grid, r, c, code, H, W,
                             settlement_dists, cluster_density, rate_values, coast_dists,
                             forest_dists, settlement_positions):
-    """Compute the 25-feature vector for a single cell."""
+    """Compute the 28-feature vector for a single cell."""
     vec = np.zeros(NUM_FEATURES, dtype=np.float32)
 
     # --- Features 0-5: one-hot terrain class ---
@@ -322,6 +328,14 @@ def _compute_cell_features(initial_grid, r, c, code, H, W,
     # --- Feature 24: adj_ruin_count ---
     vec[24] = float(adj_ruin)
 
+    # --- Features 25-27: rate interaction features ---
+    surv = rate_values[0]  # survival
+    exp = rate_values[1]   # expansion
+    port = rate_values[2]  # port_formation
+    vec[25] = surv * exp                          # survival × expansion
+    vec[26] = surv / (exp + 0.01)                 # survival / expansion ratio
+    vec[27] = exp * port                          # expansion × port_formation
+
     return vec
 
 
@@ -330,7 +344,7 @@ def _compute_cell_features(initial_grid, r, c, code, H, W,
 # ---------------------------------------------------------------------------
 
 def numpy_forward(features, weights):
-    """Numpy-only MLP forward pass: Input(25) → 128 → 64 → 32 → Softmax(6).
+    """Numpy-only MLP forward pass: Input(28) → 128 → 64 → 32 → Softmax(6).
 
     Args:
         features: H×W×25 float32 array

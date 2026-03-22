@@ -27,12 +27,12 @@ def _set(grid, r, c, code):
 # ---------------------------------------------------------------------------
 
 class TestExtractFeaturesShape:
-    """test_extract_features_shape: returns H×W×25 float32 array."""
+    """test_extract_features_shape: returns H×W×28 float32 array."""
 
     def test_shape(self):
         grid = _make_grid(6, 8)
         result = extract_features(grid)
-        assert result.shape == (6, 8, 25), f"Expected (6,8,25), got {result.shape}"
+        assert result.shape == (6, 8, 28), f"Expected (6,8,25), got {result.shape}"
 
     def test_dtype(self):
         grid = _make_grid(4, 4)
@@ -40,10 +40,10 @@ class TestExtractFeaturesShape:
         assert result.dtype == np.float32, f"Expected float32, got {result.dtype}"
 
     def test_num_features_constant(self):
-        assert NUM_FEATURES == 25
+        assert NUM_FEATURES == 28
 
     def test_feature_names_length(self):
-        assert len(FEATURE_NAMES) == 25
+        assert len(FEATURE_NAMES) == 28
 
 
 class TestExtractFeaturesOnehot:
@@ -434,7 +434,7 @@ def test_numpy_forward_shape():
     """Forward pass produces H×W×6 with valid probabilities."""
     rng = np.random.default_rng(42)
     weights = {
-        "fc1_w": rng.standard_normal((128, 25)).astype(np.float32) * 0.1,
+        "fc1_w": rng.standard_normal((128, 28)).astype(np.float32) * 0.1,
         "fc1_b": np.zeros(128, dtype=np.float32),
         "fc2_w": rng.standard_normal((64, 128)).astype(np.float32) * 0.1,
         "fc2_b": np.zeros(64, dtype=np.float32),
@@ -442,10 +442,10 @@ def test_numpy_forward_shape():
         "fc3_b": np.zeros(32, dtype=np.float32),
         "fc4_w": rng.standard_normal((6, 32)).astype(np.float32) * 0.1,
         "fc4_b": np.zeros(6, dtype=np.float32),
-        "feat_mean": np.zeros(25, dtype=np.float32),
-        "feat_std": np.ones(25, dtype=np.float32),
+        "feat_mean": np.zeros(28, dtype=np.float32),
+        "feat_std": np.ones(28, dtype=np.float32),
     }
-    features = rng.standard_normal((5, 5, 25)).astype(np.float32)
+    features = rng.standard_normal((5, 5, 28)).astype(np.float32)
     preds = numpy_forward(features, weights)
     assert preds.shape == (5, 5, 6)
     sums = preds.sum(axis=2)
@@ -456,7 +456,7 @@ def test_numpy_forward_shape():
 def test_save_load_model_roundtrip(tmp_path):
     """Weights survive save/load roundtrip."""
     weights = {
-        "fc1_w": np.ones((128, 25), dtype=np.float32),
+        "fc1_w": np.ones((128, 28), dtype=np.float32),
         "fc1_b": np.zeros(128, dtype=np.float32),
         "fc2_w": np.ones((64, 128), dtype=np.float32),
         "fc2_b": np.zeros(64, dtype=np.float32),
@@ -464,8 +464,8 @@ def test_save_load_model_roundtrip(tmp_path):
         "fc3_b": np.zeros(32, dtype=np.float32),
         "fc4_w": np.ones((6, 32), dtype=np.float32),
         "fc4_b": np.zeros(6, dtype=np.float32),
-        "feat_mean": np.zeros(25, dtype=np.float32),
-        "feat_std": np.ones(25, dtype=np.float32),
+        "feat_mean": np.zeros(28, dtype=np.float32),
+        "feat_std": np.ones(28, dtype=np.float32),
     }
     path = str(tmp_path / "test_weights.npz")
     save_model(weights, path)
