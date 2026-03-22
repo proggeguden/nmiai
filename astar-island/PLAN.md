@@ -393,8 +393,26 @@ Zero regressions across all 17 rounds.
 rm training_data.npz && python3 train_model.py --augmentations 10 --output model_weights.npz
 ```
 
+### Feature engineering + retrain (2026-03-22)
+
+**Added 2 new features** (18 → 20 total):
+- `dist_to_coast` (BFS from ocean, capped 20): enables port formation prediction on coastal plains
+- `adj_mountain_count` (8-connected, 0-8): calibrates expansion near mountains
+
+**Retrained on 18 rounds** (1.05M training examples, up from 985k).
+
+**Results (simulated-production, 3 runs, 18 rounds)**:
+| Metric | Old ML (18feat, 17rnd) | New ML (20feat, 18rnd) | Improvement |
+|--------|----------------------|----------------------|-------------|
+| Avg KL | 0.0341 | **0.0317** | **-7.0%** |
+| R3 | 0.0198 | 0.0188 | -5% |
+| R7 | 0.0746 | 0.0743 | -0.4% |
+| R12 | 0.0856 | 0.0791 | -7.6% |
+| R18 | — | 0.0270 | new round |
+
+vs bucket model: 0.0493 → 0.0317 = **-35.7%**.
+
 **Improvement directions**:
-- More features: adj_mountain, distance_to_coast, settlement_count_in_radius
 - Architecture: wider layers, residual connections
 - Ensemble: alpha-blend ML + bucket predictions
 - Each new round adds ~5800 cells × 10 augmentations of training data

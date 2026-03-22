@@ -82,21 +82,21 @@ position, population, food, wealth, defense, tech level, port status, longship o
 ## Prediction Strategy
 
 **Current approach (ML model)**: PyTorch MLP trained on GT data from all completed rounds.
-Predicts P(class | 18 spatial+round features) per cell. Trained offline with noisy rate
-augmentation to handle production estimation noise. Numpy-only inference (53KB weights).
+Predicts P(class | 20 spatial+round features) per cell. Trained offline with noisy rate
+augmentation to handle production estimation noise. Numpy-only inference (54KB weights).
 
 **Pipeline**:
 1. Observe all 5 seeds (50 queries total, 10 per seed, full coverage)
 2. Estimate round-level rates from observations (survival, expansion, port, forest, ruin)
-3. ML model: extract 18 features per cell → numpy forward pass → base predictions
+3. ML model: extract 20 features per cell → numpy forward pass → base predictions
 4. Per-cell observation blending (adaptive k, sparse boost)
 5. Probability floor (0.0005)
 
 **ML model details** (`ml_predictor.py` + `train_model.py`):
-- 18 features: 6 terrain one-hot + 7 spatial (dist, coastal, adj counts, cluster, interior) + 5 round rates
-- Architecture: Input(18) → 128 → 64 → 32 → Softmax(6), KL divergence loss
-- Training: 985k cells from 17 rounds × 5 seeds × 10 noisy rate augmentations
-- Weights: `model_weights.npz` (53KB, committed to git)
+- 20 features: 6 terrain one-hot + 9 spatial (dist_settlement, coastal, adj_forest/settlement/ocean/mountain counts, cluster, interior, dist_to_coast) + 5 round rates
+- Architecture: Input(20) → 128 → 64 → 32 → Softmax(6), KL divergence loss
+- Training: 1.05M cells from 18 rounds × 5 seeds × 10 noisy rate augmentations
+- Weights: `model_weights.npz` (54KB, committed to git)
 - Production inference: numpy matmuls only, zero PyTorch dependency
 
 **Backtest performance** (simulated-production KL, lower is better):
