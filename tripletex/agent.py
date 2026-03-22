@@ -1811,69 +1811,9 @@ def build_agent():
                         log.info(f"Promoted bank paymentType (id={pt.get('id')}) over cash")
                         break
 
-            # Post-success: if GET /ledger/account returned empty, auto-create the account
-            if (
-                normalized.get("_empty")
-                and resolved_args.get("method") == "GET"
-                and resolved_args.get("path") == "/ledger/account"
-                and call_api_tool
-            ):
-                acct_number = resolved_args.get("query_params", {}).get("number")
-                if acct_number:
-                    # ONLY auto-create accounts with known standard names (NS4102).
-                    # Do NOT create unknown accounts — that would be inventing data.
-                    ACCOUNT_NAMES = {
-                        "1209": "Akkumulerte avskrivninger",
-                        "1700": "Forskuddsbetalte kostnader",
-                        "2710": "Inngående merverdiavgift",
-                        "2920": "Skyldig skatt",
-                        "6010": "Avskrivning transportmidler",
-                        "6030": "Avskrivning inventar/kontormaskiner",
-                        "6700": "Annen driftskostnad",
-                        "8700": "Skattekostnad",
-                    }
-                    name = ACCOUNT_NAMES.get(str(acct_number))
-                    if not name:
-                        log.info(f"GET /ledger/account?number={acct_number} returned empty — NOT auto-creating (unknown account)")
-                    else:
-                        log.info(f"GET /ledger/account?number={acct_number} returned empty — auto-creating standard account")
-                    if name:
-                        try:
-                            create_result = call_api_tool.invoke({
-                                "method": "POST", "path": "/ledger/account",
-                                "body": {"number": int(acct_number), "name": name},
-                            })
-                            cr_error, _ = _is_api_error(create_result)
-                            if not cr_error:
-                                cr_parsed = json.loads(create_result)
-                                normalized = _normalize_result(cr_parsed)
-                                log.info(f"Auto-created account {acct_number} '{name}' (id={normalized.get('id')})")
-                        except Exception as e:
-                            log.warning(f"Auto-create account {acct_number} failed: {e}")
-
-            # Post-success: if GET /department returned empty, auto-create it.
-            # The name comes from the search query (task-derived, not dummy data).
-            if (
-                normalized.get("_empty")
-                and resolved_args.get("method") == "GET"
-                and resolved_args.get("path") == "/department"
-                and call_api_tool
-            ):
-                dept_name = resolved_args.get("query_params", {}).get("name")
-                if dept_name:
-                    log.info(f"GET /department?name={dept_name} returned empty — auto-creating")
-                    try:
-                        create_result = call_api_tool.invoke({
-                            "method": "POST", "path": "/department",
-                            "body": {"name": dept_name},
-                        })
-                        cr_error, _ = _is_api_error(create_result)
-                        if not cr_error:
-                            cr_parsed = json.loads(create_result)
-                            normalized = _normalize_result(cr_parsed)
-                            log.info(f"Auto-created department '{dept_name}' (id={normalized.get('id')})")
-                    except Exception as e:
-                        log.warning(f"Auto-create department '{dept_name}' failed: {e}")
+            # NOTE: No auto-create logic here. If GET returns empty, the planner
+            # should have planned a POST step. Auto-creating papers over planner bugs
+            # and can create wrong data. Fix the planner prompt instead.
 
             results[f"step_{step['step_number']}"] = normalized
             log.info(
