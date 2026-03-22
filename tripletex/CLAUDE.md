@@ -12,11 +12,11 @@ Scored on field-by-field correctness + API call efficiency.
 - Cloud Run config: cpu=4, memory=4Gi, gen2, cpu-boost, concurrency=1, min-instances=10, max-instances=10
 
 ## Architecture: Phase 1 (Understand) → Phase 2 (Plan) → Executor → Fail Fast
-1. **Phase 1 (Flash)** — Fast analysis: classifies task type, extracts entities/values from prompt and files.
-2. **Phase 2 (Pro)** — Expert accountant planner (temp=0). Focused prompt on Tripletex API quirks. Produces JSON plan.
-3. **validate_plan()** — Pre-flight fixes: POST→/list merge, ensure_bank_account, /:send injection, foreign vatType 6, field renames, path fixes, activityType injection, occupationCode fix.
-4. **Executor** — Resolves `$step_N.id` placeholders. 250s deadline. GET-then-CREATE for departments and standard accounts. Deterministic handlers for common errors.
-5. **Deterministic handlers** — Bank account ensure, employee email-exists, product/account duplicate recovery, paymentTypeId retry, projectManager injection, division field fixes, incomingInvoice 403 fallback to voucher.
+1. **Phase 1 (Flash, gemini-3-flash-preview)** — Fast analysis: classifies task type, extracts entities/values from prompt and files. Reads PDFs via pymupdf text extraction.
+2. **Phase 2 (Pro, gemini-3.1-pro-preview, temp=0)** — Expert accountant planner. Lean prompt focused on Tripletex API quirks only (~800 tokens). Produces JSON array of execution steps.
+3. **validate_plan()** — Minimal API quirk fixes only: POST→/list merge, ensure_bank_account, field renames, path fixes, activityType injection, amount rounding. Does NOT override planner decisions.
+4. **Executor** — Resolves `$step_N.id` placeholders. 250s deadline. GET-then-CREATE for standard ledger accounts. Deterministic handlers for common API errors.
+5. **Deterministic handlers** — Bank account ensure, employee email-exists, product/account duplicate recovery, paymentTypeId retry, projectManager 422 retry, division 422 retry, incomingInvoice 403 fallback (probe-first).
 
 ## Key Files
 | File | Purpose |
