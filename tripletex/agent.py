@@ -264,6 +264,30 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                 body["startDate"] = date.today().isoformat()
                 log.info("Validation: added missing startDate to POST /project")
 
+        # Fix POST /division — municipality must be {"id": N}, not string/int
+        if method == "POST" and path in ("/division", "/division/list") and isinstance(body, (dict, list)):
+            div_bodies = body if isinstance(body, list) else [body]
+            for db in div_bodies:
+                if not isinstance(db, dict):
+                    continue
+                mun = db.get("municipality")
+                if mun is not None and not isinstance(mun, dict):
+                    # Convert bare int/string to {"id": int} format
+                    try:
+                        db["municipality"] = {"id": int(mun)}
+                    except (TypeError, ValueError):
+                        db["municipality"] = {"id": 301}  # Oslo default
+                    log.info(f"Validation: fixed municipality format on POST /division")
+                elif mun is None:
+                    db["municipality"] = {"id": 301}  # Oslo default
+                    log.info("Validation: injected default municipality on POST /division")
+                if "startDate" not in db:
+                    db["startDate"] = date.today().isoformat()
+                if "organizationNumber" not in db:
+                    db["organizationNumber"] = "000000000"
+                if "municipalityDate" not in db:
+                    db["municipalityDate"] = date.today().isoformat()
+
         # Quick fix: POST /ledger/voucher — remove invalid fields, fix null postings, add row numbers
         if method == "POST" and path == "/ledger/voucher" and isinstance(body, dict):
             if "voucherType" in body:
@@ -1655,6 +1679,79 @@ def build_agent():
                         }
                 except Exception:
                     pass
+
+        # ── Deterministic fix: product number already in use → GET existing product ──
+        if (
+            status_code in RETRYABLE_STATUS_CODES
+            and resolved_args.get("method") == "POST"
+            and resolved_args.get("path") in ("/product", "/product/list")
+            and "produktnummeret" in error_lower
+            and "er i bruk" in error_lower
+        ):
+            body = resolved_args.get("body")
+            product_number = None
+            if isinstance(body, dict):
+                product_number = body.get("number")
+            elif isinstance(body, list) and body:
+                product_number = body[0].get("number") if isinstance(body[0], dict) else None
+            if product_number:
+                call_api_tool = tool_map.get("call_api")
+                if call_api_tool:
+                    log.info(f"Deterministic fix: product {product_number} exists, GET instead")
+                    search_result = call_api_tool.invoke({
+                        "method": "GET", "path": "/product",
+                        "query_params": {"number": str(product_number), "count": 1},
+                    })
+                    try:
+                        search_parsed = json.loads(search_result)
+                        values = search_parsed.get("values", [])
+                        if values:
+                            results[f"step_{step['step_number']}"] = _normalize_result(search_parsed)
+                            completed.append(step["step_number"])
+                            log.info(f"Step {step['step_number']} resolved: found existing product {product_number}")
+                            return {
+                                "current_step": step_idx + 1,
+                                "results": results,
+                                "completed_steps": completed,
+                                "error_count": error_count,
+                                "messages": [AIMessage(content=f"Step {step['step_number']} done (found existing product)")],
+                            }
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+        # ── Deterministic fix: duplicate ledger account → GET existing ──
+        if (
+            status_code in RETRYABLE_STATUS_CODES
+            and resolved_args.get("method") == "POST"
+            and resolved_args.get("path") == "/ledger/account"
+            and "finnes fra" in error_lower
+        ):
+            body = resolved_args.get("body")
+            acct_number = body.get("number") if isinstance(body, dict) else None
+            if acct_number:
+                call_api_tool = tool_map.get("call_api")
+                if call_api_tool:
+                    log.info(f"Deterministic fix: account {acct_number} exists, GET instead")
+                    search_result = call_api_tool.invoke({
+                        "method": "GET", "path": "/ledger/account",
+                        "query_params": {"number": str(acct_number), "count": 1},
+                    })
+                    try:
+                        search_parsed = json.loads(search_result)
+                        values = search_parsed.get("values", [])
+                        if values:
+                            results[f"step_{step['step_number']}"] = _normalize_result(search_parsed)
+                            completed.append(step["step_number"])
+                            log.info(f"Step {step['step_number']} resolved: found existing account {acct_number}")
+                            return {
+                                "current_step": step_idx + 1,
+                                "results": results,
+                                "completed_steps": completed,
+                                "error_count": error_count,
+                                "messages": [AIMessage(content=f"Step {step['step_number']} done (found existing account)")],
+                            }
+                    except (json.JSONDecodeError, TypeError):
+                        pass
 
         # ── Deterministic fix: employee email already exists → find existing user ──
         if (
