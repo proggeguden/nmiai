@@ -19,7 +19,7 @@ Feature layout (20 features total):
   [16]     forest_reclamation_rate
   [17]     ruin_rate
   [18]     dist_to_coast (BFS from ocean cells, capped at 20)
-  [19]     adj_mountain_count (placeholder, 0.0)
+  [19]     adj_mountain_count (8-connected, 0-8)
 """
 
 import numpy as np
@@ -177,6 +177,7 @@ def _compute_cell_features(initial_grid, r, c, code, H, W,
     adj_forest = 0
     adj_settlement = 0
     adj_ocean = 0
+    adj_mountain = 0
     for dr in (-1, 0, 1):
         for dc in (-1, 0, 1):
             if dr == 0 and dc == 0:
@@ -190,6 +191,8 @@ def _compute_cell_features(initial_grid, r, c, code, H, W,
                     adj_settlement += 1
                 elif n == 10:
                     adj_ocean += 1
+                elif n == 5:
+                    adj_mountain += 1
 
     # --- Feature 7: is_coastal ---
     vec[7] = 1.0 if adj_ocean > 0 else 0.0
@@ -215,8 +218,8 @@ def _compute_cell_features(initial_grid, r, c, code, H, W,
     # --- Feature 18: dist_to_coast (BFS from ocean cells, capped at 20) ---
     vec[18] = float(min(coast_dists[r][c], _DIST_CAP))
 
-    # --- Feature 19: adj_mountain_count (placeholder) ---
-    vec[19] = 0.0
+    # --- Feature 19: adj_mountain_count ---
+    vec[19] = float(adj_mountain)
 
     return vec
 

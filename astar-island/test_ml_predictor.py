@@ -203,6 +203,33 @@ class TestDistanceToCoast:
             assert result[0, c, 18] == float(min(c, 20))
 
 
+class TestAdjMountainCount:
+    """Feature 19: count of adjacent mountain cells (8-connected, 0-8)."""
+
+    def test_no_mountains(self):
+        grid = _make_grid(5, 5, fill=11)
+        result = extract_features(grid)
+        assert result[2, 2, 19] == 0.0
+
+    def test_one_adjacent_mountain(self):
+        grid = _make_grid(5, 5, fill=11)
+        _set(grid, 1, 2, 5)  # mountain above (2,2)
+        result = extract_features(grid)
+        assert result[2, 2, 19] == 1.0
+
+    def test_surrounded_by_mountains(self):
+        grid = _make_grid(5, 5, fill=5)  # all mountains
+        _set(grid, 2, 2, 11)  # plains cell surrounded
+        result = extract_features(grid)
+        assert result[2, 2, 19] == 8.0
+
+    def test_corner_cell_max_3(self):
+        grid = _make_grid(3, 3, fill=5)
+        _set(grid, 0, 0, 11)  # corner cell
+        result = extract_features(grid)
+        assert result[0, 0, 19] == 3.0  # 3 adjacent mountains
+
+
 def test_numpy_forward_shape():
     """Forward pass produces H×W×6 with valid probabilities."""
     rng = np.random.default_rng(42)
