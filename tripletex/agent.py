@@ -73,7 +73,7 @@ def _normalize_result(raw: dict) -> dict:
     return raw
 
 
-def validate_plan(plan: list[dict]) -> list[dict]:
+def validate_plan(plan: list[dict], task_text: str = "", phase1: dict = None) -> list[dict]:
     """Validate and auto-fix plan steps against endpoint cards.
 
     Catches cheapest errors before they hit the API:
@@ -130,33 +130,64 @@ def validate_plan(plan: list[dict]) -> list[dict]:
     has_send = any(
         "/:send" in s.get("args", {}).get("path", "") for s in plan
     )
+    # Detect if task says "send" in any language
+    SEND_KEYWORDS = ["send", "enviar", "senden", "envoyer", "envie", "envía", "invia",
+                     "send faktura", "send regning", "sende", "envoyez", "envíe"]
+    task_lower = task_text.lower()
+    task_says_send = any(kw in task_lower for kw in SEND_KEYWORDS)
+
     if has_invoice and not has_send:
-        # Check if any /:invoice step uses sendToCustomer — that's unreliable
+        # Strip sendToCustomer from /:invoice steps (unreliable)
         for step in plan:
             args = step.get("args", {})
             if "/:invoice" in args.get("path", "") and args.get("method") == "PUT":
                 qp = args.get("query_params", {})
-                if isinstance(qp, dict) and qp.pop("sendToCustomer", None):
-                    # Add a /:send step after this one
-                    send_step = {
-                        "step_number": step["step_number"] + 0.5,  # will be renumbered
+                if isinstance(qp, dict):
+                    qp.pop("sendToCustomer", None)
+
+        # Add /:send step if task says send OR planner had sendToCustomer
+        if task_says_send:
+            for step in plan:
+                args = step.get("args", {})
+                if "/:invoice" in args.get("path", "") and args.get("method") == "PUT":
+                    inv_step_num = step["step_number"]
+                    plan.append({
+                        "step_number": inv_step_num + 0.5,
                         "tool_name": "call_api",
                         "args": {
                             "method": "PUT",
-                            "path": f"$step_{step['step_number']}.id".replace(".id", "") + "/:send" if "$step_" not in args["path"] else args["path"].replace("/:invoice", "/:send"),
+                            "path": f"/invoice/$step_{inv_step_num}.id/:send",
                             "query_params": {"sendType": "EMAIL"},
                         },
                         "description": "Send the invoice via email",
-                    }
-                    # Use the invoice step's result ID for the send path
-                    inv_step_num = step["step_number"]
-                    send_step["args"]["path"] = f"/invoice/$step_{inv_step_num}.id/:send"
-                    plan.append(send_step)
-                    log.info(f"Validation: added /:send step after /:invoice step {inv_step_num}")
-        # Re-sort and renumber if we added steps
-        plan.sort(key=lambda s: s["step_number"])
-        for i, s in enumerate(plan):
-            s["step_number"] = i + 1
+                    })
+                    log.info(f"Validation: added /:send step (task says 'send')")
+                    break  # Only one /:send needed
+            # Re-sort and renumber
+            plan.sort(key=lambda s: s["step_number"])
+            for i, s in enumerate(plan):
+                s["step_number"] = i + 1
+
+    # ── A4: Force vatType 6 for foreign customers (GmbH/Ltd/Inc = export) ──
+    FOREIGN_SUFFIXES = ["GmbH", "Ltd", "Inc", "S.A.", "S.r.l.", "SARL", "AB", "BV", "AG", "Oy", "Lda"]
+    is_foreign = any(f" {s}" in task_text for s in FOREIGN_SUFFIXES)
+    if not is_foreign and phase1 and isinstance(phase1, dict):
+        for role in ("customer", "client"):
+            cust = phase1.get("entities", {}).get(role, {})
+            cname = (cust.get("data", {}) or {}).get("name", "") if isinstance(cust, dict) else ""
+            if any(s in cname for s in FOREIGN_SUFFIXES):
+                is_foreign = True
+                break
+    if is_foreign:
+        for step in plan:
+            a = step.get("args", {})
+            if a.get("method") == "POST" and a.get("path") in ("/order", "/order/list"):
+                for b in (a.get("body", []) if isinstance(a.get("body"), list) else [a.get("body", {})]):
+                    if isinstance(b, dict):
+                        for ol in b.get("orderLines", []):
+                            if isinstance(ol, dict):
+                                ol["vatType"] = {"id": 6}
+                                log.info("Validation: forced vatType 6 (export) for foreign customer")
 
     for step in plan:
         if step.get("tool_name") != "call_api":
@@ -200,7 +231,7 @@ def validate_plan(plan: list[dict]) -> list[dict]:
             for i, s in enumerate(plan):
                 s["step_number"] = i + 1
             # Restart full validation on expanded plan (break would skip remaining steps)
-            return validate_plan(plan)
+            return validate_plan(plan, task_text=task_text, phase1=phase1)
 
         # ── B0b: Strip vatType from order lines ONLY if it's a hardcoded wrong ID ──
         # Keep vatType if it references a $step_N lookup (planner looked it up correctly)
@@ -1412,7 +1443,7 @@ def build_agent():
                 log.warning(f"Fallback also failed: {e}")
                 best = []
 
-        best = validate_plan(best)
+        best = validate_plan(best, task_text=state.get("original_prompt", ""), phase1=phase1)
 
         log.info(
             f">>>PLAN_START<<<\n{json.dumps(best, indent=2)}\n>>>PLAN_END<<<",
