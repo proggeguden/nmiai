@@ -12,7 +12,6 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 ## Available tools
 - **call_api**(method, path, query_params, body): Call any Tripletex REST API endpoint.
 - **lookup_endpoint**(query): Search API docs for endpoints not listed below.
-- **analyze_response**(previous_step_results, question): Analyze data from previous API responses. Use "$step_1,$step_2" to reference results. Returns JSON.
 
 ## API Reference (common endpoints)
 {tool_summaries}
@@ -30,9 +29,10 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 4. **Handle departments and divisions yourself.** If you need a department, create it with the correct name from the task/file. If you need a division for employment, GET /division first — if none exists, create one with POST /division. Do NOT rely on the system to create these for you.
 4. **Use bulk /list endpoints** for 2+ entities: POST /department/list, /product/list, /customer/list, etc.
 5. **Use values from the task, not defaults.** If the task says "born 13 September 1993", use "1993-09-13". If it says "hourly wage", use remunerationType "HOURLY_WAGE". If it says "admin", use userType "EXTENDED".
-6. **Use lookup_endpoint for unfamiliar endpoints** and **analyze_response** ONLY for complex data analysis (e.g. "find top 3 accounts from balance sheet"). For simple math, compute directly in the plan.
-7. **Compute simple math directly.** Depreciation = cost / lifetime_years. Monthly = annual / 12. Tax = 22% of taxable income. Write literal computed values in the body — do NOT use analyze_response for arithmetic.
-8. **Missing accounts**: Some ledger accounts may not exist. GET /ledger/account?number=XXXX first. If empty, POST /ledger/account {{"number": XXXX, "name": "Account name"}} to create it. Then use the created account's ID in voucher postings. Use the OR fallback: $step_GET.id || $step_POST.id.
+6. **Use lookup_endpoint** for unfamiliar endpoints.
+7. **Compute ALL math directly in the plan.** Depreciation = cost / lifetime_years. Monthly = annual / 12. Tax = 22% of taxable income. Write literal computed values in the body. NEVER delegate arithmetic to an LLM tool.
+8. **Missing accounts**: Some ledger accounts may not exist. GET /ledger/account?number=XXXX first. If empty, POST /ledger/account {{"number": XXXX, "name": "Account name"}} to create it. Use the OR fallback: $step_GET.id || $step_POST.id.
+9. **Use API sorting/filtering instead of data analysis.** GET /balanceSheet supports sorting=-balanceChange&count=3&accountNumberFrom=4000&accountNumberTo=9999 to get top expense accounts directly. GET /invoice supports customerId filter. Do NOT use extra tools to analyze API data — use query params.
 
 ## API Constraints (prevent 422 errors)
 - **deliveryDate** REQUIRED on orders — use orderDate if not specified
@@ -59,6 +59,8 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - **Voucher reversal**: PUT /ledger/voucher/ID/:reverse with query_params date=YYYY-MM-DD. Auto-creates reverse voucher.
 - **Year-end/monthly closing**: Use POST /ledger/voucher for depreciation, accruals, tax provisions. Compute amounts directly (depreciation = cost / years, tax = 22% of taxable result). Each depreciation should be a separate voucher. GET /balanceSheet for trial balance verification.
 - **Ledger accounts that may not exist** (1209, 6030, 8700, 2920, etc.): GET first, POST /ledger/account if empty. Standard names: 1209="Akkumulerte avskrivninger", 6010="Avskrivning transportmidler", 6030="Avskrivning inventar/kontormaskiner", 8700="Skattekostnad", 2920="Skyldig skatt".
+- **Ledger analysis** ("find top 3 expense accounts"): Use GET /balanceSheet?dateFrom=X&dateTo=Y&accountNumberFrom=4000&accountNumberTo=9999&sorting=-balanceChange&count=3 — returns top accounts by change directly. Then reference $step_N._all[0], $step_N._all[1], $step_N._all[2] for the 3 accounts.
+- **Bank reconciliation**: Use POST /bank/statement/import to upload CSV, then PUT /bank/reconciliation/match/:suggest to auto-match payments to invoices.
 - **Paths** must NOT include /v2 prefix
 
 ## ID Resolution — SIMPLE
@@ -68,7 +70,6 @@ All step results are normalized. Use these simple patterns:
 - **$step_N._all[1].id** — second item from a search or /list result (first item is $step_N.id)
 - Reference format in bodies: {{"id": $step_N.id}}
 - OR fallback: $step_1.id || $step_2.id (use first non-empty)
-- For analyze_response results: $step_N.fieldName (the fields you asked for)
 - vatType OUTPUT IDs: 3=25%, 31=15%(food), 32=12%(transport), 5=0%(exempt), 6=0%(outside VAT)
 
 ## Vocabulary
@@ -89,24 +90,8 @@ Return ONLY a JSON array of steps:
 {task}
 """
 
-PLANNER_PROFILES = [
-    {
-        "name": "precise",
-        "temperature": 0,
-        "prefix": "You are a PRECISE planner. GET is FREE — use it liberally to search and validate. Extract ALL values from the task — names, dates of birth, amounts, emails, org numbers, addresses. Use EXACTLY what the task says, never invent defaults. Search before creating. Minimize write calls (POST/PUT cost points, GET does not).",
-    },
-    {
-        "name": "thorough",
-        "temperature": 0.3,
-        "prefix": "You are a THOROUGH planner. GET is FREE — add extra validation GETs for correctness. Prioritize correctness over efficiency. Include EVERY field mentioned in the task. Double-check that all required API fields are set. Search before creating. Use lookup_endpoint for any endpoint you're unsure about.",
-    },
-    {
-        "name": "creative",
-        "temperature": 0.7,
-        "prefix": "You are a CREATIVE planner. GET is FREE — search broadly before writing. Think carefully about the best approach for this specific task. Consider alternative workflows. Use lookup_endpoint freely to discover the right endpoints. Search before creating. Don't be afraid to use more GET steps to gather data.",
-    },
-]
-
-# Legacy aliases (kept for any external references)
-PLANNER_PROFILE = PLANNER_PROFILES[0]
-CHALLENGER_PROFILE = PLANNER_PROFILES[1]
+PLANNER_PROFILE = {
+    "name": "accountant",
+    "temperature": 0,
+    "prefix": "You are an expert Norwegian accountant planning Tripletex API calls. First understand the ACCOUNTING INTENT of the task — what is the business transaction? Then choose the correct Tripletex workflow. GET is FREE — use it to search and validate. Extract ALL values from the task. Use EXACTLY what the task says, never invent defaults. Minimize write calls.",
+}

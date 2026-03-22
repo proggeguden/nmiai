@@ -14,7 +14,7 @@ from langgraph.graph import END, StateGraph
 from logger import get_logger
 from prompts import (
     PLANNER_PROMPT,
-    PLANNER_PROFILES,
+    PLANNER_PROFILE,
 )
 from state import AgentState
 from tools import load_tools
@@ -1072,27 +1072,9 @@ def build_agent():
 
     llm = heal_llm
 
-    # --- Node: planner (multi-persona) ---
+    # --- Node: planner ---
     def planner(state: AgentState) -> dict:
-        import random
-        # Smart persona selection based on task complexity
-        prompt_lower = state["original_prompt"].lower()
-
-        simple_keywords = ["customer", "product", "department", "supplier",
-                           "kunde", "produkt", "avdeling", "leverandør", "client",
-                           "produit", "producto", "Kunde", "fournisseur", "fornecedor",
-                           "créez le client", "crie o cliente", "erstellen sie"]
-        complex_keywords = ["project", "lifecycle", "payroll", "salary", "year-end",
-                            "month-end", "reconcil", "prosjekt", "lønn", "årsoppgj",
-                            "nómina", "gehalt", "salaire", "clôture", "cierre"]
-
-        if any(kw in prompt_lower for kw in simple_keywords):
-            profile = PLANNER_PROFILES[0]  # precise (temp=0) — simple tasks need reliability
-        elif any(kw in prompt_lower for kw in complex_keywords):
-            profile = PLANNER_PROFILES[1]  # thorough (temp=0.3) — complex tasks need more fields
-        else:
-            # Unknown task type: weighted random favoring precise
-            profile = random.choices(PLANNER_PROFILES, weights=[60, 30, 10], k=1)[0]
+        profile = PLANNER_PROFILE
 
         prompt_text = PLANNER_PROMPT.format(
             today=date.today().isoformat(),
@@ -1407,22 +1389,6 @@ def build_agent():
 
         tool = tool_map[tool_name]
 
-        # Special handling for analyze_response: inject full step results as JSON
-        if tool_name == "analyze_response" and isinstance(resolved_args, dict):
-            step_refs = resolved_args.get("previous_step_results", "")
-            if isinstance(step_refs, str) and "$step_" in step_refs:
-                # Collect all referenced step results
-                import re as _re
-                step_nums = _re.findall(r'\$step_(\d+)', step_refs)
-                collected = {}
-                for sn in step_nums:
-                    key = f"step_{sn}"
-                    if key in results:
-                        collected[key] = results[key]
-                resolved_args["previous_step_results"] = json.dumps(collected, default=str)[:30000]
-            elif isinstance(step_refs, dict):
-                resolved_args["previous_step_results"] = json.dumps(step_refs, default=str)[:30000]
-
         # Schema pre-validation (auto-fix before hitting the API)
         if tool_name == "call_api":
             resolved_args = _validate_step_against_schema(resolved_args)
@@ -1452,21 +1418,6 @@ def build_agent():
                 parsed = json.loads(result_str)
             except (json.JSONDecodeError, TypeError):
                 parsed = {"raw": result_str}
-
-            # Detect analyze_response error results (tool succeeded but returned error JSON)
-            if tool_name == "analyze_response" and isinstance(parsed, dict) and "error" in parsed:
-                log.warning(f"Step {step['step_number']}: analyze_response returned error: {str(parsed.get('error', ''))[:200]}")
-                parsed["_error"] = True
-                results[f"step_{step['step_number']}"] = parsed
-                error_count += 1
-                completed.append(step["step_number"])
-                return {
-                    "current_step": step_idx + 1,
-                    "results": results,
-                    "completed_steps": completed,
-                    "error_count": error_count,
-                    "messages": [AIMessage(content=f"Step {step['step_number']} analyze_response error: {str(parsed.get('error', ''))[:100]}")],
-                }
 
             results[f"step_{step['step_number']}"] = _normalize_result(parsed)
             log.info(

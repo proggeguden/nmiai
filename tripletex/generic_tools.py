@@ -45,9 +45,6 @@ class LookupEndpointArgs(BaseModel):
     query: str = Field(description="Search keywords, e.g. 'supplier', 'payment type', 'voucher posting'")
 
 
-class AnalyzeResponseArgs(BaseModel):
-    previous_step_results: str = Field(description="JSON string of API response data from previous steps to analyze")
-    question: str = Field(description="What to compute/extract, e.g. 'Find the 3 expense accounts with the largest increase. Return JSON array [{name, number, increase}]'")
 
 
 def _format_card_for_lookup(card: dict) -> str:
@@ -189,63 +186,12 @@ def build_generic_tools(make_request_fn):
                 results.append(_format_index_entry(op_key, idx))
         return "\n\n".join(results) if results else "No matching endpoints found."
 
-    def analyze_response(previous_step_results: str, question: str) -> str:
-        """Analyze data from previous API responses. Use when you need to compute, filter, sort,
-        or extract specific values from API response data (e.g., 'find the 3 accounts with the largest increase').
-        Returns JSON with the extracted/computed answer."""
-        import os
-        import re
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        from langchain_core.messages import HumanMessage
-
-        api_key = os.environ.get("GOOGLE_API_KEY", "")
-        model_name = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
-
-        prompt = f"""Analyze the following API response data and answer the question.
-
-DATA:
-{previous_step_results[:30000]}
-
-QUESTION: {question}
-
-Return ONLY a valid JSON object with the answer. Use the exact field names requested in the question. No explanation, no markdown — just the JSON."""
-
-        try:
-            llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key, temperature=0)
-            response = llm.invoke([HumanMessage(content=prompt)])
-            content = response.content
-            if isinstance(content, list):
-                # Content blocks: [{'type': 'text', 'text': '...'}, ...] or [str, ...]
-                parts = []
-                for part in content:
-                    if isinstance(part, dict) and "text" in part:
-                        parts.append(part["text"])
-                    elif isinstance(part, str):
-                        parts.append(part)
-                    else:
-                        parts.append(str(part))
-                raw = "".join(parts).strip()
-            else:
-                raw = str(content).strip()
-            # Strip markdown code blocks if present
-            md_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', raw, re.DOTALL)
-            if md_match:
-                raw = md_match.group(1).strip()
-            # Validate JSON
-            json.loads(raw)
-            return raw
-        except json.JSONDecodeError:
-            # Try to extract any JSON from response
-            try:
-                json_match = re.search(r'[\[{].*[\]}]', raw, re.DOTALL)
-                if json_match:
-                    json.loads(json_match.group(0))
-                    return json_match.group(0)
-            except Exception:
-                pass
-            return json.dumps({"error": f"Could not parse JSON from analyze_response: {raw[:200]}"})
-        except Exception as e:
-            return json.dumps({"error": f"analyze_response failed: {str(e)[:200]}"})
+    # analyze_response REMOVED — was timing out (150-300s per LLM call).
+    # All use cases now handled by API query params:
+    # - Ledger analysis: GET /balanceSheet?sorting=-balanceChange&count=3
+    # - Find invoice: GET /invoice?customerId=X (planner knows amounts)
+    # - Bank reconciliation: POST /bank/statement/import + PUT /:suggest
+    # - Math: planner computes directly
 
     call_api_tool = StructuredTool.from_function(
         func=call_api,
@@ -261,14 +207,7 @@ Return ONLY a valid JSON object with the answer. Use the exact field names reque
         args_schema=LookupEndpointArgs,
     )
 
-    analyze_tool = StructuredTool.from_function(
-        func=analyze_response,
-        name="analyze_response",
-        description="Analyze data from previous API responses. Use to compute, filter, sort, or find top-N items from response data. Returns JSON.",
-        args_schema=AnalyzeResponseArgs,
-    )
-
-    return [call_api_tool, lookup_tool, analyze_tool]
+    return [call_api_tool, lookup_tool]
 
 
 def get_tier1_catalog() -> str:
