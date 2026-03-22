@@ -24,14 +24,18 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 
 ## Planning Principles
 1. **Include write operations.** Your plan MUST include POST/PUT steps that accomplish the task. But use as many GETs as needed — they're free.
-2. **SEARCH BEFORE CREATE.** Production has pre-existing data. GET /employee?email=X, GET /customer?organizationNumber=X, GET /product?number=X first. Only POST if not found. GETs are free, duplicate POSTs cost double.
+2. **Understand what exists vs what to create.** Read the task carefully:
+   - "Create customer X" → POST /customer (it's new)
+   - "Customer X has an invoice" → GET /customer (it already exists, find it)
+   - "Register employee X (email)" → GET /employee?email=X (they likely exist as a user)
+   - Never both GET AND POST for the same entity. Choose one based on the task intent.
 3. **EXTRACT ALL DATA FROM FILES.** If the task includes PDF/file attachments, read them carefully and extract EVERY piece of information: names, dates, amounts, department names, account numbers, org numbers, salary, employment percentage, occupation codes, addresses. Use the EXACT values from the files — never invent placeholder data.
-4. **Handle departments and divisions yourself.** If you need a department, create it with the correct name from the task/file. If you need a division for employment, GET /division first — if none exists, create one with POST /division. Do NOT rely on the system to create these for you.
+4. **Handle departments and divisions yourself.** Create departments with the correct name from the task/file (POST /department). For divisions needed for employment, create one with POST /division (fields: name, startDate, organizationNumber, municipality, municipalityDate).
 4. **Use bulk /list endpoints** for 2+ entities: POST /department/list, /product/list, /customer/list, etc.
 5. **Use values from the task, not defaults.** If the task says "born 13 September 1993", use "1993-09-13". If it says "hourly wage", use remunerationType "HOURLY_WAGE". If it says "admin", use userType "EXTENDED".
 6. **Use lookup_endpoint** for unfamiliar endpoints.
 7. **Compute ALL math directly in the plan.** Depreciation = cost / lifetime_years. Monthly = annual / 12. Tax = 22% of taxable income. Write literal computed values in the body. NEVER delegate arithmetic to an LLM tool.
-8. **Missing accounts**: Some ledger accounts may not exist. GET /ledger/account?number=XXXX first. If empty, POST /ledger/account {{"number": XXXX, "name": "Account name"}} to create it. Use the OR fallback: $step_GET.id || $step_POST.id.
+8. **Ledger accounts**: Standard accounts (1920, 2400, 6010, etc.) usually exist — just GET them. Non-standard accounts (1209, 6030, 8700, 2920) may not exist — GET first, if empty then POST to create.
 9. **Use API sorting/filtering instead of data analysis.** GET /balanceSheet supports sorting=-balanceChange&count=3&accountNumberFrom=4000&accountNumberTo=9999 to get top expense accounts directly. GET /invoice supports customerId filter. Do NOT use extra tools to analyze API data — use query params.
 
 ## API Constraints (prevent 422 errors)
@@ -53,7 +57,7 @@ produce a JSON array of execution steps. Each step calls the call_api tool with 
 - **Send invoice**: PUT /invoice/ID/:send with query_params sendType="EMAIL". The invoice ID comes from PUT /order/:invoice response ($step_N.id).
 - **Cancel/reverse payment**: PUT /invoice/ID/:payment with NEGATIVE paidAmount and NEGATIVE paidAmountCurrency
 - **Credit note**: PUT /invoice/ID/:createCreditNote with query_params date={today}
-- **Foreign currency invoices (agio/disagio)**: PUT /invoice/ID/:payment needs BOTH paidAmount (NOK amount at current rate) AND paidAmountCurrency (amount in invoice currency). Tripletex auto-calculates the exchange rate difference. Use GET /currency?code=EUR to find currency, then compute: paidAmount = invoiceAmount × currentRate, paidAmountCurrency = invoiceAmount.
+- **Foreign currency invoices (agio/disagio)**: The invoice ALREADY EXISTS — find it with GET /invoice?customerId=X. Then PUT /invoice/ID/:payment (note the /:payment suffix!) with BOTH paidAmount (NOK = amount × currentRate) AND paidAmountCurrency (foreign amount). Tripletex auto-calculates the exchange rate difference. Do NOT create a new invoice — the task says "we sent an invoice" meaning it already exists.
 - **Timesheet entries**: POST /timesheet/entry (NOT /timesheetEntry!). Required: employee:{{"id"}}, activity:{{"id"}}, date, hours. Use PROJECT_GENERAL_ACTIVITY for project timesheets. For bulk: POST /timesheet/entry/list.
 - **Voucher periodization**: Postings can have amortizationAccount, amortizationStartDate, amortizationEndDate to auto-spread expenses across months. Useful for prepaid expenses.
 - **Voucher reversal**: PUT /ledger/voucher/ID/:reverse with query_params date=YYYY-MM-DD. Auto-creates reverse voucher.
