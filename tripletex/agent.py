@@ -7,7 +7,7 @@ import time
 from datetime import date
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 
@@ -118,10 +118,7 @@ def validate_plan(plan: list[dict]) -> list[dict]:
         )
         log.info("Validation: prepended ensure_bank_account step for invoicing plan")
 
-    # ── A2/B4: REMOVED ensure_division and ensure_department ──
-    # These were OVERRIDING the planner's correct department/division handling with dummy data
-    # ("Avdeling", org number "999999999"). The planner should handle departments and divisions
-    # correctly using data from the task/PDF. If it doesn't, fix the planner, not the validator.
+    # (A2/B4 removed — planner handles departments and divisions directly)
     for step in plan:
         if step.get("tool_name") != "call_api":
             continue
@@ -798,115 +795,9 @@ def _ensure_bank_account(call_api_tool, error_count: int) -> tuple[str, dict, in
     return search_result, parsed, error_count
 
 
-def _ensure_division(call_api_tool, error_count: int) -> tuple[str, dict, int]:
-    """Ensure a company division exists (required for employment).
 
-    Searches for existing divisions first; creates one if none found.
-    Returns (result_str, parsed, error_count) where parsed has {value: {id: N}}.
-    """
-    from datetime import date
-
-    # Step 1: Check for existing division
-    search_result = call_api_tool.invoke(
-        {
-            "method": "GET",
-            "path": "/division",
-            "query_params": {"from": 0, "count": 1, "fields": "id,name"},
-        }
-    )
-
-    try:
-        parsed = json.loads(search_result)
-        values = parsed.get("values", [])
-        if values:
-            log.info(
-                f"Division already exists: {values[0].get('name', '?')} (id={values[0].get('id')})"
-            )
-            return search_result, {"value": values[0]}, error_count
-    except (json.JSONDecodeError, TypeError):
-        pass
-
-    # Step 2: Create division with a dummy sub-unit org number
-    # (company's own org number is a legal entity and cannot be used for divisions)
-    today = date.today().isoformat()
-    log.info("Creating division with dummy sub-unit org number")
-    create_result = call_api_tool.invoke(
-        {
-            "method": "POST",
-            "path": "/division",
-            "body": {
-                "name": "Hovedvirksomhet",
-                "startDate": today,
-                "organizationNumber": "999999999",
-                "municipality": {"id": 1},
-                "municipalityDate": today,
-            },
-        }
-    )
-
-    try:
-        parsed = json.loads(create_result)
-        status = parsed.get("status", 0)
-        if isinstance(status, int) and status >= 400:
-            log.warning(f"Failed to create division: {create_result[:500]}")
-            error_count += 1
-        else:
-            log.info(
-                f"Division created successfully (id={parsed.get('value', {}).get('id')})"
-            )
-    except (json.JSONDecodeError, TypeError):
-        parsed = {"raw": create_result}
-
-    return create_result, parsed, error_count
-
-
-def _ensure_department(call_api_tool, error_count: int) -> tuple[str, dict, int]:
-    """Ensure a department exists (required for employee creation).
-
-    Searches for existing departments first; creates one if none found.
-    Returns (result_str, parsed, error_count) where parsed has {value: {id: N}}.
-    """
-    search_result = call_api_tool.invoke(
-        {
-            "method": "GET",
-            "path": "/department",
-            "query_params": {"from": 0, "count": 1, "fields": "id,name"},
-        }
-    )
-
-    try:
-        parsed = json.loads(search_result)
-        values = parsed.get("values", [])
-        if values:
-            log.info(
-                f"Department already exists: {values[0].get('name', '?')} (id={values[0].get('id')})"
-            )
-            return search_result, {"value": values[0]}, error_count
-    except (json.JSONDecodeError, TypeError):
-        pass
-
-    # No departments found — create a default one
-    log.info("No departments found, creating default department")
-    create_result = call_api_tool.invoke(
-        {
-            "method": "POST",
-            "path": "/department",
-            "body": {"name": "Avdeling"},
-        }
-    )
-
-    try:
-        parsed = json.loads(create_result)
-        status = parsed.get("status", 0)
-        if isinstance(status, int) and status >= 400:
-            log.warning(f"Failed to create department: {create_result[:500]}")
-            error_count += 1
-        else:
-            log.info(f"Department created (id={parsed.get('value', {}).get('id')})")
-    except (json.JSONDecodeError, TypeError):
-        parsed = {"raw": create_result}
-
-    return create_result, parsed, error_count
+# _ensure_division and _ensure_department REMOVED in Round 36.
+# They created dummy data that hurt scoring. The planner handles departments/divisions now.
 
 
 def _shift_step_refs(obj, offset: int, min_step: int = 0):
@@ -1261,7 +1152,6 @@ def build_agent():
             "results": {},
             "completed_steps": [],
             "error_count": state.get("error_count", 0),
-            "healed_steps": [],
             "messages": [AIMessage(content=f"Plan ({len(best)} steps): {json.dumps(best)}")],
         }
 
@@ -1378,7 +1268,6 @@ def build_agent():
         step_idx = state["current_step"]
         results = dict(state.get("results", {}))
         error_count = state.get("error_count", 0)
-        healed_steps = list(state.get("healed_steps", []))
         completed = list(state.get("completed_steps", []))
 
         # Deadline enforcement — stop starting new steps if we're past 240s
@@ -1390,7 +1279,6 @@ def build_agent():
                 "results": results,
                 "completed_steps": completed,
                 "error_count": error_count,
-                "healed_steps": healed_steps,
                 "messages": [AIMessage(content="DEADLINE: aborting remaining steps")],
             }
 
@@ -1423,56 +1311,9 @@ def build_agent():
                     "results": results,
                     "completed_steps": completed,
                     "error_count": error_count,
-                    "healed_steps": healed_steps,
                     "messages": [
                         AIMessage(
                             content=f"Step {step['step_number']} done: bank account ensured"
-                        )
-                    ],
-                }
-
-        # Handle ensure_department meta-step
-        if tool_name == "ensure_department":
-            call_api_tool = tool_map.get("call_api")
-            if call_api_tool:
-                result_str, parsed, error_count = _ensure_department(
-                    call_api_tool, error_count
-                )
-                results[f"step_{step['step_number']}"] = _normalize_result(parsed)
-                log.info(f"Step {step['step_number']} completed: department ensured")
-                completed.append(step["step_number"])
-                return {
-                    "current_step": step_idx + 1,
-                    "results": results,
-                    "completed_steps": completed,
-                    "error_count": error_count,
-                    "healed_steps": healed_steps,
-                    "messages": [
-                        AIMessage(
-                            content=f"Step {step['step_number']} done: department ensured"
-                        )
-                    ],
-                }
-
-        # Handle ensure_division meta-step
-        if tool_name == "ensure_division":
-            call_api_tool = tool_map.get("call_api")
-            if call_api_tool:
-                result_str, parsed, error_count = _ensure_division(
-                    call_api_tool, error_count
-                )
-                results[f"step_{step['step_number']}"] = _normalize_result(parsed)
-                log.info(f"Step {step['step_number']} completed: division ensured")
-                completed.append(step["step_number"])
-                return {
-                    "current_step": step_idx + 1,
-                    "results": results,
-                    "completed_steps": completed,
-                    "error_count": error_count,
-                    "healed_steps": healed_steps,
-                    "messages": [
-                        AIMessage(
-                            content=f"Step {step['step_number']} done: division ensured"
                         )
                     ],
                 }
@@ -1500,7 +1341,6 @@ def build_agent():
                 "current_step": step_idx + 1,
                 "results": results,
                 "error_count": error_count,
-                "healed_steps": healed_steps,
                 "completed_steps": completed,
                 "messages": [
                     AIMessage(
@@ -1543,7 +1383,6 @@ def build_agent():
                                     "results": results,
                                     "completed_steps": completed,
                                     "error_count": error_count,
-                                    "healed_steps": healed_steps,
                                     "messages": [
                                         AIMessage(
                                             content=f"Step {step['step_number']} skipped: employee {emp_email} already exists (id={v.get('id')})"
@@ -1562,7 +1401,6 @@ def build_agent():
                 "current_step": step_idx + 1,
                 "results": results,
                 "error_count": error_count,
-                "healed_steps": healed_steps,
                 "completed_steps": completed,
                 "messages": [AIMessage(content=f"Error: {error_msg}")],
             }
@@ -1602,7 +1440,6 @@ def build_agent():
                 "current_step": step_idx + 1,
                 "results": results,
                 "error_count": error_count,
-                "healed_steps": healed_steps,
                 "completed_steps": completed,
                 "messages": [AIMessage(content=f"Error: {error_msg}")],
             }
@@ -1628,7 +1465,6 @@ def build_agent():
                     "results": results,
                     "completed_steps": completed,
                     "error_count": error_count,
-                    "healed_steps": healed_steps,
                     "messages": [AIMessage(content=f"Step {step['step_number']} analyze_response error: {str(parsed.get('error', ''))[:100]}")],
                 }
 
@@ -1643,7 +1479,6 @@ def build_agent():
                 "results": results,
                 "completed_steps": completed,
                 "error_count": error_count,
-                "healed_steps": healed_steps,
                 "messages": [
                     AIMessage(
                         content=f"Step {step['step_number']} done: {str(parsed)[:200]}"
@@ -1665,7 +1500,6 @@ def build_agent():
                 "results": results,
                 "completed_steps": completed,
                 "error_count": error_count,
-                "healed_steps": healed_steps,
                 "messages": [AIMessage(content=f"ABORTED: 403 on step {step['step_number']}")],
             }
 
@@ -1690,7 +1524,6 @@ def build_agent():
                             "results": results,
                             "completed_steps": completed,
                             "error_count": error_count,
-                            "healed_steps": healed_steps,
                             "messages": [AIMessage(content=f"Step {step['step_number']} done (bank account fixed)")],
                         }
                 except Exception:
@@ -1728,7 +1561,6 @@ def build_agent():
                                 "results": results,
                                 "completed_steps": completed,
                                 "error_count": error_count,  # Don't count as error — we recovered
-                                "healed_steps": healed_steps,
                                 "messages": [AIMessage(content=f"Step {step['step_number']} done (found existing employee)")],
                             }
                     except (json.JSONDecodeError, TypeError):
@@ -1755,7 +1587,6 @@ def build_agent():
             "results": results,
             "completed_steps": completed,
             "error_count": error_count,
-            "healed_steps": healed_steps,
             "messages": [
                 AIMessage(
                     content=f"Step {step['step_number']} failed: {str(parsed)[:200]}"
@@ -1967,7 +1798,6 @@ def run_agent(agent, prompt: str, file_attachments: list = None) -> None:
         "results": {},
         "completed_steps": [],
         "error_count": 0,
-        "healed_steps": [],
         "original_prompt": original_prompt,
         "file_content_parts": file_content_parts,
         "deadline": time.monotonic() + 250,  # 250s budget, 50s safety margin for 300s Cloud Run timeout
@@ -1979,13 +1809,11 @@ def run_agent(agent, prompt: str, file_attachments: list = None) -> None:
     # Log final state
     completed = result.get("completed_steps", [])
     errors = result.get("error_count", 0)
-    healed = result.get("healed_steps", [])
     log.info(
         "Agent finished",
         completed_steps=len(completed),
         total_steps=len(result.get("plan", [])),
         errors=errors,
-        healed_steps=len(healed),
     )
 
 
