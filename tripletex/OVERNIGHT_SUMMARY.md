@@ -139,3 +139,25 @@ Key commits since last stable (Round 38, revision 00070):
 - No new logs to analyze (user sleeping, no new submissions)
 - Phase 2 planner literal {id} paths (mitigated by validate_plan skip)
 - VAT code mismatch on locked accounts
+
+---
+
+## Self-Improve Cycle 4 (2026-03-22 ~07:45 UTC)
+
+### Failures Found
+- Phase 2 planner generates literal `{id}` in paths (5 occurrences in logs)
+- ID Resolution section in PLAN_PROMPT_V2 was too terse — didn't show path substitution
+
+### Fixes Applied
+1. **prompts.py PLAN_PROMPT_V2**: Expanded ID Resolution section with explicit examples:
+   - Shows `$step_N.id` in path: `"/order/$step_3.id/:invoice"`
+   - Shows flat ID fields: `"vendorId": "$step_1.id"`
+   - Added: "NEVER use literal {id} in paths — always use $step_N.id"
+   - Added output example showing path substitution
+
+### Commits
+- `9fc42a4`: Self-improve cycle 4: Improve Phase 2 ID resolution
+
+### Remaining Issues
+- No new logs — all fixes are proactive improvements based on known patterns
+- Total overnight commits: 4 (resolver fallback, incomingInvoice restructure, municipality validation, ID resolution)
