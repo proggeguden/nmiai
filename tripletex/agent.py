@@ -1772,10 +1772,37 @@ def build_agent():
                         }
                     else:
                         log.warning(f"Bank statement upload failed: {result_str[:300]}")
+                        # Return error — do NOT fall through to JSON POST (would also fail)
+                        try:
+                            parsed = json.loads(result_str)
+                        except (json.JSONDecodeError, TypeError):
+                            parsed = {"raw": result_str}
+                        parsed["_error"] = True
+                        results[f"step_{step['step_number']}"] = parsed
+                        error_count += 1
+                        completed.append(step["step_number"])
+                        return {
+                            "current_step": step_idx + 1,
+                            "results": results,
+                            "completed_steps": completed,
+                            "error_count": error_count,
+                            "messages": [AIMessage(content=f"Step {step['step_number']} failed: bank upload error")],
+                        }
                 except Exception as e:
                     log.warning(f"Bank statement upload error: {e}")
             else:
                 log.warning("Bank statement import step but no CSV file in raw_files")
+            # Skip the normal JSON POST path for bank import — it requires multipart
+            results[f"step_{step['step_number']}"] = {"_error": True, "error": "bank statement upload not possible"}
+            error_count += 1
+            completed.append(step["step_number"])
+            return {
+                "current_step": step_idx + 1,
+                "results": results,
+                "completed_steps": completed,
+                "error_count": error_count,
+                "messages": [AIMessage(content=f"Step {step['step_number']} failed: bank statement upload")],
+            }
 
         # First attempt
         try:
