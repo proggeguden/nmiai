@@ -52,7 +52,7 @@ If you don't know an account number, GET /ledger/account to search. If you don't
 - **Voucher postings**: use amountGross AND amountGrossCurrency (both same value). debit=positive, credit=negative, must sum to 0. Do NOT send voucherType or dueDate. INPUT VAT IDs: 1=25%, 11=15%, 13=12%. **Postings to account 1500 (Kundefordringer) MUST include customer:{{"id": N}}.**
 - **Action endpoints** (/:invoice, /:payment, /:send, /:createCreditNote, /:createReminder): ALL params in query_params, NOT body
 - **Payment must be separate from /:invoice**: first PUT /order/ID/:invoice (only invoiceDate), then GET /invoice/paymentType, then PUT /invoice/ID/:payment with paymentDate + paymentTypeId + paidAmount=$step_INVOICE.amount + paidAmountCurrency=$step_INVOICE.amount. NEVER hardcode paymentTypeId=0. The invoice response field is `amount` (NOT amountIncVat).
-- **Employee 3-step chain — EVERY employee needs this, even side-effects**: POST /department → POST /division (ALWAYS create one — fresh accounts have none) → POST /employee (dateOfBirth from task, department ref, NEVER use 1990-01-01) → POST /employee/employment (employee ref, division ref, startDate) → POST /employee/employment/details (employment ref, all fields from task). Without employment+details, the employee scores 0.
+- **Employee chain — EVERY employee needs ALL of these**: POST /department (ALWAYS create, never GET) → POST /division (fresh accounts have none) → POST /employee (dateOfBirth from task, department ref, NEVER use 1990-01-01) → POST /employee/employment (employee ref, division ref, startDate) → POST /employee/employment/details (employment ref, all fields from task: annualSalary, percentageOfFullTimeEquivalent, remunerationType, employmentType=ORDINARY, employmentForm=PERMANENT, workingHoursScheme=NOT_SHIFT) → POST /employee/standardTime (employee ref, fromDate=startDate, hoursPerDay=7.5 unless task specifies otherwise). Without employment+details+standardTime, the employee scores 0.
 - **Department name**: Extract from task if specified. NEVER use "General".
 - **occupationCode** is optional — SKIP IT unless the task gives an explicit code number. Do NOT look it up via any API endpoint (they return empty). If needed, just use {{"id": <number_from_task>}}
 - **Product conflicts**: NEVER send priceIncludingVatCurrency alongside priceExcludingVatCurrency
@@ -180,7 +180,7 @@ PLAN_PROMPT_V2 = """You are an API planner for Tripletex. You receive a structur
 - Voucher postings: amountGross + amountGrossCurrency, debit=positive, credit=negative, sum to 0. Account 1500 MUST include customer ref. INPUT VAT: 1=25%, 11=15%, 13=12%.
 - Action endpoints (/:invoice, /:payment, /:send, /:createCreditNote, /:createReminder): params in query_params, NOT body
 - Payment: GET /invoice/paymentType → use first result's id. Then PUT /invoice/ID/:payment with paymentDate + paymentTypeId=$step_PT.id + paidAmount=$step_INV.amount + paidAmountCurrency=$step_INV.amount. NEVER hardcode paymentTypeId=0.
-- Employee: ALWAYS CREATE departments and divisions — POST /department (NEVER GET, they probably don't exist). Then POST /division → POST /employee → POST /employment (with division ref) → POST /employment/details. Without employment+details, employee scores 0.
+- Employee: ALWAYS CREATE departments and divisions — POST /department (NEVER GET, they probably don't exist). Then POST /division → POST /employee → POST /employment (with division ref) → POST /employment/details (annualSalary, percentageOfFullTimeEquivalent, remunerationType, employmentType=ORDINARY, employmentForm=PERMANENT, workingHoursScheme=NOT_SHIFT) → POST /employee/standardTime (employee ref, fromDate=startDate, hoursPerDay=7.5). ALL steps required — without any, employee scores 0.
 - Supplier invoice: POST /incomingInvoice?sendTo=ledger. Each orderLine MUST have externalId (string, e.g. "1")
 - Customer addresses: BOTH postalAddress AND physicalAddress
 - Project: fixedprice (lowercase p). projectManager is MANDATORY — the API WILL 422 without it. Flow: GET /employee → PUT /employee/entitlement/:grantEntitlementsByTemplate?employeeId=N&template=ALL_PRIVILEGES → POST /project with projectManager:{{"id": $step_N.id}}. Even INTERNAL projects MUST have a projectManager.
@@ -210,6 +210,8 @@ PLAN_PROMPT_V2 = """You are an API planner for Tripletex. You receive a structur
 - PUT /bank/reconciliation/match/:suggest: auto-match payments
 - POST /ledger/account: {{number: N, name: "..."}}
 - GET /ledger/posting: params dateFrom, dateTo, accountNumberFrom, accountNumberTo
+- POST /employee/standardTime: {{employee:{{id}}, fromDate: "YYYY-MM-DD", hoursPerDay: 7.5}} — REQUIRED for employee onboarding
+- GET /invoice/paymentType: returns valid payment types. Use $step_N.id as paymentTypeId for /:payment calls
 
 ## ID Resolution — CRITICAL
 Use $step_N.id to reference the ID from step N. This works everywhere:
