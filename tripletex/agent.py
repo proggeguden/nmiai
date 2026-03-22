@@ -583,6 +583,15 @@ def validate_plan(plan: list[dict]) -> list[dict]:
                     for f in ("paidAmount", "paidAmountCurrency", "paymentTypeId"):
                         qp.pop(f, None)
                     log.info("Validation: stripped paymentTypeId=0 from /:invoice (invalid, payment must be separate)")
+
+        # Fix 3c: Strip paymentTypeId=0 from /:payment endpoints too (causes 500)
+        if method == "PUT" and "/:payment" in path:
+            qp = args.get("query_params", {})
+            if isinstance(qp, dict):
+                pt_id = qp.get("paymentTypeId")
+                if pt_id == 0 or pt_id == "0":
+                    qp.pop("paymentTypeId", None)
+                    log.info("Validation: stripped paymentTypeId=0 from /:payment (invalid, causes 500)")
                 if "invoiceDate" not in qp:
                     qp["invoiceDate"] = date.today().isoformat()
                     log.info("Validation: auto-injected invoiceDate for /:invoice")
@@ -1868,6 +1877,161 @@ def build_agent():
                             }
                     except (json.JSONDecodeError, TypeError):
                         pass
+
+        # ── Deterministic fix: /:payment with invalid/missing paymentTypeId → GET valid one and retry ──
+        if (
+            status_code in (500, 422)
+            and resolved_args.get("method") == "PUT"
+            and "/:payment" in resolved_args.get("path", "")
+        ):
+            call_api_tool = tool_map.get("call_api")
+            if call_api_tool:
+                log.info("Deterministic fix: /:payment failed, fetching valid paymentTypeId")
+                try:
+                    pt_result = call_api_tool.invoke({
+                        "method": "GET", "path": "/invoice/paymentType",
+                        "query_params": {"count": 1},
+                    })
+                    pt_parsed = json.loads(pt_result)
+                    pt_values = pt_parsed.get("values", [])
+                    if pt_values:
+                        valid_pt_id = pt_values[0].get("id")
+                        qp = resolved_args.get("query_params", {})
+                        if isinstance(qp, dict):
+                            qp["paymentTypeId"] = valid_pt_id
+                            resolved_args["query_params"] = qp
+                        retry_result_str = tool.invoke(resolved_args)
+                        retry_is_error, _ = _is_api_error(retry_result_str)
+                        if not retry_is_error:
+                            parsed = json.loads(retry_result_str)
+                            results[f"step_{step['step_number']}"] = _normalize_result(parsed)
+                            completed.append(step["step_number"])
+                            log.info(f"Step {step['step_number']} done (fixed paymentTypeId={valid_pt_id})")
+                            return {
+                                "current_step": step_idx + 1,
+                                "results": results,
+                                "completed_steps": completed,
+                                "error_count": error_count,
+                                "messages": [AIMessage(content=f"Step {step['step_number']} done (paymentTypeId fixed)")],
+                            }
+                except Exception as e:
+                    log.warning(f"paymentTypeId fix failed: {e}")
+
+        # ── Deterministic fix: POST /project missing projectManager → GET any employee and retry ──
+        if (
+            status_code == 422
+            and resolved_args.get("method") == "POST"
+            and resolved_args.get("path") in ("/project", "/project/list")
+            and ("prosjektleder" in error_lower or "projectmanager" in error_lower)
+        ):
+            call_api_tool = tool_map.get("call_api")
+            if call_api_tool:
+                log.info("Deterministic fix: POST /project missing projectManager, fetching first employee")
+                try:
+                    emp_result = call_api_tool.invoke({
+                        "method": "GET", "path": "/employee",
+                        "query_params": {"count": 1},
+                    })
+                    emp_parsed = json.loads(emp_result)
+                    emp_values = emp_parsed.get("values", [])
+                    if emp_values:
+                        pm_id = emp_values[0].get("id")
+                        # Inject projectManager into body
+                        body = resolved_args.get("body", {})
+                        if isinstance(body, dict):
+                            body["projectManager"] = {"id": pm_id}
+                        elif isinstance(body, list):
+                            for item in body:
+                                if isinstance(item, dict) and "projectManager" not in item:
+                                    item["projectManager"] = {"id": pm_id}
+                        resolved_args["body"] = body
+                        retry_result_str = tool.invoke(resolved_args)
+                        retry_is_error, _ = _is_api_error(retry_result_str)
+                        if not retry_is_error:
+                            parsed = json.loads(retry_result_str)
+                            results[f"step_{step['step_number']}"] = _normalize_result(parsed)
+                            completed.append(step["step_number"])
+                            log.info(f"Step {step['step_number']} done (injected projectManager={pm_id})")
+                            return {
+                                "current_step": step_idx + 1,
+                                "results": results,
+                                "completed_steps": completed,
+                                "error_count": error_count,
+                                "messages": [AIMessage(content=f"Step {step['step_number']} done (projectManager fixed)")],
+                            }
+                except Exception as e:
+                    log.warning(f"projectManager fix failed: {e}")
+
+        # ── Deterministic fix: 403 on /incomingInvoice → fallback to /ledger/voucher ──
+        if (
+            status_code == 403
+            and "/incomingInvoice" in resolved_args.get("path", "")
+        ):
+            log.info("Deterministic fix: /incomingInvoice 403 → falling back to /ledger/voucher")
+            call_api_tool = tool_map.get("call_api")
+            if call_api_tool:
+                try:
+                    # Extract invoice data from the original body
+                    orig_body = resolved_args.get("body", {})
+                    header = orig_body.get("invoiceHeader", {})
+                    order_lines = orig_body.get("orderLines", [])
+
+                    # Build voucher postings from incomingInvoice data
+                    postings = []
+                    total_gross = 0
+                    for ol in order_lines:
+                        amount = ol.get("amountInclVat") or ol.get("amount") or 0
+                        total_gross += amount
+                        posting = {
+                            "account": {"id": ol.get("accountId")},
+                            "amountGross": amount,
+                            "amountGrossCurrency": amount,
+                        }
+                        if ol.get("vatTypeId"):
+                            posting["vatType"] = {"id": ol["vatTypeId"]}
+                        postings.append(posting)
+
+                    # Credit posting to AP account (2400)
+                    if total_gross:
+                        # Find AP account
+                        ap_result = call_api_tool.invoke({
+                            "method": "GET", "path": "/ledger/account",
+                            "query_params": {"number": "2400", "count": 1},
+                        })
+                        ap_parsed = json.loads(ap_result)
+                        ap_values = ap_parsed.get("values", [])
+                        if ap_values:
+                            postings.append({
+                                "account": {"id": ap_values[0]["id"]},
+                                "amountGross": -total_gross,
+                                "amountGrossCurrency": -total_gross,
+                            })
+
+                    voucher_body = {
+                        "date": header.get("invoiceDate", date.today().isoformat()),
+                        "description": header.get("description", "Supplier invoice (fallback)"),
+                        "postings": postings,
+                    }
+                    voucher_result = call_api_tool.invoke({
+                        "method": "POST", "path": "/ledger/voucher",
+                        "body": voucher_body,
+                    })
+                    v_is_error, _ = _is_api_error(voucher_result)
+                    if not v_is_error:
+                        parsed = json.loads(voucher_result)
+                        results[f"step_{step['step_number']}"] = _normalize_result(parsed)
+                        completed.append(step["step_number"])
+                        error_count += 1  # The original 403 still counts
+                        log.info(f"Step {step['step_number']} done (incomingInvoice→voucher fallback)")
+                        return {
+                            "current_step": step_idx + 1,
+                            "results": results,
+                            "completed_steps": completed,
+                            "error_count": error_count,
+                            "messages": [AIMessage(content=f"Step {step['step_number']} done (voucher fallback)")],
+                        }
+                except Exception as e:
+                    log.warning(f"incomingInvoice→voucher fallback failed: {e}")
 
         # ── All other errors: fail fast, mark with _error ──
         # NO replan — it was burning 150-300s per attempt and causing timeouts.

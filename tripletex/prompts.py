@@ -36,7 +36,7 @@ If you don't know an account number, GET /ledger/account to search. If you don't
    - "Register employee X (email)" → GET /employee?email=X (they likely exist as a user)
    - "Order with products A and B" → each product may or may not exist. If a product has a number, it likely exists — just GET it. Only POST products that don't exist yet.
    - Never both GET AND POST for the SAME entity. If GET found it, use the GET result — do NOT also POST it.
-3. **UNDERSTAND FILES DEEPLY.** If the task includes PDF/file attachments (receipts, contracts, invoices), understand the STRUCTURE: what is the vendor/store, what are the line items, what are the amounts, dates, references. Extract ONLY what the task asks about — if the task says "we need the Whiteboard from this receipt", post only the Whiteboard line item, not everything on the receipt. Use file data as the source of truth for amounts, dates, and descriptions.
+3. **UNDERSTAND FILES DEEPLY — EXTRACT INDIVIDUAL LINE ITEMS.** If the task includes PDF/file attachments (receipts, contracts, invoices), parse EVERY line item separately: product name, quantity, unit price, VAT, total per line. If the task says "we need the Whiteboard from this receipt" but the receipt also contains a Mouse, you MUST calculate and use ONLY the Whiteboard's line-item amount (net + VAT for that item alone). NEVER use the receipt grand total when the task asks for a specific item. Use the line-item net price + VAT for that specific product as the voucher amount.
 4. **Handle departments and divisions yourself.** Create departments with the correct name from the task/file (POST /department). For divisions needed for employment, create one with POST /division (fields: name, startDate, organizationNumber, municipality, municipalityDate).
 4. **Use bulk /list endpoints** for 2+ entities: POST /department/list, /product/list, /customer/list, etc.
 5. **Use values from the task, not defaults.** If the task says "born 13 September 1993", use "1993-09-13". If it says "hourly wage", use remunerationType "HOURLY_WAGE". If it says "admin", use userType "EXTENDED".
@@ -44,6 +44,7 @@ If you don't know an account number, GET /ledger/account to search. If you don't
 7. **Compute ALL math directly in the plan.** Depreciation = cost / lifetime_years. Monthly = annual / 12. Tax = 22% of taxable income. Write literal computed values in the body. NEVER delegate arithmetic to an LLM tool.
 8. **Ledger accounts**: Standard accounts (1920, 2400, 6010, etc.) usually exist — just GET them. Non-standard accounts (1209, 6030, 8700, 2920) may not exist — GET first, if empty then POST to create.
 9. **Use filter_data for data analysis.** For ledger analysis: GET /balanceSheet?accountNumberFrom=4000&accountNumberTo=9999&count=1000&fields=account(id,number,name),balanceChange, then filter_data(previous_step="1", operation="sort_desc", field="balanceChange", count=3). IMPORTANT: include fields=account(id,number,name) so account names are available in results.
+   **For period comparisons** ("costs increased from January to February"): GET /balanceSheet for EACH period separately, then use filter_data with operation="sort_desc" on field="balanceChange" for each period. Then COMPUTE the differences yourself (Feb amount - Jan amount) and pick the top N by DIFFERENCE. Do NOT just take the top N from one period — the task asks about the CHANGE.
 10. **Only reference fields that exist in API responses.** After PUT /order/:invoice, the invoice has $step_N.id and $step_N.amount (NOT amountIncVat). Check the API response structure before referencing fields. When unsure, use $step_N.id for the entity ID and look up other fields with a separate GET.
 
 ## API Constraints (prevent 422 errors)
@@ -120,6 +121,7 @@ UNDERSTAND_PROMPT = """Analyze this accounting task and produce a structured und
 ## Instructions
 Read the task carefully (may be in Norwegian, English, Spanish, Portuguese, Nynorsk, German, French).
 Extract ALL data from the task and any attached files (PDFs, receipts, contracts).
+For RECEIPTS: parse EVERY line item individually (product, quantity, unit price, VAT per line, line total). If the task asks about a SPECIFIC item, include ONLY that item's amount in your output — NOT the receipt grand total.
 Do NOT translate field values — keep names, descriptions, department names exactly as written.
 Compute all math directly (depreciation = cost / years, tax = 22% of result, monthly = annual / 12).
 
@@ -177,11 +179,11 @@ PLAN_PROMPT_V2 = """You are an API planner for Tripletex. You receive a structur
 - deliveryDate REQUIRED on orders
 - Voucher postings: amountGross + amountGrossCurrency, debit=positive, credit=negative, sum to 0. Account 1500 MUST include customer ref. INPUT VAT: 1=25%, 11=15%, 13=12%.
 - Action endpoints (/:invoice, /:payment, /:send, /:createCreditNote, /:createReminder): params in query_params, NOT body
-- Payment separate from /:invoice. Use $step_N.amount for payment amount.
+- Payment: GET /invoice/paymentType → use first result's id. Then PUT /invoice/ID/:payment with paymentDate + paymentTypeId=$step_PT.id + paidAmount=$step_INV.amount + paidAmountCurrency=$step_INV.amount. NEVER hardcode paymentTypeId=0.
 - Employee: POST /department → POST /employee → POST /division → POST /employment → POST /employment/details
 - Supplier invoice: POST /incomingInvoice?sendTo=ledger. Each orderLine MUST have externalId (string, e.g. "1")
 - Customer addresses: BOTH postalAddress AND physicalAddress
-- Project: fixedprice (lowercase p), isInternal false. projectManager needs PUT /employee/entitlement/:grantEntitlementsByTemplate?employeeId=N&template=ALL_PRIVILEGES BEFORE POST /project
+- Project: fixedprice (lowercase p). projectManager is MANDATORY — the API WILL 422 without it. Flow: GET /employee → PUT /employee/entitlement/:grantEntitlementsByTemplate?employeeId=N&template=ALL_PRIVILEGES → POST /project with projectManager:{{"id": $step_N.id}}. Even INTERNAL projects MUST have a projectManager.
 - Custom dimensions: POST individually (NO /list bulk)
 - GET /invoice needs invoiceDateFrom + invoiceDateTo
 - GET /balanceSheet needs dateFrom + dateTo. Add fields=account(id,number,name).
@@ -191,7 +193,8 @@ PLAN_PROMPT_V2 = """You are an API planner for Tripletex. You receive a structur
 - Foreign currency: paidAmount (NOK) AND paidAmountCurrency (foreign)
 - Timesheet: POST /timesheet/entry (NOT /timesheetEntry)
 - Missing accounts: GET first, POST /ledger/account if empty
-- Ledger analysis: GET /balanceSheet + filter_data sort_desc
+- Ledger analysis: GET /balanceSheet + filter_data sort_desc. For PERIOD COMPARISONS ("costs increased from Jan to Feb"): GET /balanceSheet for EACH period, then COMPUTE differences (Feb-Jan) and pick top N by DIFFERENCE — do NOT just take top N from one period.
+- Payment: NEVER hardcode paymentTypeId=0. Always GET /invoice/paymentType first to find a valid ID.
 - Paths: NO /v2 prefix
 - Travel expense (reiseregning): perDiemCompensations MUST include: location, count, rate (daily NOK rate FROM TASK), amount (count × rate), overnightAccommodation. travelDetails MUST include: purpose (from task), departureDate, returnDate, destination. Then PUT /travelExpense/:deliver to submit.
 - Fixed-price project partial invoicing (e.g. "invoice 75%"): PUT /order/{{id}}/:invoice with query_params createOnAccount="WITH_VAT" and amountOnAccount=partial_amount. Do NOT put the partial amount as an order line price — use createOnAccount.
