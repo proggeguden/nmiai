@@ -193,6 +193,7 @@ def run_pipeline(round_id):
                 ml_weights=ML_WEIGHTS,
                 rates=forward_rates,
                 spatial_obs=spatial_obs,
+                skip_blending=True,
             )
         else:
             pred = build_prediction(height, width, initial_grid, seed_obs,

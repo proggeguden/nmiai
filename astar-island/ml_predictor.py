@@ -251,8 +251,11 @@ def numpy_forward(features, weights):
     x = x @ weights["fc3_w"].astype(np.float64).T + weights["fc3_b"].astype(np.float64)
     x = np.maximum(x, 0)
 
-    # Layer 4: Linear + Softmax
+    # Layer 4: Linear + Temperature-scaled Softmax
     x = x @ weights["fc4_w"].astype(np.float64).T + weights["fc4_b"].astype(np.float64)
+    T = float(weights.get("temperature", np.array([1.0])).flat[0])
+    if T != 1.0:
+        x = x / T
     x_max = x.max(axis=1, keepdims=True)
     exp_x = np.exp(x - x_max)
     x = exp_x / exp_x.sum(axis=1, keepdims=True)

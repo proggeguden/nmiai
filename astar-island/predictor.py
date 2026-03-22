@@ -1396,7 +1396,7 @@ def build_prediction(height, width, initial_grid, observations,
 
 def build_prediction_ml(height, width, initial_grid, observations,
                         ml_weights, rates=None,
-                        spatial_obs=None):
+                        spatial_obs=None, skip_blending=False):
     """Build a H×W×6 probability tensor using an ML model for base predictions.
 
     Uses extract_features() + numpy_forward() from ml_predictor for base
@@ -1441,7 +1441,7 @@ def build_prediction_ml(height, width, initial_grid, observations,
         fmap, _, _ = compute_feature_map(initial_grid)
 
     # Step 2: Blend per-cell observations (for directly observed cells)
-    if observations:
+    if observations and not skip_blending:
         cell_counts = np.zeros((height, width, NUM_CLASSES), dtype=np.float64)
         cell_obs_count = np.zeros((height, width), dtype=np.float64)
 

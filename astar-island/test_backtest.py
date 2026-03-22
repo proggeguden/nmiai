@@ -547,6 +547,7 @@ def backtest_round_simulated(round_id, n_runs=5, verbose=True,
                     ml_weights=ml_weights,
                     rates=forward_rates,
                     spatial_obs=spatial_obs,
+                    skip_blending=True,
                 )
             else:
                 pred = build_prediction(
