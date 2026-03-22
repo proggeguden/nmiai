@@ -1967,6 +1967,89 @@ def build_agent():
                 except Exception:
                     pass
 
+        # Pre-flight: probe /incomingInvoice availability before wasting a write call
+        # GET is FREE — if it 403s, rewrite to /ledger/voucher to avoid double penalty
+        if (
+            tool_name == "call_api"
+            and resolved_args.get("method") == "POST"
+            and "/incomingInvoice" in resolved_args.get("path", "")
+            and call_api_tool
+        ):
+            try:
+                probe = call_api_tool.invoke({
+                    "method": "GET", "path": "/incomingInvoice/search",
+                    "query_params": {"count": 0},
+                })
+                probe_err, probe_status = _is_api_error(probe)
+                if probe_err and probe_status == 403:
+                    log.info("Pre-flight: /incomingInvoice is 403 — rewriting to /ledger/voucher")
+                    # Convert incomingInvoice body to voucher format
+                    orig_body = resolved_args.get("body", {})
+                    header = orig_body.get("invoiceHeader", {})
+                    order_lines = orig_body.get("orderLines", [])
+                    supplier_id = header.get("vendorId")
+                    supplier_ref = {"id": supplier_id} if supplier_id else None
+                    postings = []
+                    total_gross = 0
+                    row_num = 1
+                    for ol in order_lines:
+                        amount = round(ol.get("amountInclVat") or ol.get("amount") or 0, 2)
+                        total_gross += amount
+                        posting = {
+                            "account": {"id": ol.get("accountId")},
+                            "amountGross": amount,
+                            "amountGrossCurrency": amount,
+                            "row": row_num,
+                        }
+                        if ol.get("vatTypeId"):
+                            posting["vatType"] = {"id": ol["vatTypeId"]}
+                        if supplier_ref:
+                            posting["supplier"] = supplier_ref
+                        postings.append(posting)
+                        row_num += 1
+                    # Credit AP account (2400)
+                    if total_gross:
+                        try:
+                            ap_r = call_api_tool.invoke({"method": "GET", "path": "/ledger/account", "query_params": {"number": "2400", "count": 1}})
+                            ap_vals = json.loads(ap_r).get("values", [])
+                            if ap_vals:
+                                ap_posting = {
+                                    "account": {"id": ap_vals[0]["id"]},
+                                    "amountGross": round(-total_gross, 2),
+                                    "amountGrossCurrency": round(-total_gross, 2),
+                                    "row": row_num,
+                                }
+                                if supplier_ref:
+                                    ap_posting["supplier"] = supplier_ref
+                                postings.append(ap_posting)
+                        except Exception:
+                            pass
+                    # Look up supplier voucherType
+                    vt_ref = None
+                    try:
+                        vt_r = call_api_tool.invoke({"method": "GET", "path": "/ledger/voucherType", "query_params": {"count": 100}})
+                        for vt in json.loads(vt_r).get("values", []):
+                            if any(kw in str(vt.get("name", "")).lower() for kw in ["leverandør", "supplier", "innkjøp"]):
+                                vt_ref = {"id": vt["id"]}
+                                break
+                    except Exception:
+                        pass
+                    inv_number = header.get("invoiceNumber", "")
+                    resolved_args["path"] = "/ledger/voucher"
+                    resolved_args["body"] = {
+                        "date": header.get("invoiceDate", date.today().isoformat()),
+                        "description": f"Faktura {inv_number}" if inv_number else "Leverandørfaktura",
+                        "postings": postings,
+                    }
+                    if vt_ref:
+                        resolved_args["body"]["voucherType"] = vt_ref
+                    if inv_number:
+                        resolved_args["body"]["vendorInvoiceNumber"] = inv_number
+                    resolved_args.pop("query_params", None)
+                    log.info("Pre-flight: rewrote POST /incomingInvoice → /ledger/voucher (probe found 403)")
+            except Exception as e:
+                log.warning(f"Pre-flight probe failed: {e}")
+
         # First attempt
         try:
             result_str = tool.invoke(resolved_args)
