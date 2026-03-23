@@ -2,14 +2,16 @@
 
 Competition entry for [NM i AI 2026](https://app.ainm.no) — the Norwegian AI Championship.
 
+**Team:** Løkka Language Models | **Overall: 86.0 pts, #42**
+
 ## Results
 
-| Task | Public Score | Public Rank | Private Score | Private Rank |
-|------|-------------|-------------|---------------|--------------|
-| **NorgesGruppen Data** | 0.9216 | #11 / 350 | TBD | TBD |
-| **Tripletex** | TBD | TBD | TBD | TBD |
-| **Astar Island** | TBD | TBD | TBD | TBD |
-| **Overall** | — | — | — | **TBD** |
+| Task | Score | Rank | Normalized |
+|------|-------|------|------------|
+| **NorgesGruppen Data** | 0.7095 mAP | **#5** | 99.8 |
+| **Tripletex** | 60.61 pts | #124 | 58.1 |
+| **Astar Island** | 266.6 pts | **#1** | 100.0 |
+| **Overall** | — | **#42** | 86.0 |
 
 ## Tasks
 

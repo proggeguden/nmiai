@@ -1,5 +1,7 @@
 # Tripletex AI Accounting Agent — Solution Summary
 
+**Final score: 60.61 pts (#124)**
+
 ## Overview
 An AI-powered accounting agent that receives natural language task prompts in 7 languages (Norwegian, English, Spanish, Portuguese, Nynorsk, German, French) and executes them against the Tripletex REST API. Scored on field-by-field correctness + API call efficiency.
 

@@ -1,6 +1,6 @@
 # NorgesGruppen Data — Final Solution
 
-**Best public score: 0.9216 (#11 / 350 teams)**
+**Final private score: 0.7095 mAP (#5) | Public score: 0.9216 (#11 / 350 teams)**
 
 ## Task
 

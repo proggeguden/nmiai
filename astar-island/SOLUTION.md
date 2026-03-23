@@ -1,7 +1,8 @@
 # Astar Island — Final Solution
 
-**Team**: People Made Machines
-**Best result**: R22 = 91.12 (rank 1/278), weighted score 266.6 (#1 on leaderboard)
+**Team**: Løkka Language Models
+**Final result**: Weighted score 266.6 — **#1 on final leaderboard**
+**Best round**: R22 = 91.12 (rank 1/278)
 **Model**: 5-snapshot wide MLP ensemble, 32 features, numpy-only inference
 
 ---
@@ -214,7 +215,7 @@ python3 test_backtest.py --simulate-production --sim-runs 3 --output sim_results
 | R20 | 90.5 | 36/181 | ML 28-feat single |
 | R21 | 86.3 | 90/225 | ML 28-feat single |
 | R22 | **91.1** | **1/278** | ML 32-feat wide ensemble |
-| R23 | pending | — | ML 32-feat wide ensemble (22-round retrain) |
+| R23 | 75.6 | #5/~280 | ML 32-feat wide ensemble (22-round retrain) |
 
 ## Lessons Learned
 
